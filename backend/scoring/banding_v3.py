@@ -171,7 +171,7 @@ def determine_band(parcel: dict) -> float:
 
 def apply_banding_to_zip(zip_code: str) -> dict:
     """
-    Read all parcels in a ZIP, compute Band for each, upsert back.
+    Read all parcels in a ZIP, compute Band for each, update back.
     Returns stats.
     """
     from backend.api.db import get_supabase_client
@@ -179,29 +179,43 @@ def apply_banding_to_zip(zip_code: str) -> dict:
     if not supa:
         raise RuntimeError("Supabase not configured")
 
-    parcels_res = (supa.table('parcels_v3')
-                   .select('pin, owner_name, owner_name_raw, total_value, '
-                           'tenure_years, prop_type, signal_family, address, '
-                           'is_vacant_land')
-                   .eq('zip_code', zip_code)
-                   .execute())
-    parcels = parcels_res.data or []
+    # Paginated read — Supabase caps at 1000 per request
+    parcels = []
+    offset = 0
+    page_size = 1000
+    while True:
+        page = (supa.table('parcels_v3')
+                .select('pin, owner_name, owner_name_raw, total_value, '
+                        'tenure_years, prop_type, signal_family, address, '
+                        'is_vacant_land')
+                .eq('zip_code', zip_code)
+                .range(offset, offset + page_size - 1)
+                .execute())
+        rows = page.data or []
+        parcels.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
 
     if not parcels:
         return {'total': 0, 'by_band': {}}
 
-    from collections import Counter
+    from collections import Counter, defaultdict
     band_counts = Counter()
-    updates = []
+    by_band = defaultdict(list)
     for p in parcels:
         band = determine_band(p)
         band_counts[band] += 1
-        updates.append({'pin': p['pin'], 'band': band})
+        by_band[band].append(p['pin'])
 
-    # Batch upsert
-    for i in range(0, len(updates), 1000):
-        batch = updates[i:i + 1000]
-        supa.table('parcels_v3').upsert(batch, on_conflict='pin').execute()
+    # Bulk update by band — one UPDATE per band group
+    for band, pins in by_band.items():
+        for i in range(0, len(pins), 200):
+            chunk = pins[i:i + 200]
+            (supa.table('parcels_v3')
+             .update({'band': band})
+             .in_('pin', chunk)
+             .execute())
 
     # Stamp completion
     supa.table('zip_coverage_v3').update({

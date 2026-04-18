@@ -228,12 +228,22 @@ def cmd_classify(zip_code: str) -> int:
 
     from backend.scoring.why_not_selling import classify_archetype
 
-    parcels_res = (supa.table('parcels_v3')
-                   .select('pin, owner_name, owner_type, tenure_years, '
-                           'total_value, is_absentee, is_out_of_state')
-                   .eq('zip_code', zip_code)
-                   .execute())
-    parcels = parcels_res.data or []
+    # Paginated read — Supabase caps results at 1000 per request
+    parcels = []
+    offset = 0
+    page_size = 1000
+    while True:
+        page = (supa.table('parcels_v3')
+                .select('pin, owner_name, owner_type, tenure_years, '
+                        'total_value, is_absentee, is_out_of_state')
+                .eq('zip_code', zip_code)
+                .range(offset, offset + page_size - 1)
+                .execute())
+        rows = page.data or []
+        parcels.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
 
     if not parcels:
         print(f"No parcels found for ZIP {zip_code}. Run 'ingest' first.")
@@ -241,18 +251,24 @@ def cmd_classify(zip_code: str) -> int:
 
     print(f"\nClassifying archetypes for {len(parcels)} parcels in ZIP {zip_code}...")
 
-    from collections import Counter
+    from collections import Counter, defaultdict
     archetype_counts = Counter()
-    updates = []
+    by_archetype = defaultdict(list)
     for p in parcels:
         arch = classify_archetype(p)
         archetype_counts[arch] += 1
-        updates.append({'pin': p['pin'], 'signal_family': arch})
+        by_archetype[arch].append(p['pin'])
 
-    # Batch upsert (1000 at a time to avoid payload limits)
-    for i in range(0, len(updates), 1000):
-        batch = updates[i:i + 1000]
-        supa.table('parcels_v3').upsert(batch, on_conflict='pin').execute()
+    # Bulk update by archetype — one UPDATE per archetype group (vs 6000+ individual)
+    # Use .in_() filter on the pin list so each archetype's pins update in one round-trip
+    for arch, pins in by_archetype.items():
+        # PostgREST has a URL length cap, so chunk large pin lists
+        for i in range(0, len(pins), 200):
+            chunk = pins[i:i + 200]
+            (supa.table('parcels_v3')
+             .update({'signal_family': arch})
+             .in_('pin', chunk)
+             .execute())
 
     print(f"  Classified. Distribution:")
     for arch, n in sorted(archetype_counts.items(), key=lambda t: -t[1]):
