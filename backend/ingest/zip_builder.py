@@ -502,6 +502,70 @@ def cmd_pause(zip_code: str, note: Optional[str] = None) -> int:
     return 0
 
 
+def cmd_seed(zip_code: str, json_path: str) -> int:
+    """
+    Load parcels from a pre-built JSON file into parcels_v3.
+
+    This is the "offline ingest" path — used when we have a known-good
+    snapshot of a ZIP's parcels and don't want to re-fetch from live ArcGIS.
+    The bundled seeds live under data/seeds/.
+    """
+    supa = get_supabase_client()
+    if not supa:
+        print("ERROR: Supabase not configured")
+        return 1
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('market_key, status')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        print(f"ZIP {zip_code} not registered. Run 'register' first.")
+        return 1
+
+    market_key = cov.data['market_key']
+    print(f"\nSeed ingest for ZIP {zip_code} (market: {market_key})")
+    print(f"  Loading from {json_path}...")
+
+    from backend.ingest.seed_from_json import (
+        load_parcels_from_json, upsert_parcels, stamp_ingest_complete,
+    )
+
+    try:
+        rows = load_parcels_from_json(json_path, zip_code, market_key)
+    except FileNotFoundError as e:
+        print(f"  ERROR: {e}")
+        return 1
+    except Exception as e:
+        print(f"  ERROR loading JSON: {e}")
+        return 1
+
+    print(f"  Loaded {len(rows)} parcels from JSON")
+    if not rows:
+        print("  No parcels in file.")
+        return 1
+
+    print(f"  Upserting into parcels_v3...")
+    stats = upsert_parcels(rows)
+    print(f"  ✓ Upserted: {stats['inserted_or_updated']} in {stats['batches']} batch(es)")
+    if stats['failed']:
+        print(f"  ⚠ Failed:   {stats['failed']}")
+
+    # Quality check
+    with_owner = sum(1 for r in rows if r.get('owner_name'))
+    with_value = sum(1 for r in rows if r.get('total_value'))
+    with_tenure = sum(1 for r in rows if r.get('tenure_years') is not None)
+    print(f"  Quality: {with_owner}/{len(rows)} named, "
+          f"{with_value}/{len(rows)} valued, "
+          f"{with_tenure}/{len(rows)} with tenure")
+    print(f"  Note: lat/lng not in seed data — run 'geocode' separately if needed")
+
+    stamp_ingest_complete(zip_code, len(rows))
+    print(f"  ✓ Stage complete for ZIP {zip_code}")
+    return 0
+
+
 # ============================================================================
 # CLI entry
 # ============================================================================
@@ -551,6 +615,13 @@ def main() -> int:
     s.add_argument('zip_code')
     s.add_argument('--note', default=None)
 
+    # seed (offline ingest from JSON file)
+    s = sub.add_parser('seed',
+                       help='Offline ingest from a pre-built JSON file (data/seeds/*.json)')
+    s.add_argument('zip_code')
+    s.add_argument('--file', required=True,
+                   help='Path to seed JSON (e.g. data/seeds/wa-king-98004.json)')
+
     args = p.parse_args()
 
     if args.command == 'status':       return cmd_status(args.zip_code)
@@ -563,6 +634,7 @@ def main() -> int:
     if args.command == 'investigate':  return cmd_investigate(args.zip_code, args.dry_run)
     if args.command == 'publish':      return cmd_publish(args.zip_code, args.force)
     if args.command == 'pause':        return cmd_pause(args.zip_code, args.note)
+    if args.command == 'seed':         return cmd_seed(args.zip_code, args.file)
 
     return 1
 
