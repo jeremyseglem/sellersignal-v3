@@ -1,6 +1,6 @@
 # SellerSignal v3 — Build Status
 
-Last updated: April 18, 2026 (third push of initial session — ZIP coverage layer)
+Last updated: April 18, 2026 (fourth push of initial session — ZIP builder fully wired)
 
 ## Core architectural principles (MUST PRESERVE)
 
@@ -34,7 +34,44 @@ Last updated: April 18, 2026 (third push of initial session — ZIP coverage lay
 - [x] `backend/ingest/` — 13 modules for parcel ingestion + enrichment
 - [x] `backend/research/` — backtest + calibration scripts
 
-### NEW in this push (ZIP coverage layer — third push of session)
+### NEW in this push (ZIP-build pipeline fully wired — fourth push)
+- [x] **`backend/ingest/arcgis.py`** — King County ArcGIS direct fetch
+  - Async paginated fetch with `httpx`
+  - Parses 14 fields per parcel into parcels_v3 schema
+  - Computes lat/lng from point or polygon geometry
+  - Derives owner_type, is_absentee, is_out_of_state from raw fields
+  - Upserts in batches of 1000
+  - MARKET_CONFIGS dict — add other markets (Maricopa, Miami-Dade, etc.)
+    by registering their ArcGIS endpoints + field mappings here
+- [x] **`backend/scoring/banding_v3.py`** — Band 0-4 assignment
+  - 4 hard-disqualifier regex banks (institutional, tax agent, REO, brokerage)
+  - Archetype-to-band mapping (12 archetypes → 6 bands)
+  - Oversized-value, recent-buyer, commercial hard caps
+  - Batch upsert
+- [x] **`backend/selection/zip_investigation.py`** — ZIP-scoped investigation
+  - Selects Option A scope (8 B3 + 12 B2.5 + 10×3 tier-balanced B2)
+  - Dry-run cost estimate via persistence.estimate_run_cost
+  - Real run with budget gates + mid-run re-check
+  - Writes results via persistence.cache_put → investigations_v3
+  - Stamps first_investigation_at + updates counts on coverage
+- [x] **CLI commands fully wired**
+  - `ingest` → backend/ingest/arcgis.py
+  - `band` → backend/scoring/banding_v3.py
+  - `investigate` → backend/selection/zip_investigation.py
+  - All three support `--dry-run` style safety where relevant
+- [x] **Investigation module cache delegation**
+  - cache_get/cache_put/cache_invalidate now delegate to persistence.py
+    when Supabase is configured
+  - Fall back to flat-file when Supabase unavailable (dev mode)
+  - No code changes required elsewhere — same function signatures
+- [x] **`/api/investigations/*` endpoints fully wired**
+  - POST /api/investigations/run (dry-run or real, with budget gates)
+  - GET /api/investigations/budget (current month state)
+  - POST /api/investigations/parcel/:pin/deep (on-demand single-parcel)
+- [x] **`/api/playbook/*` endpoints fully wired**
+  - GET /api/playbook/:zip (JSON version)
+  - GET /api/playbook/:zip/pdf (Estate-aesthetic PDF via render_playbook.py)
+  - GET /api/playbook/:zip/dossiers.zip (501, next session)
 - [x] **`schema/002_zip_coverage.sql`** — new table `zip_coverage_v3`
   - Lifecycle tracking: `in_development` → `live` → `paused` → `archived`
   - Per-stage completion timestamps (ingested_at, classified_at, etc.)

@@ -128,26 +128,14 @@ def cmd_register(zip_code: str, market_key: str, city: str, state: str,
 def cmd_ingest(zip_code: str) -> int:
     """
     Pull parcels from the market's ArcGIS source into parcels_v3.
-
-    This is where the actual data fetch happens. Implementation pulls from
-    the appropriate ArcGIS endpoint based on market_key:
-        WA_KING        -> King County Property Parcels
-        FL_MD          -> Miami-Dade Property Search
-        AZ_MARICOPA    -> Maricopa County Assessor
-        (etc.)
-
-    Paginates through all features matching ZIP, parses fields per market,
-    upserts into parcels_v3 keyed on pin.
-
-    NOT YET IMPLEMENTED — this is a placeholder. The sandbox has
-    working ingest logic for King County that we'll port next session.
+    Paginates, parses, upserts. Idempotent.
     """
+    import asyncio
     supa = get_supabase_client()
     if not supa:
         print("ERROR: Supabase not configured")
         return 1
 
-    # Verify ZIP is registered
     cov = (supa.table('zip_coverage_v3')
            .select('market_key, status, source_arcgis_url')
            .eq('zip_code', zip_code)
@@ -157,11 +145,45 @@ def cmd_ingest(zip_code: str) -> int:
         print(f"ZIP {zip_code} not registered. Run 'register' first.")
         return 1
 
-    print(f"\nIngest for ZIP {zip_code} (market: {cov.data['market_key']})")
-    print("  STATUS: NOT YET IMPLEMENTED")
-    print("  Next session: port sandbox King County ingest logic to this command.")
-    print(f"  Source URL on file: {cov.data.get('source_arcgis_url') or '(none)'}")
-    return 2  # signal 'not implemented'
+    market_key = cov.data['market_key']
+    print(f"\nIngest for ZIP {zip_code} (market: {market_key})")
+    print(f"  Fetching from ArcGIS...")
+
+    from backend.ingest.arcgis import fetch_parcels_for_zip, upsert_parcels, stamp_ingest_complete, MARKET_CONFIGS
+
+    if market_key not in MARKET_CONFIGS:
+        print(f"  ERROR: Market {market_key} not configured in arcgis.py")
+        print(f"         Supported markets: {list(MARKET_CONFIGS.keys())}")
+        return 1
+
+    try:
+        parcels = asyncio.run(fetch_parcels_for_zip(zip_code, market_key))
+    except Exception as e:
+        print(f"  ERROR during fetch: {e}")
+        return 1
+
+    print(f"  Fetched {len(parcels)} parcels from ArcGIS")
+    if not parcels:
+        print("  No parcels returned. Check ZIP and market_key are correct.")
+        return 1
+
+    print(f"  Upserting into parcels_v3...")
+    stats = upsert_parcels(parcels)
+    print(f"  ✓ Upserted: {stats['inserted_or_updated']} in {stats['batches']} batch(es)")
+    if stats['failed']:
+        print(f"  ⚠ Failed:   {stats['failed']}")
+
+    # Quick quality check: how many have lat/lng, owner_name, value?
+    with_geom = sum(1 for p in parcels if p.get('lat') and p.get('lng'))
+    with_owner = sum(1 for p in parcels if p.get('owner_name'))
+    with_value = sum(1 for p in parcels if p.get('total_value'))
+    print(f"  Quality: {with_geom}/{len(parcels)} geocoded, "
+          f"{with_owner}/{len(parcels)} named, "
+          f"{with_value}/{len(parcels)} valued")
+
+    stamp_ingest_complete(zip_code, len(parcels))
+    print(f"  ✓ Stage complete for ZIP {zip_code}")
+    return 0
 
 
 # ============================================================================
@@ -253,23 +275,49 @@ def cmd_classify(zip_code: str) -> int:
 
 def cmd_band(zip_code: str) -> int:
     """
-    Assign Band 0-4 to every parcel based on value, ownership, tenure, signals.
-
-    Band scale:
-      0 — excluded (commercial, government, REO, recent buyer hard cap)
-      1 — not a current prospect (insufficient structural signal)
-      2 — monitoring pool (trust_aging, silent_transition baseline)
-      2.5 — elevated monitoring (family clusters, dormant_absentee)
-      3 — active prospect (financial_stress, failed_sale_attempt,
-           investor_disposition, death_inheritance)
-      4 — post-transaction / sold
-
-    NOT YET IMPLEMENTED — port from sandbox apply_banding.py next session.
+    Assign Band 0-4 to every parcel based on value, ownership, tenure, archetype.
+    Idempotent — re-running produces identical assignments.
     """
-    print(f"\nBand assignment for ZIP {zip_code}")
-    print("  STATUS: NOT YET IMPLEMENTED")
-    print("  Next session: port sandbox apply_banding logic to this command.")
-    return 2
+    supa = get_supabase_client()
+    if not supa:
+        print("ERROR: Supabase not configured")
+        return 1
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('archetypes_classified_at, parcel_count')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        print(f"ZIP {zip_code} not registered.")
+        return 1
+    if not cov.data.get('archetypes_classified_at'):
+        print(f"ZIP {zip_code} has not been classified yet. Run 'classify' first.")
+        return 1
+
+    print(f"\nAssigning bands for ZIP {zip_code}...")
+    from backend.scoring.banding_v3 import apply_banding_to_zip
+    stats = apply_banding_to_zip(zip_code)
+
+    if stats['total'] == 0:
+        print(f"  No parcels found. Run 'ingest' first.")
+        return 1
+
+    print(f"  Processed {stats['total']} parcels. Distribution:")
+    band_labels = {
+        0: 'Band 0 (excluded)',
+        1: 'Band 1 (weak signal)',
+        2: 'Band 2 (monitoring)',
+        2.5: 'Band 2.5 (elevated)',
+        3: 'Band 3 (active prospect)',
+        4: 'Band 4 (post-transaction)',
+    }
+    for band, count in stats['by_band'].items():
+        label = band_labels.get(band, f'Band {band}')
+        print(f"    {label:<32} {count:>6}")
+
+    print(f"  ✓ Stage complete for ZIP {zip_code}")
+    return 0
 
 
 # ============================================================================
@@ -278,24 +326,81 @@ def cmd_band(zip_code: str) -> int:
 
 def cmd_investigate(zip_code: str, dry_run: bool = False) -> int:
     """
-    Run Option A investigation for ZIP:
-        8 Band 3 + 12 Band 2.5 + 30 Band 2 = 50 parcels screened
-        Top 15 go to deep investigation
-        Expected cost ~$9 at SerpAPI pricing
+    Run Option A investigation for the ZIP.
+      8 Band 3 + 12 Band 2.5 + 30 Band 2 = up to 50 parcels screened
+      Top 15 → deep investigation
+      Expected cost ~$10 at SerpAPI pricing
 
-    Uses backend.investigation.persistence for cache + budget state.
-
-    NOT YET IMPLEMENTED at CLI level — the underlying investigation module
-    works (tested live on 98004 earlier this session), just needs to be
-    invoked from here after the ingest + band stages complete.
+    Dry-run first shows projected cost without spending.
     """
+    supa = get_supabase_client()
+    if not supa:
+        print("ERROR: Supabase not configured")
+        return 1
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('bands_assigned_at, status')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        print(f"ZIP {zip_code} not registered.")
+        return 1
+    if not cov.data.get('bands_assigned_at'):
+        print(f"ZIP {zip_code} has not been banded yet. Run 'band' first.")
+        return 1
+
+    from backend.selection.zip_investigation import run_investigation_for_zip
+
     if dry_run:
-        print(f"\nDry-run investigation estimate for ZIP {zip_code}")
-    else:
-        print(f"\nInvestigation for ZIP {zip_code}")
-    print("  STATUS: NOT YET WIRED TO CLI")
-    print("  Next session: wire backend.investigation + backend.selection.run_investigation")
-    return 2
+        print(f"\n═══ Dry-run investigation estimate for ZIP {zip_code} ═══")
+        result = run_investigation_for_zip(zip_code, dry_run=True)
+
+        if result.get('error'):
+            print(f"  ERROR: {result['error']}")
+            return 1
+
+        print(f"  Scope size:          {result['scope_size']} parcels")
+        print(f"  Est. screen searches: {result.get('screen_searches_est', 0)}")
+        print(f"  Est. deep searches:   {result.get('deep_searches_est', 0)}")
+        print(f"  Total searches:       {result['projected_searches']}")
+        print(f"  Projected cost:       ${result['projected_cost_usd']}")
+        print(f"  Current month usage:  {result.get('current_month_usage', 0)}")
+        print(f"  Approved:             {result['approved']}")
+
+        if not result['approved']:
+            for r in result.get('reasons', []):
+                print(f"    · {r}")
+            return 1
+        return 0
+
+    # Real run
+    print(f"\n═══ Running Option A investigation for ZIP {zip_code} ═══")
+    print(f"  (This will spend real SerpAPI credits. Use --dry-run to estimate first.)")
+
+    result = run_investigation_for_zip(zip_code, dry_run=False)
+
+    if result.get('error'):
+        print(f"  ERROR: {result['error']}")
+        return 1
+
+    if not result.get('approved'):
+        print(f"  Not approved:")
+        for r in result.get('reasons', []):
+            print(f"    · {r}")
+        return 1
+
+    print(f"\n  ✓ Run complete")
+    print(f"  Scope size:       {result['scope_size']}")
+    print(f"  Finalists:        {result['finalists']}")
+    print(f"  Live searches:    {result['total_searches']}")
+    print(f"  Actual cost:      ${result['cost_usd']}")
+    print(f"  Actions:")
+    for k, v in sorted(result.get('actions', {}).items()):
+        print(f"    {k:<12} {v}")
+
+    print(f"  ✓ Stage complete for ZIP {zip_code}")
+    return 0
 
 
 # ============================================================================

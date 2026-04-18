@@ -726,8 +726,24 @@ def _cache_path(key: str) -> str:
     return os.path.join(CACHE_DIR, f'{key}.json')
 
 
+def _use_supabase_backend() -> bool:
+    """True if Supabase is configured and we should use DB cache instead of flat-file."""
+    import os
+    return bool(os.environ.get('SUPABASE_URL') and os.environ.get('SUPABASE_SERVICE_KEY'))
+
+
 def cache_get(parcel: dict, mode: str):
-    """Returns cached result if younger than TTL, else None."""
+    """Returns cached result if younger than TTL, else None.
+
+    Uses Supabase when SUPABASE_URL/SERVICE_KEY are set, flat-file otherwise.
+    """
+    if _use_supabase_backend():
+        try:
+            from backend.investigation import persistence
+            return persistence.cache_get(parcel, mode)
+        except Exception as e:
+            print(f'[cache_get] persistence fallback to flat-file: {e}')
+    # Flat-file fallback
     path = _cache_path(_cache_key(parcel, mode))
     if not os.path.exists(path): return None
     try:
@@ -741,6 +757,18 @@ def cache_get(parcel: dict, mode: str):
 
 
 def cache_put(parcel: dict, mode: str, result: dict):
+    """Persist investigation result.
+
+    Uses Supabase when SUPABASE_URL/SERVICE_KEY are set, flat-file otherwise.
+    """
+    if _use_supabase_backend():
+        try:
+            from backend.investigation import persistence
+            persistence.cache_put(parcel, mode, result)
+            return
+        except Exception as e:
+            print(f'[cache_put] persistence fallback to flat-file: {e}')
+    # Flat-file fallback
     path = _cache_path(_cache_key(parcel, mode))
     with open(path, 'w') as f:
         json.dump({'cached_at': datetime.now().isoformat(), 'result': result},
@@ -749,6 +777,16 @@ def cache_put(parcel: dict, mode: str, result: dict):
 
 def cache_invalidate(parcel: dict):
     """Invalidate all modes for this parcel (on new free-event hit)."""
+    if _use_supabase_backend():
+        try:
+            from backend.investigation import persistence
+            pin = parcel.get('pin') or parcel.get('id') or parcel.get('parcel_id')
+            if pin:
+                persistence.cache_invalidate(pin)
+            return
+        except Exception as e:
+            print(f'[cache_invalidate] persistence fallback to flat-file: {e}')
+    # Flat-file fallback
     for mode in ('screen', 'deep'):
         path = _cache_path(_cache_key(parcel, mode))
         if os.path.exists(path):
