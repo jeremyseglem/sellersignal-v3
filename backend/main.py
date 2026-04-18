@@ -18,6 +18,7 @@ from backend.api import (
     playbook,
     map_data,
     health,
+    coverage,
 )
 
 
@@ -58,6 +59,7 @@ app.add_middleware(
 
 # ── ROUTES ─────────────────────────────────────────────────────────────
 app.include_router(health.router,         prefix="/api",             tags=["health"])
+app.include_router(coverage.router,       prefix="/api/coverage",    tags=["coverage"])
 app.include_router(briefings.router,      prefix="/api/briefings",   tags=["briefings"])
 app.include_router(parcels.router,        prefix="/api/parcels",     tags=["parcels"])
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])

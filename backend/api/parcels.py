@@ -3,12 +3,29 @@ Parcel detail API — the dossier shown when user clicks a pin.
 
   GET /api/parcels/:pin          — full parcel dossier with investigation data
   GET /api/parcels/:pin/why      — zero-API "why they're not selling yet" read
+
+Parcel endpoints are keyed on pin, not zip. But they enforce ZIP coverage
+implicitly: we fetch the parcel, read its zip_code, then check that the
+ZIP is in coverage. If not, we return 404 as if the parcel didn't exist.
 """
 from fastapi import APIRouter, HTTPException
 from backend.api.db import get_supabase_client
+from backend.api.zip_gate import get_zip_status
 from backend.scoring.why_not_selling import generate_why_not_selling
 
 router = APIRouter()
+
+
+def _assert_parcel_zip_is_live(parcel: dict) -> None:
+    """Raise 404 if the parcel's ZIP isn't live in coverage."""
+    zip_code = parcel.get('zip_code')
+    if not zip_code:
+        raise HTTPException(404, "Parcel has no ZIP assignment")
+    status = get_zip_status(zip_code)
+    if status != 'live':
+        # Return 404 rather than leaking the fact that the parcel exists
+        # but is in a non-live ZIP
+        raise HTTPException(404, f"Parcel not found")
 
 
 @router.get("/{pin}")
@@ -34,6 +51,9 @@ async def get_parcel(pin: str):
 
         if not parcel:
             raise HTTPException(404, f"Parcel {pin} not found")
+
+        # Enforce ZIP coverage — return 404 if parcel's ZIP isn't live
+        _assert_parcel_zip_is_live(parcel)
 
         # Prefer deep, fall back to screen
         inv_deep = (supa.table('investigations_v3')
@@ -103,6 +123,8 @@ async def get_why_not_selling_endpoint(pin: str):
 
         if not parcel:
             raise HTTPException(404, f"Parcel {pin} not found")
+
+        _assert_parcel_zip_is_live(parcel)
 
         why = generate_why_not_selling(parcel)
 

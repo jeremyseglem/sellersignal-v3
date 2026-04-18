@@ -5,19 +5,12 @@ Briefings API — the main weekly-playbook + map-data payload.
   GET  /api/briefings/:zip/summary      — compact summary (counts + top 3)
   GET  /api/briefings/:zip/history      — past briefings for this ZIP
 
-The briefing selects 10 moves per week using pressure-scored decision layer:
-  5 CALL NOW     — Band 3 financial_stress (reserved slots 1-2) +
-                   Band 3 others + Band 2 leads promoted by investigation
-                   (pressure=3 = hard, call_now)
-  3 BUILD NOW    — Band 2 leads with pressure=2 (medium, directional)
-  2 STRATEGIC HOLDS — Band 2+ leads with long-horizon transition windows
-
-Blocker exclusion: any parcel with has_blocker=True (pending sale, owner
-is a licensed agent, etc.) is filtered out at the source.
+All endpoints gated by require_live_zip — ZIPs not in coverage return 404.
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from datetime import datetime, date, timedelta, timezone
 from backend.api.db import get_supabase_client
+from backend.api.zip_gate import require_live_zip
 
 router = APIRouter()
 
@@ -64,7 +57,7 @@ def _rank_parcel(parcel_row: dict, investigation_row: dict = None) -> float:
 
 @router.get("/{zip_code}")
 async def get_briefing(
-    zip_code: str,
+    zip_code: str = Depends(require_live_zip),
     include_map: bool = Query(True, description="Include full-ZIP map data"),
 ):
     """
@@ -239,7 +232,7 @@ def _format_pick(parcel: dict, investigation: dict = None) -> dict:
 # ============================================================================
 
 @router.get("/{zip_code}/summary")
-async def get_briefing_summary(zip_code: str):
+async def get_briefing_summary(zip_code: str = Depends(require_live_zip)):
     """Compact version — just counts and top 3 CALL NOW leads."""
     full = await get_briefing(zip_code, include_map=False)
     return {
@@ -253,7 +246,10 @@ async def get_briefing_summary(zip_code: str):
 
 
 @router.get("/{zip_code}/history")
-async def get_briefing_history(zip_code: str, limit: int = Query(12, ge=1, le=52)):
+async def get_briefing_history(
+    zip_code: str = Depends(require_live_zip),
+    limit: int = Query(12, ge=1, le=52),
+):
     """Past briefings for this ZIP (persisted snapshots in briefings_v3)."""
     supa = get_supabase_client()
     if not supa:

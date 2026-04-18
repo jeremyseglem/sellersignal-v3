@@ -13,8 +13,9 @@ Heat map coloring on the frontend uses the 'category' field:
   category=uninvestigated   → cool blue (lightest)
   category=avoid            → slate (blocker)
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from backend.api.db import get_supabase_client
+from backend.api.zip_gate import require_live_zip
 import os
 import hmac
 import hashlib
@@ -30,7 +31,7 @@ router = APIRouter()
 
 @router.get("/{zip_code}")
 async def get_map_data(
-    zip_code: str,
+    zip_code: str = Depends(require_live_zip),
     include_uninvestigated: bool = Query(True,
         description="Include parcels with no investigation data"),
     limit: int = Query(5000, ge=1, le=20000),
@@ -144,7 +145,7 @@ async def get_map_data(
 
 
 @router.get("/{zip_code}/bounds")
-async def get_zip_bounds(zip_code: str):
+async def get_zip_bounds(zip_code: str = Depends(require_live_zip)):
     """Bounding box for a ZIP — used to center map on load."""
     supa = get_supabase_client()
     if not supa:

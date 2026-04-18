@@ -1,6 +1,6 @@
 # SellerSignal v3 — Build Status
 
-Last updated: April 18, 2026 (second push of initial session)
+Last updated: April 18, 2026 (third push of initial session — ZIP coverage layer)
 
 ## Core architectural principles (MUST PRESERVE)
 
@@ -10,13 +10,15 @@ Last updated: April 18, 2026 (second push of initial session)
 3. **Trust tiers over confidence numbers.** Every signal is high/medium/low.
 4. **Hard pressure requires court verification.** NOD, trustee sale,
    court-verified probate/divorce, verified obituary. News mentions = medium.
-5. **Forbidden signals.** Never score `previously_listed` alone as pressure —
-   fires on ~82% of luxury parcels. Only `extended_dom` or `price_history`
-   high-trust count as recent listing activity.
+5. **Forbidden signals.** Never score `previously_listed` alone as pressure.
 6. **One action per lead.** Pressure-scored `recommend_action` returns exactly
    one category with exactly one tone.
 7. **Tone matches cause.** Foreclosure = urgent. Probate/divorce/obituary =
-   sensitive. Copy differs accordingly.
+   sensitive.
+8. **ZIP-first architecture.** Every piece of data, every API call, every
+   subscription is scoped to a ZIP. `zip_coverage_v3` is the source of truth
+   for which ZIPs exist in the product. ZIPs are built one at a time through
+   a re-runnable lifecycle.
 
 ## What's DONE
 
@@ -32,18 +34,37 @@ Last updated: April 18, 2026 (second push of initial session)
 - [x] `backend/ingest/` — 13 modules for parcel ingestion + enrichment
 - [x] `backend/research/` — backtest + calibration scripts
 
-### NEW in this push (second round of work this session)
-- [x] **`backend/scoring/why_not_selling.py`** — Zero-API forensic generator
-  - 12 archetypes, deterministic classification from structural features
-  - Templated narratives: why_not_selling, what_could_change, transition_window
-  - Base-rate priors per archetype from historical data
-  - Confidence scoring based on data completeness
-  - Fixed bug: entity types (LLC, trust) now beat absentee flag in classifier priority
-- [x] **`backend/investigation/persistence.py`** — Supabase cache + budget
-  - `cache_get` / `cache_put` / `cache_invalidate` replacing flat-file JSONs
-  - `get_budget_state` / `record_searches` / `estimate_run_cost` replacing BudgetGuard flat-file
-  - 90-day TTL enforcement
-  - Graceful fail-open when Supabase unavailable (for dev)
+### NEW in this push (ZIP coverage layer — third push of session)
+- [x] **`schema/002_zip_coverage.sql`** — new table `zip_coverage_v3`
+  - Lifecycle tracking: `in_development` → `live` → `paused` → `archived`
+  - Per-stage completion timestamps (ingested_at, classified_at, etc.)
+  - Denormalized counts (parcel_count, investigated_count, current_call_now_count)
+  - RLS: authenticated users see only `live`/`paused`, service role sees all
+  - View `live_zips_v3` for convenience
+  - Seeded 98004 as first in_development ZIP
+- [x] **`backend/api/zip_gate.py`** — FastAPI dependency enforcing coverage
+  - `require_live_zip` — 404 unless status='live'
+  - `require_any_coverage` — allows any status (admin/internal)
+  - 60-second in-memory cache per ZIP to avoid DB pressure
+  - `invalidate_zip_cache()` for manual busting after status changes
+  - Fail-open in dev mode when Supabase unavailable
+- [x] **`backend/api/coverage.py`** — public coverage API
+  - GET /api/coverage returns live ZIPs (+ in_development if requested)
+  - GET /api/coverage/:zip returns lifecycle detail for one ZIP
+- [x] **ZIP gate applied to all ZIP-scoped endpoints**
+  - briefings.py: gated on all 3 routes via Depends(require_live_zip)
+  - map_data.py: gated on `/{zip}` and `/{zip}/bounds`
+  - parcels.py: gated implicitly via `_assert_parcel_zip_is_live` after fetch
+- [x] **`backend/ingest/zip_builder.py`** — CLI lifecycle tool
+  - Subcommands: status, register, ingest, geocode, classify, band, investigate, publish, pause
+  - `classify` and `publish` are fully implemented
+  - `register`, `status`, `pause` are fully implemented
+  - `ingest`, `geocode`, `band`, `investigate` are placeholders (next session)
+  - `publish` includes safety checks (can be bypassed with --force)
+- [x] **`docs/ZIP_BUILD_GUIDE.md`** — operator documentation
+  - Full walkthrough of building 98004 end-to-end
+  - Verification checklist
+  - Recovery procedures when things go wrong
 
 ### API wiring (endpoints now backed by real logic)
 - [x] `backend/api/health.py` — /api/health + /api/status (COMPLETE, was already wired)
