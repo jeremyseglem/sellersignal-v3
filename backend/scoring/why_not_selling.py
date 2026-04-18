@@ -322,22 +322,65 @@ def classify_archetype(parcel: dict) -> str:
 
     Returns one of the ARCHETYPE_* constants.
     """
-    owner_name = (parcel.get('owner_name') or '').upper()
+    import re as _re
+
+    owner_name = (parcel.get('owner_name') or parcel.get('owner_name_raw') or '')
+    if isinstance(owner_name, str):
+        owner_name = owner_name.upper()
+    else:
+        owner_name = ''
     owner_type = parcel.get('owner_type') or 'unknown'
     tenure = parcel.get('tenure_years')  # may be None
     is_absentee = bool(parcel.get('is_absentee'))
     is_out_of_state = bool(parcel.get('is_out_of_state'))
 
-    # Priority 1: Owner-name-based flags (ESTATE/HEIRS always wins)
-    if any(k in owner_name for k in ('ESTATE', 'HEIRS', 'SURVIVOR', 'DECEASED')):
+    # ── Priority 1: Owner-name-based decedent markers ──
+    # Use phrase-context matching, NOT substring matching, because words like
+    # "ESTATE" and "SURVIVOR" appear in commercial contexts that are not
+    # decedent markers. Examples we must NOT match:
+    #   "REAL ESTATE HOLDINGS LLC"         (commercial real estate brand)
+    #   "ESTATE INVESTMENT MANAGEMENT LLC" (investment LLC using 'estate' as brand)
+    #   "SURVIVORS TRUST" / "SURVIVOR'S TRUST" (living-widow trust, common
+    #       revocable-trust term, does NOT indicate active decedent estate)
+    # Examples we MUST match:
+    #   "HENDERSON ESTATE"          (ends with ESTATE — decedent estate)
+    #   "ESTATE OF JOHN SMITH"      (starts with ESTATE OF — legal form)
+    #   "SMITH HEIRS"               (ends with HEIRS)
+    #   "HEIRS OF MARY SMITH"       (starts with HEIRS OF)
+    #   "JOHN SMITH DECEASED"       (DECEASED as standalone word)
+    decedent_rx = _re.compile(
+        r'(^ESTATE\s+OF\b|'             # "ESTATE OF ..."
+        r'\s+ESTATE\s*$|'               # "... ESTATE" ending the string
+        r'^HEIRS\s+OF\b|'               # "HEIRS OF ..."
+        r'\s+HEIRS\s*$|'                # "... HEIRS" ending
+        r'\bDECEASED\b|'                # literal "DECEASED" as whole word
+        r'\bSURVIVORSHIP\b)',           # legal survivorship form (joint tenancy)
+        _re.IGNORECASE,
+    )
+    # Explicit exclusions for common false-positive contexts
+    false_positive_rx = _re.compile(
+        r'REAL\s+ESTATE|'               # commercial real estate anywhere
+        r'ESTATE\s+(INVESTMENT|MANAGEMENT|HOLDINGS|GROUP|SERVICES|PARTNERS)|'
+        r'SURVIVORS?\'?S?\s+TRUST|'     # Survivors Trust / Survivor's Trust — living widow trust
+        r'SURVIVING\s+SPOUSE',
+        _re.IGNORECASE,
+    )
+    if decedent_rx.search(owner_name) and not false_positive_rx.search(owner_name):
         return ARCHETYPE_ESTATE_HEIRS
 
-    # Priority 2: Entity ownership routing (trust/LLC rules beat absentee)
+    # ── Priority 2: Entity ownership routing (trust/LLC beats absentee) ──
     # Rationale: an LLC holding property out-of-state is still structurally
-    # an LLC investor pattern, not an individual absentee pattern. The LLC's
-    # hold-period dynamics dominate the narrative.
-    is_trust  = owner_type == 'trust'  or 'TRUST' in owner_name or 'TRSTEE' in owner_name
-    is_llc    = owner_type == 'llc'    or any(k in owner_name for k in ('LLC', 'CORP', 'INC', 'HOLDINGS', 'PARTNERS'))
+    # an LLC investor pattern, not an individual absentee pattern.
+    is_trust = (
+        owner_type == 'trust'
+        or _re.search(r'\bTRUST\b|\bTRUSTEE\b|\bTRSTEE\b|\bLIVING\s+TR\b|\bFAMILY\s+TR\b',
+                      owner_name)
+    )
+    is_llc = (
+        owner_type == 'llc'
+        or _re.search(r'\b(LLC|INC|CORP|LTD|LLP|LP|HOLDINGS|PARTNERS|PARTNERSHIP|'
+                      r'GROUP|ENTERPRISES?)\b', owner_name)
+    )
 
     if is_trust:
         if tenure is None or tenure < 5:   return ARCHETYPE_TRUST_YOUNG
@@ -349,14 +392,13 @@ def classify_archetype(parcel: dict) -> str:
         if tenure < 10:                     return ARCHETYPE_LLC_INVESTOR_MATURE
         return ARCHETYPE_LLC_LONG_HOLD
 
-    # Priority 3: Named-individual absentee patterns
-    # (Only applies if owner is a named individual, not an entity.)
+    # ── Priority 3: Named-individual absentee patterns ──
     if is_out_of_state and tenure is not None and tenure >= 10:
         return ARCHETYPE_ABSENTEE_DORMANT
     if is_out_of_state or (is_absentee and tenure is not None and tenure >= 5):
         return ARCHETYPE_ABSENTEE_ACTIVE
 
-    # Priority 4: Named individual (assume primary residence)
+    # ── Priority 4: Named individual ──
     if tenure is not None:
         if tenure < 5:                      return ARCHETYPE_INDIVIDUAL_RECENT
         if tenure < 20:                     return ARCHETYPE_INDIVIDUAL_SETTLED
