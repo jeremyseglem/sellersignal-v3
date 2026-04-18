@@ -220,6 +220,7 @@ ALTER TABLE investigations_v3 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE briefings_v3      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outcomes_v3       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent_territories_v3 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE serpapi_budget_v3 ENABLE ROW LEVEL SECURITY;
 
 -- Agents can read parcels in their active territories
 CREATE POLICY agents_read_own_parcels ON parcels_v3
@@ -266,6 +267,12 @@ CREATE POLICY agents_rw_own_outcomes ON outcomes_v3
 CREATE POLICY agents_read_own_territories ON agent_territories_v3
   FOR SELECT
   USING (agent_id = auth.uid());
+
+-- serpapi_budget_v3: service-role only.
+-- RLS is enabled with no policies, which means anon/authenticated keys
+-- get zero access. The backend uses the service_role key, which bypasses
+-- RLS entirely. This is the correct locked-down posture for an internal
+-- budget/spend tracker that should never be exposed to frontend clients.
 
 
 COMMIT;
