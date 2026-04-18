@@ -418,8 +418,16 @@ def score_signal_trust(signal_type: str, source_type: str) -> str:
     return 'medium'
 
 
-def _build_signal(type_, category, confidence, detail, source_label, source_type):
-    return {
+def _build_signal(type_, category, confidence, detail, source_label, source_type,
+                  matched_result=None, matched_query=None):
+    """
+    Construct a signal with full provenance.
+
+    matched_result: the specific SerpAPI result that triggered this signal
+                    (dict with 'title', 'snippet', 'link')
+    matched_query:  the specific query text that produced the result
+    """
+    sig = {
         'type':         type_,
         'category':     category,
         'confidence':   confidence,
@@ -428,142 +436,292 @@ def _build_signal(type_, category, confidence, detail, source_label, source_type
         'source_type':  source_type,
         'trust':        score_signal_trust(type_, source_type),
     }
+    if matched_result:
+        sig['source_url']     = matched_result.get('link', '')
+        sig['source_title']   = matched_result.get('title', '')[:200]
+        sig['source_snippet'] = matched_result.get('snippet', '')[:400]
+    if matched_query:
+        sig['matched_query'] = matched_query[:200]
+    return sig
 
 
-# ─── SIGNAL EXTRACTION (port of extractAllSignals) ──────────────────────
-def extract_all_signals(all_results: dict) -> list[dict]:
+# ─── AD / NOISE FILTERING ──────────────────────────────────────────────
+def _is_ad_or_noise(result: dict) -> bool:
+    """
+    True if the SerpAPI result is obviously an ad or noise — generic service
+    page, unrelated aggregator, LinkedIn directory page, etc. These trigger
+    false positive signals when regex matches their generic language.
+    """
+    link = (result.get('link') or '').lower()
+    title = (result.get('title') or '').lower()
+    snippet = (result.get('snippet') or '').lower()
+
+    # URL-based ad detection
+    if any(x in link for x in ('/ads/', 'googleadservices', 'doubleclick',
+                                'adurl=', '&ad=', '?ad=')):
+        return True
+
+    # LinkedIn directory / company pages are aggregators, not specific people
+    if 'linkedin.com/pub/dir/' in link or 'linkedin.com/company' in link:
+        return True
+
+    # Generic service/aggregator content
+    ad_patterns = [
+        'click here to',
+        'free quote',
+        'find a lawyer',
+        'hire an attorney',
+        'need help with probate',
+        'probate attorneys near',
+        'personal injury',
+        'call us today',
+        'sponsored',
+    ]
+    if any(p in snippet for p in ad_patterns):
+        return True
+
+    # Pure search/directory pages with no specific content
+    if title.startswith('search ') or 'results for' in title:
+        return True
+
+    return False
+
+
+def _owner_name_parts(parcel: dict) -> list[str]:
+    """
+    Extract usable name parts from a parcel for matching against result snippets.
+    Returns lowercased tokens, filtered to exclude generic words.
+
+    For "HENDERSON MARGARET" returns ['henderson', 'margaret']
+    For "SMITH FAMILY TRUST" returns ['smith']  (drops TRUST, FAMILY)
+    For "ABC HOLDINGS LLC" returns ['abc', 'holdings']  (drops LLC)
+    """
+    raw = (parcel.get('owner_name_raw') or parcel.get('owner_name') or '').upper()
+    if not raw:
+        return []
+
+    # Take primary owner (before & or +)
+    raw = re.split(r'[&+]', raw)[0].strip()
+
+    # Drop entity suffixes and generic words
+    DROP_TOKENS = {
+        'LLC', 'INC', 'CORP', 'LTD', 'LP', 'LLP', 'LIMITED', 'PARTNERSHIP',
+        'TRUST', 'TRUSTEE', 'TRSTEE', 'FAMILY', 'LIVING', 'REVOCABLE',
+        'ESTATE', 'ET', 'AL', 'HEIRS', 'SURVIVORS', 'SURVIVOR', 'MR',
+        'MRS', 'MS', 'THE', 'AND', 'OF', 'REAL',
+    }
+
+    parts = []
+    for tok in re.findall(r'[A-Z]{2,}', raw):
+        if tok in DROP_TOKENS: continue
+        if len(tok) < 3: continue
+        parts.append(tok.lower())
+    return parts[:4]  # Top 4 distinctive tokens
+
+
+def _snippet_mentions_owner(result: dict, owner_parts: list[str]) -> bool:
+    """
+    True if the result's snippet or title contains a recognizable owner-name
+    token. Requires at least one distinctive surname-like token to match.
+    Used to suppress person-specific signals (probate, obituary, retirement,
+    divorce) when the match is on an unrelated person with the same keyword.
+    """
+    if not owner_parts:
+        return False
+    text = (result.get('title', '') + ' ' + result.get('snippet', '')).lower()
+    # Require at least one token of length >= 4 to match (short tokens like
+    # 'jr' or 'de' cause false positives)
+    long_parts = [p for p in owner_parts if len(p) >= 4]
+    if not long_parts:
+        long_parts = owner_parts
+    return any(p in text for p in long_parts)
+
+
+# ─── SIGNAL EXTRACTION — per-result with provenance + name matching ───
+def extract_all_signals(all_results: dict, parcel: dict | None = None) -> list[dict]:
+    """
+    Extract signals from raw SerpAPI results.
+
+    Three critical upgrades from the prior version:
+      1. Per-result matching: each signal carries the specific matched
+         result (title, link, snippet) as provenance — not a concatenation
+         across all results.
+      2. Name-context requirement: person-specific signals (probate,
+         obituary, retirement, divorce) require the owner's surname/
+         distinctive tokens to appear in the same result snippet.
+      3. Ad/noise filter: results that look like ads, directory pages,
+         or generic service offerings are skipped.
+    """
     signals = []
+    owner_parts = _owner_name_parts(parcel) if parcel else []
 
-    # LISTING
+    # Track (type, source_label) already added to dedupe per family
+    seen_type_labels = set()
+
+    def _push(sig):
+        """Add signal if not already seen for this (type, source_label)."""
+        key = (sig['type'], sig['source_label'])
+        if key in seen_type_labels:
+            return
+        seen_type_labels.add(key)
+        signals.append(sig)
+
+    # ── LISTING (property-based, name matching not required) ──────────
     for label in ('Zillow', 'Redfin', 'Realtor.com', 'Trulia', 'Property History'):
         res = all_results.get(label) or []
-        if not res: continue
-        text = ' '.join(f"{r.get('title','')} {r.get('snippet','')}" for r in res)
-        lo = text.lower()
-        link = res[0].get('link', '')
-        stype = _infer_source_type(label, link)
+        for r in res:
+            if _is_ad_or_noise(r): continue
+            text = (r.get('title', '') + ' ' + r.get('snippet', '')).lower()
+            stype = _infer_source_type(label, r.get('link', ''))
 
-        if re.search(r'off\s*market|removed|delisted|withdrawn|expired|cancelled|previously listed', lo):
-            signals.append(_build_signal('previously_listed', 'listing', 0.85,
-                                         'Property was listed but is now off market', label, stype))
-        if re.search(r'pending|under contract|contingent', lo) and not re.search(r'was pending|previously|no longer', lo):
-            signals.append(_build_signal('pending_sale', 'blocker', 0.70,
-                                         'Possibly pending sale', label, stype))
-        if re.search(r'price\s*(cut|drop|reduced|change)|reduced by', lo):
-            signals.append(_build_signal('price_history', 'listing', 0.75,
-                                         'Price reductions in history', label, stype))
-        m = re.search(r'(\d{3,})\s*days?\s*(on|listed)', lo)
-        if m:
-            signals.append(_build_signal('extended_dom', 'listing', 0.80,
-                                         f'Extended days on market: {m.group(1)}', label, stype))
+            if re.search(r'off\s*market|removed|delisted|withdrawn|expired|cancelled|previously listed', text):
+                _push(_build_signal('previously_listed', 'listing', 0.85,
+                                    'Property was listed but is now off market',
+                                    label, stype, matched_result=r))
+            if re.search(r'pending|under contract|contingent', text) and not re.search(r'was pending|previously|no longer', text):
+                _push(_build_signal('pending_sale', 'blocker', 0.70,
+                                    'Possibly pending sale',
+                                    label, stype, matched_result=r))
+            if re.search(r'price\s*(cut|drop|reduced|change)|reduced by', text):
+                _push(_build_signal('price_history', 'listing', 0.75,
+                                    'Price reductions in history',
+                                    label, stype, matched_result=r))
+            m = re.search(r'(\d{2,4})\s*days?\s*(on|listed)', text)
+            if m:
+                dom = int(m.group(1))
+                # Sanity bound — reject absurdly high DOM likely from generic text
+                if 30 <= dom <= 2000:
+                    _push(_build_signal('extended_dom', 'listing', 0.80,
+                                        f'Extended days on market: {dom}',
+                                        label, stype, matched_result=r))
 
-    # LINKEDIN / PROFESSIONAL
+    # ── LINKEDIN / PROFESSIONAL (name matching required) ───────────────
     for label in ('LinkedIn', 'LinkedIn Alt'):
         res = all_results.get(label) or []
-        if not res: continue
-        text = ' '.join(f"{r.get('title','')} {r.get('snippet','')}" for r in res)
-        link = res[0].get('link', '')
-        stype = _infer_source_type(label, link)
+        for r in res:
+            if _is_ad_or_noise(r): continue
+            link = r.get('link', '')
+            stype = _infer_source_type(label, link)
+            text_lower = (r.get('title', '') + ' ' + r.get('snippet', '')).lower()
 
-        if any('linkedin.com/in/' in (r.get('link') or '') for r in res):
-            signals.append(_build_signal('linkedin_found', 'identity', 0.70,
-                                         res[0].get('title', '')[:150], label, stype))
-        if re.search(r'retired|retirement|former\s+(ceo|president|director|vp|partner|owner)', text, re.I):
-            signals.append(_build_signal('retirement', 'life_event', 0.70,
-                                         'Retirement indicator from LinkedIn', label, stype))
-        if re.search(r'relocated|moved to|new position in', text, re.I):
-            signals.append(_build_signal('relocation', 'life_event', 0.70,
-                                         'Relocation indicator from LinkedIn', label, stype))
+            # linkedin_found requires an actual profile link
+            if 'linkedin.com/in/' in link:
+                _push(_build_signal('linkedin_found', 'identity', 0.70,
+                                    r.get('title', '')[:150],
+                                    label, stype, matched_result=r))
+            # retirement / relocation require owner-name context
+            if _snippet_mentions_owner(r, owner_parts):
+                if re.search(r'retired|retirement|former\s+(ceo|president|director|vp|partner|owner)', text_lower):
+                    _push(_build_signal('retirement', 'life_event', 0.70,
+                                        'Retirement indicator',
+                                        label, stype, matched_result=r))
+                if re.search(r'relocated|moved to|new position in', text_lower):
+                    _push(_build_signal('relocation', 'life_event', 0.70,
+                                        'Relocation indicator',
+                                        label, stype, matched_result=r))
 
+    # ── PROFESSIONAL IDENTITY (name matching required) ─────────────────
     for label in ('Professional Profile', 'Business Owner', 'Broad Identity'):
         res = all_results.get(label) or []
-        if not res: continue
-        text = ' '.join(f"{r.get('title','')} {r.get('snippet','')}" for r in res)
-        link = res[0].get('link', '')
-        stype = _infer_source_type(label, link)
-        if re.search(r'ceo|president|founder|owner|managing|director|partner', text, re.I):
-            if not any(s['type'] == 'business_owner' for s in signals):
-                signals.append(_build_signal('business_owner', 'identity', 0.60,
-                                             'Business owner / executive indicator', label, stype))
+        for r in res:
+            if _is_ad_or_noise(r): continue
+            if not _snippet_mentions_owner(r, owner_parts): continue
+            text_lower = (r.get('title', '') + ' ' + r.get('snippet', '')).lower()
+            stype = _infer_source_type(label, r.get('link', ''))
+            if re.search(r'\b(ceo|president|founder|owner|managing|director|partner)\b', text_lower):
+                _push(_build_signal('business_owner', 'identity', 0.60,
+                                    'Business owner / executive indicator',
+                                    label, stype, matched_result=r))
 
-    # DEMOGRAPHICS
+    # ── DEMOGRAPHICS (name matching required) ──────────────────────────
     for label in ('FastPeopleSearch', 'WhitePages', 'Spokeo', 'Age Records'):
         res = all_results.get(label) or []
-        if not res: continue
-        text = ' '.join(f"{r.get('title','')} {r.get('snippet','')}" for r in res)
-        link = res[0].get('link', '')
-        stype = _infer_source_type(label, link)
+        for r in res:
+            if _is_ad_or_noise(r): continue
+            if not _snippet_mentions_owner(r, owner_parts): continue
+            text = r.get('title', '') + ' ' + r.get('snippet', '')
+            stype = _infer_source_type(label, r.get('link', ''))
 
-        m = re.search(r'age\s*(\d{2,3})|(\d{2,3})\s*years?\s*old|born\s*(?:in\s*)?(19\d{2})', text, re.I)
-        if m:
-            age = m.group(1) or m.group(2)
-            if m.group(3): age = str(datetime.now().year - int(m.group(3)))
-            if age and 20 < int(age) < 110:
-                signals.append(_build_signal('age_found', 'demographic', 0.60,
-                                             f'Estimated age: {age}', label, stype))
-        if re.search(r'spouse|wife|husband|married', text, re.I):
-            signals.append(_build_signal('spouse_found', 'demographic', 0.55,
-                                         'Spouse / partner indicator', label, stype))
+            m = re.search(r'age\s*(\d{2,3})|(\d{2,3})\s*years?\s*old|born\s*(?:in\s*)?(19\d{2})', text, re.I)
+            if m:
+                age = m.group(1) or m.group(2)
+                if m.group(3): age = str(datetime.now().year - int(m.group(3)))
+                if age and 20 < int(age) < 110:
+                    _push(_build_signal('age_found', 'demographic', 0.60,
+                                        f'Estimated age: {age}',
+                                        label, stype, matched_result=r))
+            if re.search(r'\bspouse|\bwife|\bhusband|\bmarried to', text, re.I):
+                _push(_build_signal('spouse_found', 'demographic', 0.55,
+                                    'Spouse / partner indicator',
+                                    label, stype, matched_result=r))
 
-    # LIFE EVENTS / COURT / FINANCIAL
+    # ── LIFE EVENTS / COURT / FINANCIAL (name matching required) ──────
+    # This is the most critical name-match enforcement. A probate mention
+    # doesn't count unless the owner's surname appears in the same snippet.
     for label in ('Life Events', 'Family', 'News', 'Relocation', 'Court Records'):
         res = all_results.get(label) or []
-        if not res: continue
-        text = ' '.join(f"{r.get('title','')} {r.get('snippet','')}" for r in res)
-        link = res[0].get('link', '')
-        stype = _infer_source_type(label, link)
+        for r in res:
+            if _is_ad_or_noise(r): continue
+            if not _snippet_mentions_owner(r, owner_parts):
+                # No name match — this keyword hit is almost certainly a
+                # different person with the same condition. Skip it.
+                continue
+            text_lower = (r.get('title', '') + ' ' + r.get('snippet', '')).lower()
+            stype = _infer_source_type(label, r.get('link', ''))
 
-        if re.search(r'obituary|passed away|in loving memory|memorial|funeral', text, re.I):
-            if not any(s['type'] == 'obituary' for s in signals):
-                signals.append(_build_signal('obituary', 'life_event', 0.75,
-                                             'Possible death in household', label, stype))
-        if re.search(r'divorce|dissolution of marriage', text, re.I):
-            if not any(s['type'] == 'divorce' for s in signals):
-                signals.append(_build_signal('divorce', 'life_event', 0.70,
-                                             'Divorce indicator', label, stype))
-        if re.search(r'probate|estate\s*filing|executor', text, re.I):
-            if not any(s['type'] == 'probate' for s in signals):
-                signals.append(_build_signal('probate', 'life_event', 0.80,
-                                             'Probate / estate filing', label, stype))
-        if re.search(r'bankrupt|foreclosure|tax\s*lien|delinquent|lien|judgment', text, re.I):
-            if not any(s['type'] == 'financial_distress' for s in signals):
-                signals.append(_build_signal('financial_distress', 'financial', 0.80,
-                                             'Financial / legal distress signal', label, stype))
+            if re.search(r'obituary|passed away|in loving memory|\bmemorial\b|\bfuneral\b', text_lower):
+                _push(_build_signal('obituary', 'life_event', 0.75,
+                                    'Obituary mention with owner-name match',
+                                    label, stype, matched_result=r))
+            if re.search(r'\bdivorce\b|dissolution of marriage', text_lower):
+                _push(_build_signal('divorce', 'life_event', 0.70,
+                                    'Divorce indicator with owner-name match',
+                                    label, stype, matched_result=r))
+            if re.search(r'\bprobate\b|estate\s*filing|\bexecutor\b|\badministrator\s+of', text_lower):
+                _push(_build_signal('probate', 'life_event', 0.80,
+                                    'Probate / estate filing with owner-name match',
+                                    label, stype, matched_result=r))
+            if re.search(r'\bbankrupt|\bforeclosure\b|tax\s*lien|\bdelinquent\b|\blien\b|\bjudgment\b', text_lower):
+                _push(_build_signal('financial_distress', 'financial', 0.80,
+                                    'Financial / legal distress signal',
+                                    label, stype, matched_result=r))
 
-    # AGENT BLOCKER
+    # ── AGENT BLOCKER ──────────────────────────────────────────────────
     ag = all_results.get('RE Agent General') or []
-    if ag:
-        za = all_results.get('Zillow Agent') or []
-        ag_text = ' '.join(f"{r.get('title','')} {r.get('snippet','')}" for r in ag)
-        if za and any(re.search(r'zillow\.com/profile', r.get('link', '')) for r in za):
-            signals.append(_build_signal('is_agent', 'blocker', 0.85,
-                                         'Owner is a real estate agent',
-                                         'RE Agent General', 'listing_site'))
-        elif re.search(r'licensed\s*(real estate|realtor|broker)', ag_text, re.I):
-            signals.append(_build_signal('is_agent', 'blocker', 0.70,
-                                         'Owner may be licensed agent',
-                                         'RE Agent General', 'generic_web'))
+    if ag and owner_parts:
+        for r in ag:
+            if _is_ad_or_noise(r): continue
+            if not _snippet_mentions_owner(r, owner_parts): continue
+            za = all_results.get('Zillow Agent') or []
+            if za and any(re.search(r'zillow\.com/profile', (zr.get('link') or ''))
+                          for zr in za if _snippet_mentions_owner(zr, owner_parts)):
+                _push(_build_signal('is_agent', 'blocker', 0.85,
+                                    'Owner is a real estate agent',
+                                    'RE Agent General', 'listing_site',
+                                    matched_result=r))
+                break
+            ag_text = r.get('title', '') + ' ' + r.get('snippet', '')
+            if re.search(r'licensed\s*(real estate|realtor|broker)', ag_text, re.I):
+                _push(_build_signal('is_agent', 'blocker', 0.70,
+                                    'Owner may be licensed agent',
+                                    'RE Agent General', 'generic_web',
+                                    matched_result=r))
+                break
 
-    # ENTITY RESOLUTION
+    # ── ENTITY RESOLUTION ──────────────────────────────────────────────
     for label in ('SOS Registered Agent', 'Entity Members',
                   'SOS Business Filing', 'Entity OpenCorporates'):
         res = all_results.get(label) or []
-        if not res: continue
-        stype = _infer_source_type(label, res[0].get('link', ''))
-        detail = '; '.join(r.get('title', '')[:60] for r in res[:2])
-        if not any(s['type'] == 'entity_info' for s in signals):
-            signals.append(_build_signal('entity_info', 'identity', 0.65,
-                                         f'Entity info: {detail[:150]}', label, stype))
+        for r in res:
+            if _is_ad_or_noise(r): continue
+            stype = _infer_source_type(label, r.get('link', ''))
+            detail = r.get('title', '')[:120]
+            _push(_build_signal('entity_info', 'identity', 0.65,
+                                f'Entity info: {detail}',
+                                label, stype, matched_result=r))
+            break  # One entity_info per source label
 
-    # Dedupe by (type, category)
-    seen = set()
-    out = []
-    for s in signals:
-        k = (s['type'], s['category'])
-        if k in seen: continue
-        seen.add(k)
-        out.append(s)
-    return out
+    return signals
 
 
 # ─── ACTION RECOMMENDER (pressure-scored) ──────────────────────────────
@@ -816,7 +974,7 @@ def investigate_parcel(parcel: dict, mode: str = 'screen',
 
     # Execute
     all_results = search_batch(queries, parcel_id=str(parcel.get('pin') or ''))
-    signals = extract_all_signals(all_results)
+    signals = extract_all_signals(all_results, parcel=parcel)
 
     # Trust summary
     trust_summary = {'high': 0, 'medium': 0, 'low': 0}

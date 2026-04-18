@@ -340,7 +340,7 @@ def cmd_band(zip_code: str) -> int:
 # Investigate
 # ============================================================================
 
-def cmd_investigate(zip_code: str, dry_run: bool = False) -> int:
+def cmd_investigate(zip_code: str, dry_run: bool = False, fresh: bool = False) -> int:
     """
     Run Option A investigation for the ZIP.
       8 Band 3 + 12 Band 2.5 + 30 Band 2 = up to 50 parcels screened
@@ -348,11 +348,22 @@ def cmd_investigate(zip_code: str, dry_run: bool = False) -> int:
       Expected cost ~$10 at SerpAPI pricing
 
     Dry-run first shows projected cost without spending.
+    Use --fresh to clear the investigation cache before running (forces
+    re-fetch from SerpAPI; use after upgrading the signal extractor).
     """
     supa = get_supabase_client()
     if not supa:
         print("ERROR: Supabase not configured")
         return 1
+
+    if fresh and not dry_run:
+        print(f"\n⚠ --fresh flag: clearing investigation cache for ZIP {zip_code}...")
+        deleted = (supa.table('investigations_v3')
+                   .delete()
+                   .eq('zip_code', zip_code)
+                   .execute())
+        n_deleted = len(deleted.data or [])
+        print(f"  Deleted {n_deleted} cached investigation records")
 
     cov = (supa.table('zip_coverage_v3')
            .select('bands_assigned_at, status')
@@ -619,6 +630,8 @@ def main() -> int:
         if cmd_name == 'investigate':
             s.add_argument('--dry-run', action='store_true',
                            help='Estimate cost only, do not spend')
+            s.add_argument('--fresh', action='store_true',
+                           help='Clear investigation cache first (force re-fetch)')
 
     # publish
     s = sub.add_parser('publish', help='Flip status to live')
@@ -647,7 +660,7 @@ def main() -> int:
     if args.command == 'geocode':      return cmd_geocode(args.zip_code)
     if args.command == 'classify':     return cmd_classify(args.zip_code)
     if args.command == 'band':         return cmd_band(args.zip_code)
-    if args.command == 'investigate':  return cmd_investigate(args.zip_code, args.dry_run)
+    if args.command == 'investigate':  return cmd_investigate(args.zip_code, args.dry_run, args.fresh)
     if args.command == 'publish':      return cmd_publish(args.zip_code, args.force)
     if args.command == 'pause':        return cmd_pause(args.zip_code, args.note)
     if args.command == 'seed':         return cmd_seed(args.zip_code, args.file)
