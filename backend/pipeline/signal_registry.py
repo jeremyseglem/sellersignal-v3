@@ -243,7 +243,7 @@ SIGNAL_REGISTRY: dict[str, SignalFamilySpec] = {
         ],
         data_available_today=False,
         missing_data=[
-            "KC Recorder NOD/lis pendens (ToS-restricted scrape; requires ATTOM/DataTree/PropertyRadar subscription)",
+            "KC Recorder NOD/lis pendens (ToS-restricted scrape; requires county recorder direct access or alternative legal filings feed)",
             "KC Treasurer tax delinquency file",
             "PACER bankruptcy scraper",
         ],

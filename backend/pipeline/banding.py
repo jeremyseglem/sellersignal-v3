@@ -46,7 +46,7 @@ class BandedLead:
 # inevitability_base = P(actually transitions within baseline timeline)
 # timeline_base_months = expected months to transition
 #
-# Source: NAR conversion data, ATTOM foreclosure outcomes, industry priors
+# Source: NAR conversion data, industry foreclosure outcomes, industry priors
 
 SIGNAL_PROFILES = {
     # — Tier-1 observed events (behavioral, mostly escapable) —
@@ -56,7 +56,7 @@ SIGNAL_PROFILES = {
     },
     'financial_stress::nod': {
         'inev': 0.40, 'timeline': 9,
-        'note': '~40-50% proceed to sale per ATTOM foreclosure data; rest cure/refi/modify'
+        'note': '~40-50% proceed to sale per industry foreclosure outcome data; rest cure/refi/modify'
     },
     'financial_stress::lis_pendens': {
         'inev': 0.25, 'timeline': 15,

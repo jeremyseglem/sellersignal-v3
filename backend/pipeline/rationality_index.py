@@ -9,7 +9,7 @@ Threshold: < 4 = REJECT from briefing entirely
 Threshold: 4-6 = include but flag caution
 Threshold: 7-10 = prime failed-sale lead
 
-Indicators (all computable from ATTOM or KC data):
+Indicators (all computable from KC data):
   1. Price adjustment behavior       (±2)
   2. DOM vs neighborhood median       (±2)
   3. Number of prior listing cycles   (0 to -3)
