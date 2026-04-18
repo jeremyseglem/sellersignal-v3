@@ -23,7 +23,13 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 SERPAPI_KEY = os.environ.get('SERPAPI_KEY')
-MOCK_MODE   = SERPAPI_KEY is None  # auto-detect: no key → mock
+# Mock mode must be EXPLICITLY enabled. The previous silent-fallback
+# behavior (MOCK_MODE = SERPAPI_KEY is None) caused a serious bug:
+# investigations ran against hardcoded test data whenever the key was
+# missing, producing synthetic "leads" indistinguishable from real ones.
+# Now: if SERPAPI_KEY is missing, live search raises explicitly.
+# Mock mode only activates with SELLERSIGNAL_MOCK=1 in the environment.
+MOCK_MODE = os.environ.get('SELLERSIGNAL_MOCK') == '1'
 
 # ─── BUDGET CONTROLS ────────────────────────────────────────────────────
 MAX_SEARCHES_PER_MONTH = 2000
@@ -171,10 +177,21 @@ def _mock_search(query: str, parcel_id: str = '', search_label: str = ''):
     return _MOCK_FIXTURES['blank']
 
 
+class SerpApiKeyMissing(RuntimeError):
+    """Raised when a real investigation is attempted without a configured key."""
+
+
 # ─── REAL SERPAPI CALL ──────────────────────────────────────────────────
 def _live_search(query: str, num: int = 5) -> list[dict]:
     if not SERPAPI_KEY:
-        return []
+        # Hard fail instead of silently returning [] — the previous silent
+        # behavior caused investigations to produce zero real signals while
+        # appearing to succeed, which in combination with mock-mode fallback
+        # allowed synthetic data to masquerade as real results.
+        raise SerpApiKeyMissing(
+            "SERPAPI_KEY is not set. Set it in your environment, or set "
+            "SELLERSIGNAL_MOCK=1 to run with mock fixtures."
+        )
     try:
         url = (
             'https://serpapi.com/search.json?'
@@ -193,12 +210,14 @@ def _live_search(query: str, num: int = 5) -> list[dict]:
             }
             for item in (data.get('organic_results') or [])[:num]
         ]
+    except SerpApiKeyMissing:
+        raise
     except Exception:
         return []
 
 
 def search_google(query: str, parcel_id: str = '', search_label: str = '') -> list[dict]:
-    """Single search. Uses mock if no SerpAPI key present."""
+    """Single search. Uses mock only if SELLERSIGNAL_MOCK=1 is set explicitly."""
     if MOCK_MODE:
         return _mock_search(query, parcel_id, search_label)
     return _live_search(query)

@@ -351,10 +351,51 @@ def cmd_investigate(zip_code: str, dry_run: bool = False, fresh: bool = False) -
     Use --fresh to clear the investigation cache before running (forces
     re-fetch from SerpAPI; use after upgrading the signal extractor).
     """
+    import os as _os
     supa = get_supabase_client()
     if not supa:
         print("ERROR: Supabase not configured")
         return 1
+
+    # ── Preflight: confirm the mode explicitly ─────────────────────────
+    serpapi_key_set = bool(_os.environ.get('SERPAPI_KEY'))
+    mock_mode       = _os.environ.get('SELLERSIGNAL_MOCK') == '1'
+
+    if dry_run:
+        # Dry-run only computes cost estimates, doesn't call SerpAPI.
+        # Mode still matters for display.
+        pass
+    else:
+        if not serpapi_key_set and not mock_mode:
+            print("\n╔═══════════════════════════════════════════════════════════╗")
+            print("║  ERROR: SERPAPI_KEY is not set.                           ║")
+            print("║                                                           ║")
+            print("║  A real investigation requires a valid SerpAPI key.       ║")
+            print("║  Two options:                                             ║")
+            print("║                                                           ║")
+            print("║  1. Set your key (for a real run, ~$7-10 per ZIP):        ║")
+            print("║       export SERPAPI_KEY='your-key-here'                  ║")
+            print("║                                                           ║")
+            print("║  2. Explicitly run in mock mode (fixture data, $0 cost):  ║")
+            print("║       export SELLERSIGNAL_MOCK=1                          ║")
+            print("║                                                           ║")
+            print("║  This check exists because silent mock-mode fallback      ║")
+            print("║  previously caused synthetic test data to appear as real  ║")
+            print("║  investigation results. Never again.                      ║")
+            print("╚═══════════════════════════════════════════════════════════╝")
+            return 1
+
+        if mock_mode:
+            print("\n╔═══════════════════════════════════════════════════════════╗")
+            print("║  ⚠  MOCK MODE (SELLERSIGNAL_MOCK=1)                       ║")
+            print("║                                                           ║")
+            print("║  Investigations will use synthetic test fixtures.         ║")
+            print("║  NO SerpAPI calls will be made. Cost: $0.                 ║")
+            print("║  Results will NOT reflect real-world data.                ║")
+            print("║  This is for pipeline validation only.                    ║")
+            print("╚═══════════════════════════════════════════════════════════╝")
+        else:
+            print("\n═══ LIVE MODE — real SerpAPI calls will be made ═══")
 
     if fresh and not dry_run:
         print(f"\n⚠ --fresh flag: clearing investigation cache for ZIP {zip_code}...")
