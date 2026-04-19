@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from datetime import datetime, date, timedelta, timezone
 from backend.api.db import get_supabase_client
 from backend.api.zip_gate import require_live_zip
+from backend.selection import weekly_selector as _ws
 
 router = APIRouter()
 
@@ -106,7 +107,7 @@ async def get_briefing(
         if not parcels:
             raise HTTPException(404, f"No parcels in ZIP {zip_code}")
 
-        # ── Load investigations (one query for all pins in this zip) ──
+        # ── Load investigations ──
         inv_rows = _fetch_all('investigations_v3', zip_code)
         inv_by_pin = {}
         for row in inv_rows:
@@ -115,126 +116,106 @@ async def get_briefing(
             if pin not in inv_by_pin or row['mode'] == 'deep':
                 inv_by_pin[pin] = row
 
-        # ── Filter blockers ──
-        filtered = []
-        for p in parcels:
-            inv = inv_by_pin.get(p['pin'])
-            if inv and inv.get('has_blocker'):
-                continue
-            filtered.append((p, inv))
+        # ── Shape leads for the real weekly_selector ──
+        # The selector expects dicts with: pin, band, signal_family,
+        # sub_signal, address, owner, value, zip, rank_score (or
+        # calibrated_rank_score), investigation (nested with mode,
+        # has_blocker, has_life_event, has_financial, recommended_action{
+        # category, tone, pressure, reason, next_step}).
+        #
+        # Supabase rows give us flat columns; we translate to nested.
+        def _shape_lead(p, inv):
+            lead = {
+                'pin':          p['pin'],
+                'band':         float(p.get('band') or 0),
+                'signal_family': p.get('signal_family'),
+                'sub_signal':   p.get('sub_signal'),
+                'address':      p.get('address'),
+                'owner':        p.get('owner_name'),
+                'value':        p.get('total_value') or 0,
+                'zip':          p.get('zip_code'),
+                'tenure_years': p.get('tenure_years'),
+                'rank_score':   p.get('rank_score') or (p.get('total_value') or 0),
+                'calibrated_rank_score': p.get('calibrated_rank_score'),
+                'timeline_months': p.get('timeline_months'),
+                'inevitability':   p.get('inevitability'),
+            }
+            if inv:
+                rec = None
+                if inv.get('action_category'):
+                    rec = {
+                        'category':  inv.get('action_category'),
+                        'tone':      inv.get('action_tone'),
+                        'pressure':  inv.get('action_pressure'),
+                        'reason':    inv.get('action_reason'),
+                        'next_step': inv.get('action_next_step'),
+                    }
+                lead['investigation'] = {
+                    'mode':              inv.get('mode'),
+                    'has_blocker':       inv.get('has_blocker', False),
+                    'has_life_event':    inv.get('has_life_event', False),
+                    'has_financial':     inv.get('has_financial', False),
+                    'recommended_action': rec,
+                }
+            return lead
 
-        # ── Build selection pools ──
-        # CALL NOW pool: Band 3 + investigation-promoted Band 2 (pressure=3)
-        # BUILD NOW pool: Band 2 with pressure=2
-        # STRATEGIC HOLDS: Band 2+ trust_aging without other actionable signals
-        call_now_pool   = []
-        build_now_pool  = []
-        hold_pool       = []
+        leads = [_shape_lead(p, inv_by_pin.get(p['pin'])) for p in parcels]
 
-        for p, inv in filtered:
-            band = p.get('band')
-            action_cat = (inv or {}).get('action_category')
-
-            if band == 3 or action_cat == 'call_now':
-                if action_cat == 'call_now' or action_cat is None:
-                    call_now_pool.append((p, inv))
-            elif band in (2, 2.5) and action_cat == 'build_now':
-                build_now_pool.append((p, inv))
-            elif band in (2, 2.5) and p.get('signal_family') == 'trust_aging':
-                hold_pool.append((p, inv))
-
-        # ── Select with slot reservations ──
-        # Slots 1-2: Band 3 financial_stress (trustee sale / NOD)
-        call_now_picks = []
-        used_pins = set()
+        # ── Delegate to the real selector (same code that produced the
+        #    sandbox PRESSURE PDF) ──
+        exclude_pins = set()         # no recency exclusion for live API yet
         used_owner_keys = set()
+        call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys)
+        build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
+                                               n=max(build_now_limit, 3))
+        hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
+                                                    n=max(hold_limit, 2))
 
-        # Entity suffixes to strip before finding the "family name" token.
-        _ENTITY_SUFFIXES = {
-            'TRUST', 'TRUSTEE', 'TRUSTEES', 'LIVING', 'REVOCABLE',
-            'IRREVOCABLE', 'FAMILY', 'LLC', 'LLP', 'INC', 'CORP', 'CO',
-            'COMPANY', 'LP', 'LTD', 'PARTNERSHIP', 'PARTNERS', 'ESTATE',
-            'HEIRS', 'SURVIVOR', 'DECEASED', 'ET', 'AL', 'AND', '&',
-        }
+        # Honor per-request caps on top of what the selector returned
+        call_now_leads = call_now_leads[:call_now_limit]
+        build_now_leads = build_now_leads[:build_now_limit]
+        hold_leads     = hold_leads[:hold_limit]
 
-        def _owner_key(p):
-            """
-            Dedup key. Used to prevent showing multiple parcels with the
-            same underlying owner family. Uses the last non-suffix token
-            (usually the surname), not the first token — so 'John Frank',
-            'John Galando', 'John Visich' are three different leads, but
-            'Henderson Family Trust' and 'Henderson Estate' share a key.
-            """
-            name = (p.get('owner_name') or '').upper().strip()
-            if not name:
-                return ''
-            # Strip punctuation that split surnames weirdly
-            tokens = name.replace('/', ' ').replace(',', ' ').split()
-            # Walk tokens right-to-left; first non-entity-suffix token wins
-            for tok in reversed(tokens):
-                clean = tok.strip('.')
-                if clean and clean not in _ENTITY_SUFFIXES and not clean.isdigit():
-                    return clean
-            return tokens[-1] if tokens else ''
+        # ── Resolve pressure-scored copy for each pick ──
+        for L in call_now_leads:  L['_section'] = 'CALL NOW'
+        for L in build_now_leads: L['_section'] = 'BUILD NOW'
+        for L in hold_leads:      L['_section'] = 'STRATEGIC HOLDS'
+        for L in call_now_leads + build_now_leads + hold_leads:
+            L['_copy'] = _ws.resolve_copy(L, section=L['_section'])
 
-        def _push(pool, picks_list, target_count):
-            for p, inv in pool:
-                if len(picks_list) >= target_count: break
-                if p['pin'] in used_pins: continue
-                if dedup:
-                    ok = _owner_key(p)
-                    if ok and ok in used_owner_keys: continue
-                picks_list.append(_format_pick(p, inv))
-                used_pins.add(p['pin'])
-                if dedup:
-                    ok = _owner_key(p)
-                    if ok: used_owner_keys.add(ok)
+        def _shape_pick(L):
+            rec = (L.get('investigation') or {}).get('recommended_action')
+            return {
+                'pin':           L['pin'],
+                'address':       L.get('address'),
+                'owner_name':    L.get('owner'),
+                'value':         L.get('value'),
+                'band':          L.get('band'),
+                'signal_family': L.get('signal_family'),
+                'tenure_years':  L.get('tenure_years'),
+                'copy': {
+                    'happening': L['_copy'].get('happening'),
+                    'why':       L['_copy'].get('why'),
+                    'action':    L['_copy'].get('action'),
+                },
+                'recommended_action': rec,
+            }
 
-        # Reserve slots 1-2 for financial_stress
-        fin_stress_picks = sorted(
-            [(p, inv) for p, inv in call_now_pool
-             if p.get('signal_family') == 'financial_stress'],
-            key=lambda t: -_rank_parcel(t[0], t[1]),
-        )
-        _push(fin_stress_picks, call_now_picks, min(2, call_now_limit))
-
-        # Fill remaining CALL NOW slots
-        remaining_call_now = sorted(
-            [(p, inv) for p, inv in call_now_pool if p['pin'] not in used_pins],
-            key=lambda t: -_rank_parcel(t[0], t[1]),
-        )
-        _push(remaining_call_now, call_now_picks, call_now_limit)
-
-        # BUILD NOW
-        build_now_sorted = sorted(build_now_pool,
-                                  key=lambda t: -_rank_parcel(t[0], t[1]))
-        build_now_picks = []
-        _push(build_now_sorted, build_now_picks, build_now_limit)
-
-        # STRATEGIC HOLDS
-        holds_sorted = sorted(hold_pool,
-                              key=lambda t: -_rank_parcel(t[0], t[1]))
-        hold_picks = []
-        _push(holds_sorted, hold_picks, hold_limit)
+        call_now_picks  = [_shape_pick(L) for L in call_now_leads]
+        build_now_picks = [_shape_pick(L) for L in build_now_leads]
+        hold_picks      = [_shape_pick(L) for L in hold_leads]
 
         # ── Compute week_of (Monday of current week) ──
         today = date.today()
         week_monday = today - timedelta(days=today.weekday())
 
         # ── Stats ──
-        investigated = sum(1 for _, inv in filtered if inv)
         stats = {
             'total_parcels':       len(parcels),
-            'filtered_after_blockers': len(filtered),
-            'investigated_count':  investigated,
+            'investigated_count':  len(inv_by_pin),
             'call_now_count':      len(call_now_picks),
             'build_now_count':     len(build_now_picks),
             'strategic_holds_count': len(hold_picks),
-            'pool_sizes': {
-                'call_now_pool':  len(call_now_pool),
-                'build_now_pool': len(build_now_pool),
-                'hold_pool':      len(hold_pool),
-            },
         }
 
         return {
