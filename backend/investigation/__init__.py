@@ -776,8 +776,48 @@ def recommend_action(parcel: dict, signals: list[dict]) -> dict:
     triggers = []
     tone = None  # set by the trigger that actually fires; 'urgent' vs 'sensitive'
 
-    existing_family = parcel.get('signal_family')
-    existing_band = parcel.get('band')
+    raw_archetype  = parcel.get('signal_family')
+    existing_band  = parcel.get('band')
+
+    # ── ARCHETYPE → PRESSURE-ENGINE FAMILY ────────────────────────────
+    # The classifier (why_not_selling.py) produces rich archetype names;
+    # the pressure engine historically only branched on three coarse
+    # family labels. Map archetype -> coarse family so structural
+    # archetypes actually reach the pressure rules below. Without this,
+    # every LLC and trust parcel falls to pressure=0 regardless of how
+    # strong the structural signal is.
+    _ARCHETYPE_TO_PRESSURE_FAMILY = {
+        # Financial distress (Band 3 foreclosure-class, when legal_filings
+        # sets signal_family='financial_stress')
+        'financial_stress':        'financial_stress',
+        # LLC hold-period exit window. Any mature LLC = directional
+        # disposition signal (pressure 2).
+        'llc_investor_mature':     'investor_disposition',
+        'llc_long_hold':           'investor_disposition',
+        # Early LLC holders are still in accumulation phase — no pressure.
+        'llc_investor_early':      None,
+        # Trust archetypes. trust_aging is the pressure-1 'biological
+        # window' family; classifier doesn't yet distinguish active
+        # court probate (pressure 3) from structural aging alone.
+        # Structural trust_aging fires pressure-1 via the soft branch
+        # below; court-verified probate (if found) fires pressure-3.
+        'trust_aging':             'trust_aging_structural',
+        'trust_mature':             None,    # monitoring only
+        'trust_young':              None,    # recent, no pressure
+        # Failed sale attempt (expired listing) — matches old family
+        'failed_sale_attempt':     'failed_sale_attempt',
+        # Individual and absentee archetypes — no pressure-engine rule yet
+        'individual_long_tenure':  None,
+        'individual_settled':      None,
+        'individual_recent':       None,
+        'absentee_dormant':        None,
+        'absentee_active':         None,
+        'estate_heirs':            'estate_heirs_structural',   # soft pressure on estate-named owners
+        # Legacy values that already match
+        'investor_disposition':    'investor_disposition',
+        'divorce_unwinding':       'divorce_unwinding',
+    }
+    existing_family = _ARCHETYPE_TO_PRESSURE_FAMILY.get(raw_archetype, raw_archetype)
 
     # ── HARD PRESSURE (forced timing) ──
     if existing_family == 'financial_stress' and existing_band == 3:
@@ -825,6 +865,13 @@ def recommend_action(parcel: dict, signals: list[dict]) -> dict:
         pressure = max(pressure, 2); triggers.append('retirement indicator')
 
     # ── SOFT PRESSURE ──
+    # Structural trust aging and estate naming: no confirmed life event
+    # yet, but the archetype itself is a soft indicator that the biological
+    # decision window is open.
+    if existing_family == 'trust_aging_structural':
+        pressure = max(pressure, 1); triggers.append('trust aging — biological decision window')
+    if existing_family == 'estate_heirs_structural':
+        pressure = max(pressure, 1); triggers.append('estate / heirs on title')
     if has_life:
         pressure = max(pressure, 1)
 
