@@ -719,6 +719,59 @@ def cmd_apply_filings(zip_code: str, csv_path: str, kind: str,
     return 0
 
 
+def cmd_canonicalize(zip_code: str, dry_run: bool = False,
+                     limit: Optional[int] = None, force: bool = False) -> int:
+    """
+    Canonicalize owner_name for every parcel in this ZIP via Haiku 4.5.
+
+    Writes structured parses into owner_canonical_v3. Required before legal-
+    filings matching produces clean results — the raw-string matcher produces
+    false positives (e.g. 'ROBERT LEE HARRIS' decedent matched 'Robert Lee
+    Steil' owner pressure=3 CALL NOW incorrectly in the Apr 18 test run).
+
+    Idempotent: skips PINs that already have a canonical row unless --force.
+
+    Cost: ~$0.0005 per parcel (~$3 for a 6,000-parcel ZIP).
+    """
+    supa = get_supabase_client()
+    if not supa:
+        print("ERROR: Supabase not configured")
+        return 1
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('parcel_count, status')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        print(f"ZIP {zip_code} not registered.")
+        return 1
+    if (cov.data.get('parcel_count') or 0) == 0:
+        print(f"ZIP {zip_code} has no parcels. Run 'ingest' first.")
+        return 1
+
+    print(f"\n═══ Canonicalizing owner names for ZIP {zip_code} ═══")
+    print(f"  dry_run: {dry_run}")
+    print(f"  limit:   {limit or 'all'}")
+    print(f"  force:   {force}")
+
+    # Delegate to the backfill module — it has the real logic.
+    import sys as _sys
+    argv_save = _sys.argv[:]
+    _sys.argv = ['backfill_owner_canonical', zip_code]
+    if dry_run:
+        _sys.argv.append('--dry-run')
+    if limit:
+        _sys.argv.extend(['--limit', str(limit)])
+    if force:
+        _sys.argv.append('--force')
+    try:
+        from backend.ingest.backfill_owner_canonical import main as backfill_main
+        return backfill_main()
+    finally:
+        _sys.argv = argv_save
+
+
 # ============================================================================
 # CLI entry
 # ============================================================================
@@ -790,6 +843,17 @@ def main() -> int:
     s.add_argument('--no-apply', action='store_true',
                    help="Parse and match only; don't update parcels_v3.signal_family")
 
+    # canonicalize (owner-name LLM parsing into owner_canonical_v3)
+    s = sub.add_parser('canonicalize',
+                       help='Parse owner_name for every parcel in the ZIP (Haiku 4.5, ~$3/ZIP)')
+    s.add_argument('zip_code')
+    s.add_argument('--dry-run', action='store_true',
+                   help='Show what would be processed, do not call API')
+    s.add_argument('--limit', type=int, default=None,
+                   help='Process only first N parcels (smoke test)')
+    s.add_argument('--force', action='store_true',
+                   help='Re-canonicalize even when a row already exists')
+
     args = p.parse_args()
 
     if args.command == 'status':       return cmd_status(args.zip_code)
@@ -805,6 +869,8 @@ def main() -> int:
     if args.command == 'seed':         return cmd_seed(args.zip_code, args.file)
     if args.command == 'apply_filings': return cmd_apply_filings(
         args.zip_code, args.csv, args.kind, args.uploaded_by, not args.no_apply)
+    if args.command == 'canonicalize': return cmd_canonicalize(
+        args.zip_code, args.dry_run, args.limit, args.force)
 
     return 1
 

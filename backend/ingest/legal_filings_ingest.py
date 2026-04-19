@@ -79,16 +79,52 @@ def _fetch_parcels_for_zip(supa, zip_code: str) -> list[dict]:
     return out
 
 
-def _build_owners_db(parcels: list[dict]) -> tuple[dict, dict]:
+def _fetch_canonical_for_pins(supa, pins: list[str]) -> dict[str, dict]:
+    """
+    Pull owner_canonical_v3 rows for the given pins. Returns {pin: canonical}.
+    Missing pins (never canonicalized) just don't appear in the dict —
+    matchers fall back to the legacy string-match path for those.
+
+    Supabase .in_() is capped at ~1000 ids per request; batches accordingly.
+    """
+    if not pins:
+        return {}
+    out: dict[str, dict] = {}
+    BATCH = 500
+    for i in range(0, len(pins), BATCH):
+        batch = pins[i:i + BATCH]
+        try:
+            res = (supa.table('owner_canonical_v3')
+                   .select('pin, surname_primary, surnames_all, given_primary, '
+                           'given_all, entity_type, entity_name, co_owners, '
+                           'confidence, raw_name, model')
+                   .in_('pin', batch)
+                   .execute())
+            for row in (res.data or []):
+                out[row['pin']] = row
+        except Exception as e:
+            print(f"[legal_filings_ingest] canonical fetch batch failed: {e}")
+    return out
+
+
+def _build_owners_db(parcels: list[dict],
+                     canonicals: Optional[dict[str, dict]] = None
+                     ) -> tuple[dict, dict]:
     """
     Reshape parcels list into the format match_* expects:
-      owners_db[pin] = {"owner_name": ...}
+      owners_db[pin] = {"owner_name": ..., "owner_canonical": ... (optional)}
       use_codes[pin] = {"prop_type": ...}
     """
-    owners_db = {p['pin']: {'owner_name': p.get('owner_name') or ''}
-                 for p in parcels}
-    use_codes = {p['pin']: {'prop_type': (p.get('prop_type') or 'R').upper()[:1] or 'R'}
-                 for p in parcels}
+    canonicals = canonicals or {}
+    owners_db: dict = {}
+    use_codes: dict = {}
+    for p in parcels:
+        pin = p['pin']
+        entry = {'owner_name': p.get('owner_name') or ''}
+        if pin in canonicals:
+            entry['owner_canonical'] = canonicals[pin]
+        owners_db[pin] = entry
+        use_codes[pin] = {'prop_type': (p.get('prop_type') or 'R').upper()[:1] or 'R'}
     return owners_db, use_codes
 
 
@@ -310,7 +346,19 @@ def ingest_csv(csv_path: str, filing_kind: str, zip_code: str,
                 'signals_promoted': 0, 'affected_pins': [],
                 'error': f'No parcels in Supabase for ZIP {zip_code}'}
 
-    owners_db, use_codes = _build_owners_db(parcels)
+    # 1b. Pull canonical owner records so matcher can use STRONG vs SURNAME_ONLY tiers
+    pins = [p['pin'] for p in parcels]
+    canonicals = _fetch_canonical_for_pins(supa, pins)
+    coverage_pct = 100.0 * len(canonicals) / max(len(pins), 1)
+    print(f"[ingest] canonical coverage: {len(canonicals)}/{len(pins)} "
+          f"({coverage_pct:.1f}%)")
+    if coverage_pct < 50:
+        print(f"[ingest] WARNING: low canonical coverage — matching will fall "
+              f"back to legacy string matcher for most parcels. Run "
+              f"'python -m backend.ingest.zip_builder canonicalize {zip_code}' "
+              f"to populate owner_canonical_v3.")
+
+    owners_db, use_codes = _build_owners_db(parcels, canonicals)
 
     # 2. Parse CSV
     source_name = Path(csv_path).name

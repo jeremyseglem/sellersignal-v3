@@ -38,7 +38,7 @@ _TRUST_TOKENS = {"TRUSTEE", "TRUSTEES", "TTEE", "TTEES", "TRT", "TRUST",
 
 
 def normalize_name(name: str) -> set[str]:
-    """Return a set of last+first tokens from a name string, uppercased."""
+    """Return a set of meaningful tokens from a name string, uppercased."""
     if not name:
         return set()
     up = name.upper()
@@ -50,17 +50,119 @@ def normalize_name(name: str) -> set[str]:
     return tokens
 
 
+def _ordered_tokens(name: str) -> list[str]:
+    """Meaningful tokens in document order — surname extraction."""
+    if not name:
+        return []
+    up = _NAME_NOISE.sub(" ", name.upper())
+    up = _WHITESPACE.sub(" ", up).strip()
+    out: list[str] = []
+    for t in up.split():
+        if len(t) < 2:
+            continue
+        if t in _TITLE_TOKENS or t in _TRUST_TOKENS:
+            continue
+        out.append(t)
+    return out
+
+
+def _extract_surname(name: str) -> str:
+    """Last meaningful token — works for 'IN RE FIRST MIDDLE LAST' decedent
+    names and for standard First-Last filer/respondent names."""
+    toks = _ordered_tokens(name)
+    return toks[-1] if toks else ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# LEGACY string-to-string matcher (retained for back-compat only)
+# ═══════════════════════════════════════════════════════════════════════
 def name_match(filing_name: str, owner_name: str,
                min_overlap: int = 2) -> bool:
     """
-    True if the filing and owner names share at least `min_overlap`
-    meaningful tokens. Default 2 = both first and last name must match.
-    Single-token matches (e.g., just shared surname) are intentionally
-    rejected — too many false positives.
+    LEGACY: string-to-string strict matcher.
+
+    Use this only when no canonical record exists for the owner (pre-
+    canonicalizer parcels, or low-confidence canonical rows). Requires
+    surname equality AND at least one given-name overlap — stricter than
+    the old 2-token-overlap rule to eliminate false positives like
+    'ROBERT LEE HARRIS' ↔ 'Robert Lee Steil'.
+
+    Prefer `match_canonical()` whenever owner_canonical_v3 has a row.
+    The `min_overlap` parameter is retained for signature compatibility
+    but is no longer the controlling rule.
     """
-    a = normalize_name(filing_name)
-    b = normalize_name(owner_name)
-    return len(a & b) >= min_overlap
+    f_surname = _extract_surname(filing_name)
+    o_surname = _extract_surname(owner_name)
+    if not f_surname or not o_surname or f_surname != o_surname:
+        return False
+    shared = (normalize_name(filing_name) & normalize_name(owner_name)) - {f_surname}
+    return len(shared) >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CANONICAL-aware matcher — the production path
+# ═══════════════════════════════════════════════════════════════════════
+def match_canonical(filing_name: str, canonical: dict) -> tuple[str, int] | None:
+    """
+    Match a filing name (petitioner, respondent, grantor, decedent) against
+    a canonical owner record from owner_canonical_v3.
+
+    Returns:
+        ('STRONG',       3)  — surname matches + ≥1 given-name token overlaps
+        ('SURNAME_ONLY', 2)  — surname matches, no given-name overlap
+                                (possible heir/spouse; review queue)
+        None                 — no match
+
+    Matching logic:
+      - Pure entity (llc/company, no persons): no match ever.
+      - Decedent surname must appear in canonical['surnames_all'] (so multi-
+        owner trust families also match).
+      - Given-name overlap checks both the primary given_all AND any
+        co_owner given tokens (handles 'Bohan David+liesl Trust' where
+        Liesl would be a co-owner).
+    """
+    if not canonical:
+        return None
+
+    d_surname = _extract_surname(filing_name)
+    if not d_surname:
+        return None
+
+    surnames_all = canonical.get('surnames_all') or []
+    if d_surname not in surnames_all:
+        return None
+
+    # Pure entity = no match even if someone named 'LLC' parses somehow
+    if canonical.get('entity_type') in ('llc', 'company'):
+        # Unless the canonical includes an embedded person (has surname_primary)
+        # — in which case surname check above already decided
+        if not canonical.get('surname_primary'):
+            return None
+
+    # Collect all given-name tokens we know about (primary + co-owners)
+    all_given: set[str] = set(canonical.get('given_all') or [])
+    for co in (canonical.get('co_owners') or []):
+        for g in (co.get('given') or []):
+            all_given.add(g)
+
+    d_tokens = normalize_name(filing_name)
+    shared_given = (d_tokens - {d_surname}) & all_given
+
+    if shared_given:
+        return ('STRONG', 3)
+    return ('SURNAME_ONLY', 2)
+
+
+def surname_only_match(filing_name: str, canonical: dict) -> bool:
+    """Convenience wrapper — True iff match_canonical returns SURNAME_ONLY."""
+    m = match_canonical(filing_name, canonical)
+    return m is not None and m[0] == 'SURNAME_ONLY'
+
+
+def strong_match(filing_name: str, canonical: dict) -> bool:
+    """Convenience wrapper — True iff match_canonical returns STRONG."""
+    m = match_canonical(filing_name, canonical)
+    return m is not None and m[0] == 'STRONG'
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -219,6 +321,15 @@ def match_divorce_to_parcels(
     For each dissolution filing, find residential parcels where both parties
     (or at least one party + co-owner) appear on title.
 
+    owners_db[pin] may carry:
+      - 'owner_name':       raw string (always present)
+      - 'owner_canonical':  dict from owner_canonical_v3 (optional, preferred)
+
+    When a canonical record is present, matching uses match_canonical() which
+    distinguishes STRONG (surname + given overlap) from SURNAME_ONLY (surname
+    match only, no given overlap). When absent, falls back to legacy strict
+    string matcher.
+
     Returns candidate dicts for divorce_unwinding signal family.
     """
     candidates = []
@@ -230,21 +341,38 @@ def match_divorce_to_parcels(
             # Residential only
             if use_codes.get(pin, {}).get("prop_type", "") != "R":
                 continue
+
+            canonical = info.get("owner_canonical")
             owner_name = info.get("owner_name", "")
-            if not owner_name:
-                continue
 
-            # Both petitioner AND respondent on title → STRONG
-            # Just one on title → SUPPORT, needs other evidence
-            p_match = name_match(filing.petitioner_name, owner_name)
-            r_match = name_match(filing.respondent_name, owner_name)
+            if canonical:
+                # Canonical path: use the structured match tiers
+                p_result = match_canonical(filing.petitioner_name, canonical)
+                r_result = match_canonical(filing.respondent_name, canonical)
+                p_strong = p_result is not None and p_result[0] == 'STRONG'
+                r_strong = r_result is not None and r_result[0] == 'STRONG'
+                p_any = p_result is not None
+                r_any = r_result is not None
 
-            if p_match and r_match:
-                strength = "strong"
-            elif p_match or r_match:
-                strength = "weak"
+                if p_strong and r_strong:
+                    strength = "strong"   # both parties on title
+                elif p_strong or r_strong:
+                    strength = "weak"      # one party clearly on title
+                elif p_any or r_any:
+                    strength = "weak"      # surname-only on one party; flag
+                else:
+                    continue
             else:
-                continue
+                if not owner_name:
+                    continue
+                p_match = name_match(filing.petitioner_name, owner_name)
+                r_match = name_match(filing.respondent_name, owner_name)
+                if p_match and r_match:
+                    strength = "strong"
+                elif p_match or r_match:
+                    strength = "weak"
+                else:
+                    continue
 
             candidates.append({
                 "parcel_id": pin,
@@ -335,6 +463,14 @@ def match_recorder_to_parcels(
     Match recorded documents to parcels. Two paths:
       1. Direct PIN match (preferred — recorder documents have parcel ID)
       2. Name match against current owner (fallback when PIN absent)
+
+    Uses match_canonical() when owners_db[pin]['owner_canonical'] is present,
+    falling back to legacy name_match() otherwise. Recorder grantor matches
+    are always treated as STRONG (both STRONG and SURNAME_ONLY tiers
+    surface as match_strength='strong') because the filing itself is the
+    hard signal — NOD/trustee-sale/lis-pendens don't get filed against
+    random neighbors. A surname-only match on a Notice of Default from a
+    rare surname is still a real foreclosure signal for that household.
     """
     candidates = []
     for doc in docs:
@@ -350,8 +486,13 @@ def match_recorder_to_parcels(
                 for pin, info in owners_db.items():
                     if use_codes.get(pin, {}).get("prop_type", "") != "R":
                         continue
-                    if name_match(grantor, info.get("owner_name", "")):
-                        matched_pins.append(pin)
+                    canonical = info.get("owner_canonical")
+                    if canonical:
+                        if match_canonical(grantor, canonical) is not None:
+                            matched_pins.append(pin)
+                    else:
+                        if name_match(grantor, info.get("owner_name", "")):
+                            matched_pins.append(pin)
 
         for pin in matched_pins:
             if use_codes.get(pin, {}).get("prop_type", "") != "R":
