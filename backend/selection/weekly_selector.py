@@ -296,8 +296,8 @@ def _investigation_promotes_to_call_now(L):
     return rec.get('category') == 'call_now' and (rec.get('pressure') or 0) >= 3
 
 
-def select_call_now(leads, exclude_pins, used_owner_keys):
-    """5 CALL NOW picks with slot reservations:
+def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
+    """CALL NOW picks with slot reservations:
 
       Slots 1-2 reserved for Band 3 financial_stress (trustee sale, NOD,
          lis pendens) — these always lead the week
@@ -307,6 +307,9 @@ def select_call_now(leads, exclude_pins, used_owner_keys):
 
     Investigation demotion rule: any Band 3 lead whose deep investigation
     recommended build_now/hold/avoid gets dropped from CALL NOW eligibility.
+
+    n: maximum number of picks to return. Default None = no cap (return
+       every pressure-3 real signal). Pass an int to cap.
     """
     def base_filter(L):
         return (L['pin'] not in exclude_pins
@@ -343,7 +346,7 @@ def select_call_now(leads, exclude_pins, used_owner_keys):
         ok = owner_base_key(L)
         if ok in used_owner_keys: continue
         picks.append(L); used_owner_keys.add(ok)
-        if len(picks) == 5: break
+        if n is not None and len(picks) >= n: break
     return picks
 
 

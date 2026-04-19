@@ -60,12 +60,12 @@ def _rank_parcel(parcel_row: dict, investigation_row: dict = None) -> float:
 async def get_briefing(
     zip_code: str = Depends(require_live_zip),
     include_map: bool = Query(True, description="Include full-ZIP map data"),
-    call_now_limit: int = Query(5, ge=1, le=50,
-        description="Max CALL NOW leads to return (default 5)"),
-    build_now_limit: int = Query(3, ge=0, le=50,
-        description="Max BUILD NOW leads to return (default 3)"),
-    hold_limit: int = Query(2, ge=0, le=50,
-        description="Max STRATEGIC HOLD leads to return (default 2)"),
+    call_now_limit: int = Query(0, ge=0, le=500,
+        description="Max CALL NOW leads; 0 = return every pressure-3 signal (default)"),
+    build_now_limit: int = Query(0, ge=0, le=500,
+        description="Max BUILD NOW leads; 0 = return all (default)"),
+    hold_limit: int = Query(0, ge=0, le=500,
+        description="Max STRATEGIC HOLD leads; 0 = return all (default)"),
     dedup: bool = Query(True,
         description="Dedup by owner surname (one lead per family)"),
 ):
@@ -203,18 +203,20 @@ async def get_briefing(
 
         # ── Delegate to the real selector (same code that produced the
         #    sandbox PRESSURE PDF) ──
+        # Semantics: limit=0 means "no cap, return every real signal".
+        # Any positive integer caps at that number.
         exclude_pins = set()         # no recency exclusion for live API yet
         used_owner_keys = set()
-        call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys)
-        build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
-                                               n=max(build_now_limit, 3))
-        hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
-                                                    n=max(hold_limit, 2))
+        cn_n = None if call_now_limit == 0 else call_now_limit
+        bn_n = None if build_now_limit == 0 else build_now_limit
+        hd_n = None if hold_limit == 0 else hold_limit
 
-        # Honor per-request caps on top of what the selector returned
-        call_now_leads = call_now_leads[:call_now_limit]
-        build_now_leads = build_now_leads[:build_now_limit]
-        hold_leads     = hold_leads[:hold_limit]
+        call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys,
+                                             n=cn_n)
+        build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
+                                               n=bn_n if bn_n is not None else 1000)
+        hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
+                                                    n=hd_n if hd_n is not None else 1000)
 
         # ── Resolve pressure-scored copy for each pick ──
         for L in call_now_leads:  L['_section'] = 'CALL NOW'
