@@ -19,6 +19,7 @@ from backend.api import (
     map_data,
     health,
     coverage,
+    admin,
 )
 
 
@@ -65,6 +66,7 @@ app.include_router(parcels.router,        prefix="/api/parcels",     tags=["parc
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])
 app.include_router(playbook.router,       prefix="/api/playbook",    tags=["playbook"])
 app.include_router(map_data.router,       prefix="/api/map",         tags=["map"])
+app.include_router(admin.router,          prefix="/api/admin",       tags=["admin"])
 
 
 # ── FRONTEND ───────────────────────────────────────────────────────────

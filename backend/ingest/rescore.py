@@ -148,6 +148,33 @@ def rescore_zip(zip_code: str, dry_run: bool = False) -> dict:
         'changed':  changed,
         'promotions': len(promos),
         'demotions':  len(demos),
+        'distribution_before': {
+            f"{cat or 'null'}|pressure={pres or 0}": n
+            for (cat, pres), n in before_counter.items()
+        },
+        'distribution_after': {
+            f"{cat or 'null'}|pressure={pres or 0}": n
+            for (cat, pres), n in after_counter.items()
+        },
+        'promotions_sample': [
+            {
+                'pin': d['pin'], 'address': d['address'],
+                'family': d['family'],
+                'before_cat': d['before']['cat'],
+                'after_cat':  d['after']['cat'],
+                'after_pressure': d['after']['pressure'],
+                'after_reason':   d['after']['reason'],
+            }
+            for d in promos[:25]
+        ],
+        'demotions_sample': [
+            {
+                'pin': d['pin'], 'address': d['address'],
+                'before_cat': d['before']['cat'],
+                'before_pressure': d['before']['pressure'],
+            }
+            for d in demos[:25]
+        ],
     }
 
 
