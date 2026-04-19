@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 class RunRequest(BaseModel):
-    zip_code: str = Field(..., regex=r'^\d{5}$')
+    zip_code: str = Field(..., pattern=r'^\d{5}$')
     max_finalists: int = Field(15, ge=1, le=30)
     dry_run: bool = True
 

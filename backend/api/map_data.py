@@ -211,7 +211,7 @@ def _sign_url(url: str, secret: str) -> str:
 @router.get("/streetview/{pin}")
 async def get_streetview_url(
     pin: str,
-    size: str = Query("640x400", regex=r"^\d{2,4}x\d{2,4}$"),
+    size: str = Query("640x400", pattern=r"^\d{2,4}x\d{2,4}$"),
     fov: int = Query(80, ge=20, le=120),
 ):
     """

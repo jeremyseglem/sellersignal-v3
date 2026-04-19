@@ -96,7 +96,7 @@ def get_zip_status(zip_code: str) -> Optional[str]:
 
 # ── FastAPI dependencies ───────────────────────────────────────────────
 
-async def require_live_zip(zip_code: str = Path(..., regex=r'^\d{5}$')) -> str:
+async def require_live_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')) -> str:
     """
     Dependency: allow only ZIPs with status='live'.
     Use on public-facing endpoints (briefings, map, parcels).
@@ -134,7 +134,7 @@ async def require_live_zip(zip_code: str = Path(..., regex=r'^\d{5}$')) -> str:
     return zip_code
 
 
-async def require_any_coverage(zip_code: str = Path(..., regex=r'^\d{5}$')) -> str:
+async def require_any_coverage(zip_code: str = Path(..., pattern=r'^\d{5}$')) -> str:
     """
     Dependency: allow any ZIP that exists in coverage, regardless of status.
     Use on admin/internal endpoints that need to access in-development ZIPs.
