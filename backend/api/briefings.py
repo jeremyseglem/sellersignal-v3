@@ -59,6 +59,14 @@ def _rank_parcel(parcel_row: dict, investigation_row: dict = None) -> float:
 async def get_briefing(
     zip_code: str = Depends(require_live_zip),
     include_map: bool = Query(True, description="Include full-ZIP map data"),
+    call_now_limit: int = Query(5, ge=1, le=50,
+        description="Max CALL NOW leads to return (default 5)"),
+    build_now_limit: int = Query(3, ge=0, le=50,
+        description="Max BUILD NOW leads to return (default 3)"),
+    hold_limit: int = Query(2, ge=0, le=50,
+        description="Max STRATEGIC HOLD leads to return (default 2)"),
+    dedup: bool = Query(True,
+        description="Dedup by owner surname (one lead per family)"),
 ):
     """
     Full briefing for a ZIP. Returns:
@@ -72,9 +80,11 @@ async def get_briefing(
 
     try:
         # ── Load parcels ──
+        # Supabase REST default caps at 1000; explicit limit overrides.
         parcels_res = (supa.table('parcels_v3')
                        .select('*')
                        .eq('zip_code', zip_code)
+                       .limit(50000)
                        .execute())
         parcels = parcels_res.data or []
         if not parcels:
@@ -84,6 +94,7 @@ async def get_briefing(
         inv_res = (supa.table('investigations_v3')
                    .select('*')
                    .eq('zip_code', zip_code)
+                   .limit(50000)
                    .execute())
         inv_by_pin = {}
         for row in (inv_res.data or []):
@@ -126,19 +137,46 @@ async def get_briefing(
         used_pins = set()
         used_owner_keys = set()
 
+        # Entity suffixes to strip before finding the "family name" token.
+        _ENTITY_SUFFIXES = {
+            'TRUST', 'TRUSTEE', 'TRUSTEES', 'LIVING', 'REVOCABLE',
+            'IRREVOCABLE', 'FAMILY', 'LLC', 'LLP', 'INC', 'CORP', 'CO',
+            'COMPANY', 'LP', 'LTD', 'PARTNERSHIP', 'PARTNERS', 'ESTATE',
+            'HEIRS', 'SURVIVOR', 'DECEASED', 'ET', 'AL', 'AND', '&',
+        }
+
         def _owner_key(p):
+            """
+            Dedup key. Used to prevent showing multiple parcels with the
+            same underlying owner family. Uses the last non-suffix token
+            (usually the surname), not the first token — so 'John Frank',
+            'John Galando', 'John Visich' are three different leads, but
+            'Henderson Family Trust' and 'Henderson Estate' share a key.
+            """
             name = (p.get('owner_name') or '').upper().strip()
-            return name.split(' ')[0] if name else ''
+            if not name:
+                return ''
+            # Strip punctuation that split surnames weirdly
+            tokens = name.replace('/', ' ').replace(',', ' ').split()
+            # Walk tokens right-to-left; first non-entity-suffix token wins
+            for tok in reversed(tokens):
+                clean = tok.strip('.')
+                if clean and clean not in _ENTITY_SUFFIXES and not clean.isdigit():
+                    return clean
+            return tokens[-1] if tokens else ''
 
         def _push(pool, picks_list, target_count):
             for p, inv in pool:
                 if len(picks_list) >= target_count: break
                 if p['pin'] in used_pins: continue
-                ok = _owner_key(p)
-                if ok and ok in used_owner_keys: continue
+                if dedup:
+                    ok = _owner_key(p)
+                    if ok and ok in used_owner_keys: continue
                 picks_list.append(_format_pick(p, inv))
                 used_pins.add(p['pin'])
-                if ok: used_owner_keys.add(ok)
+                if dedup:
+                    ok = _owner_key(p)
+                    if ok: used_owner_keys.add(ok)
 
         # Reserve slots 1-2 for financial_stress
         fin_stress_picks = sorted(
@@ -146,26 +184,26 @@ async def get_briefing(
              if p.get('signal_family') == 'financial_stress'],
             key=lambda t: -_rank_parcel(t[0], t[1]),
         )
-        _push(fin_stress_picks, call_now_picks, 2)
+        _push(fin_stress_picks, call_now_picks, min(2, call_now_limit))
 
         # Fill remaining CALL NOW slots
         remaining_call_now = sorted(
             [(p, inv) for p, inv in call_now_pool if p['pin'] not in used_pins],
             key=lambda t: -_rank_parcel(t[0], t[1]),
         )
-        _push(remaining_call_now, call_now_picks, 5)
+        _push(remaining_call_now, call_now_picks, call_now_limit)
 
         # BUILD NOW
         build_now_sorted = sorted(build_now_pool,
                                   key=lambda t: -_rank_parcel(t[0], t[1]))
         build_now_picks = []
-        _push(build_now_sorted, build_now_picks, 3)
+        _push(build_now_sorted, build_now_picks, build_now_limit)
 
         # STRATEGIC HOLDS
         holds_sorted = sorted(hold_pool,
                               key=lambda t: -_rank_parcel(t[0], t[1]))
         hold_picks = []
-        _push(holds_sorted, hold_picks, 2)
+        _push(holds_sorted, hold_picks, hold_limit)
 
         # ── Compute week_of (Monday of current week) ──
         today = date.today()
