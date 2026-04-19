@@ -635,6 +635,91 @@ def cmd_seed(zip_code: str, json_path: str) -> int:
 
 
 # ============================================================================
+# Apply legal filings
+# ============================================================================
+
+def cmd_apply_filings(zip_code: str, csv_path: str, kind: str,
+                      uploaded_by: str = 'cli', apply_signals: bool = True) -> int:
+    """
+    Ingest a legal-filings CSV and match it against this ZIP's parcels.
+
+    Sources:
+      - 'divorce'  : CSV export from KC Superior Court Family Law search
+                     (dja-prd-ecexap1.kingcounty.gov/node/411?caseType=211110)
+      - 'recorder' : CSV export from KC LandmarkWeb Record Date Search
+                     (recordsearch.kingcounty.gov/LandmarkWeb)
+
+    Writes:
+      - legal_filings_v3       (one row per unique filing)
+      - legal_filing_matches_v3 (one row per filing-to-parcel match)
+      - parcels_v3.signal_family updated on STRONG matches (if apply_signals)
+        · financial_stress   for NOD/trustee sale/lis pendens
+        · divorce_unwinding  for dissolution filings
+
+    ToS note: this path consumes CSVs that were manually exported by a
+    human. It does not scrape. KC Recorder explicitly permits targeted
+    manual searches and exports.
+    """
+    supa = get_supabase_client()
+    if not supa:
+        print("ERROR: Supabase not configured")
+        return 1
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('parcel_count, status')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        print(f"ZIP {zip_code} not registered.")
+        return 1
+    if (cov.data.get('parcel_count') or 0) == 0:
+        print(f"ZIP {zip_code} has no parcels. Run 'ingest' first.")
+        return 1
+
+    print(f"\n═══ Applying legal filings to ZIP {zip_code} ═══")
+    print(f"  CSV:    {csv_path}")
+    print(f"  Kind:   {kind}")
+    print(f"  Apply:  {apply_signals}")
+
+    from backend.ingest.legal_filings_ingest import ingest_csv
+
+    try:
+        result = ingest_csv(
+            csv_path=csv_path,
+            filing_kind=kind,
+            zip_code=zip_code,
+            uploaded_by=uploaded_by,
+            apply_signals=apply_signals,
+        )
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return 1
+
+    if result.get('error'):
+        print(f"  ERROR: {result['error']}")
+        return 1
+
+    print(f"\n  Filings parsed:     {result['filings_parsed']}")
+    print(f"  Filings stored:     {result['filings_stored']}")
+    print(f"  Matches written:    {result['matches_written']}")
+    if apply_signals:
+        print(f"  Signals promoted:   {result['signals_promoted']}")
+        if result['affected_pins']:
+            print(f"  Affected pins:      {', '.join(result['affected_pins'][:10])}"
+                  f"{'...' if len(result['affected_pins']) > 10 else ''}")
+            print(f"\n  Next step: re-run 'band' and 'investigate' on this ZIP to")
+            print(f"            propagate the new signal_family values through the")
+            print(f"            pipeline. Matched parcels will now surface as")
+            print(f"            pressure-3 CALL NOWs in the briefing.")
+    else:
+        print(f"\n  (--no-apply was set; parcels_v3.signal_family was not modified.)")
+
+    print(f"\n  ✓ Legal filings ingest complete for ZIP {zip_code}")
+    return 0
+
+
+# ============================================================================
 # CLI entry
 # ============================================================================
 
@@ -692,6 +777,19 @@ def main() -> int:
     s.add_argument('--file', required=True,
                    help='Path to seed JSON (e.g. data/seeds/wa-king-98004.json)')
 
+    # apply_filings (legal filings CSV ingest)
+    s = sub.add_parser('apply_filings',
+                       help='Ingest a legal-filings CSV (court dissolution or recorder NOD/trustee sale/lis pendens) and promote matched parcels')
+    s.add_argument('zip_code')
+    s.add_argument('--csv', required=True,
+                   help='Path to CSV export (from KC Superior Court or LandmarkWeb)')
+    s.add_argument('--kind', required=True, choices=['divorce', 'recorder'],
+                   help="'divorce' for dissolution filings, 'recorder' for NOD/trustee/lis pendens")
+    s.add_argument('--uploaded-by', default='cli',
+                   help="Identifier for provenance (default: 'cli')")
+    s.add_argument('--no-apply', action='store_true',
+                   help="Parse and match only; don't update parcels_v3.signal_family")
+
     args = p.parse_args()
 
     if args.command == 'status':       return cmd_status(args.zip_code)
@@ -705,6 +803,8 @@ def main() -> int:
     if args.command == 'publish':      return cmd_publish(args.zip_code, args.force)
     if args.command == 'pause':        return cmd_pause(args.zip_code, args.note)
     if args.command == 'seed':         return cmd_seed(args.zip_code, args.file)
+    if args.command == 'apply_filings': return cmd_apply_filings(
+        args.zip_code, args.csv, args.kind, args.uploaded_by, not args.no_apply)
 
     return 1
 
