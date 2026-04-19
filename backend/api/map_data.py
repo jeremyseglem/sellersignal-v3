@@ -52,13 +52,31 @@ async def get_map_data(
         raise HTTPException(503, "Database unavailable")
 
     try:
-        # Fetch all parcels in this ZIP
-        parcels_res = (supa.table('parcels_v3')
-                       .select('pin, address, owner_name, total_value, lat, lng, band, signal_family')
+        # Paginated fetch to beat Supabase PostgREST server cap (typically 1000)
+        def _fetch_all(table, select_cols, page_size=1000):
+            out = []
+            offset = 0
+            while True:
+                if offset >= limit:
+                    break
+                this_page = min(page_size, limit - offset)
+                res = (supa.table(table)
+                       .select(select_cols)
                        .eq('zip_code', zip_code)
-                       .limit(limit)
+                       .range(offset, offset + this_page - 1)
                        .execute())
-        parcels = parcels_res.data or []
+                batch = res.data or []
+                out.extend(batch)
+                if len(batch) < this_page:
+                    break
+                offset += this_page
+                if offset > 100000:
+                    break
+            return out
+
+        # Fetch all parcels in this ZIP
+        parcels = _fetch_all('parcels_v3',
+            'pin, address, owner_name, total_value, lat, lng, band, signal_family')
 
         if not parcels:
             return {
@@ -71,14 +89,12 @@ async def get_map_data(
                 },
             }
 
-        # Fetch investigation records for this ZIP in one query
+        # Fetch investigation records for this ZIP (also paginated)
         pins = [p['pin'] for p in parcels]
-        inv_res = (supa.table('investigations_v3')
-                   .select('pin, mode, action_category, action_pressure')
-                   .eq('zip_code', zip_code)
-                   .execute())
+        inv_rows = _fetch_all('investigations_v3',
+            'pin, mode, action_category, action_pressure')
         inv_by_pin = {}
-        for row in (inv_res.data or []):
+        for row in inv_rows:
             pin = row['pin']
             # Prefer deep over screen
             if pin not in inv_by_pin or row['mode'] == 'deep':

@@ -80,24 +80,36 @@ async def get_briefing(
 
     try:
         # ── Load parcels ──
-        # Supabase REST default caps at 1000; explicit limit overrides.
-        parcels_res = (supa.table('parcels_v3')
+        # Supabase PostgREST enforces a server-side max-rows cap (typically
+        # 1000) regardless of client .limit(). Paginate with .range() to
+        # get past it.
+        def _fetch_all(table, zip_col_val, page_size=1000):
+            """Paginate a zip-scoped table until empty."""
+            out = []
+            offset = 0
+            while True:
+                res = (supa.table(table)
                        .select('*')
-                       .eq('zip_code', zip_code)
-                       .limit(50000)
+                       .eq('zip_code', zip_col_val)
+                       .range(offset, offset + page_size - 1)
                        .execute())
-        parcels = parcels_res.data or []
+                batch = res.data or []
+                out.extend(batch)
+                if len(batch) < page_size:
+                    break
+                offset += page_size
+                if offset > 100000:  # hard safety stop
+                    break
+            return out
+
+        parcels = _fetch_all('parcels_v3', zip_code)
         if not parcels:
             raise HTTPException(404, f"No parcels in ZIP {zip_code}")
 
         # ── Load investigations (one query for all pins in this zip) ──
-        inv_res = (supa.table('investigations_v3')
-                   .select('*')
-                   .eq('zip_code', zip_code)
-                   .limit(50000)
-                   .execute())
+        inv_rows = _fetch_all('investigations_v3', zip_code)
         inv_by_pin = {}
-        for row in (inv_res.data or []):
+        for row in inv_rows:
             pin = row['pin']
             # Deep preferred over screen
             if pin not in inv_by_pin or row['mode'] == 'deep':
