@@ -124,12 +124,52 @@ async def get_briefing(
         # category, tone, pressure, reason, next_step}).
         #
         # Supabase rows give us flat columns; we translate to nested.
+        #
+        # Archetype name mapping: why_not_selling.py (v3) uses archetype
+        # names that differ from the sandbox COPY_TEMPLATES keys. Map them
+        # so resolve_copy finds the right template and we get the
+        # pressure-scored copy that matches the PRESSURE PDF.
+        _ARCHETYPE_TO_SIGNAL_FAMILY = {
+            # Trust patterns — aging maps 1:1; young/mature use trust_aging
+            # copy for STRATEGIC HOLDS sections or fall through for CALL NOW.
+            'trust_aging':              'trust_aging',
+            'trust_mature':             'trust_aging',
+            'trust_young':              'trust_aging',
+            # LLC investor patterns
+            'llc_investor_mature':      'investor_disposition',
+            'llc_investor_early':       'investor_disposition',
+            'llc_long_hold':            'investor_disposition',
+            # Individual tenure → silent transition
+            'individual_long_tenure':   'silent_transition',
+            'individual_settled':       'silent_transition',
+            'individual_recent':        'silent_transition',
+            # Absentee
+            'absentee_dormant':         'dormant_absentee',
+            'absentee_active':          'dormant_absentee',
+            # Estate markers in owner name → hard pressure
+            'estate_heirs':             'family_event_cluster',
+        }
+
         def _shape_lead(p, inv):
+            raw_archetype = p.get('signal_family')
+            sig_family = _ARCHETYPE_TO_SIGNAL_FAMILY.get(
+                raw_archetype, raw_archetype)
+
+            # Sub-signal inferred from investigation action_reason text
+            sub_signal = None
+            if inv and inv.get('action_reason'):
+                reason = (inv.get('action_reason') or '').lower()
+                if 'trustee sale' in reason:         sub_signal = 'trustee_sale'
+                elif 'notice of default' in reason or 'nod' in reason: sub_signal = 'nod'
+                elif 'overdue' in reason or 'hold-period' in reason:   sub_signal = 'overdue'
+                elif 'expired' in reason:            sub_signal = 'caution'
+
             lead = {
                 'pin':          p['pin'],
                 'band':         float(p.get('band') or 0),
-                'signal_family': p.get('signal_family'),
-                'sub_signal':   p.get('sub_signal'),
+                'signal_family': sig_family,
+                'archetype':    raw_archetype,
+                'sub_signal':   sub_signal,
                 'address':      p.get('address'),
                 'owner':        p.get('owner_name'),
                 'value':        p.get('total_value') or 0,
@@ -192,6 +232,7 @@ async def get_briefing(
                 'value':         L.get('value'),
                 'band':          L.get('band'),
                 'signal_family': L.get('signal_family'),
+                'archetype':     L.get('archetype'),
                 'tenure_years':  L.get('tenure_years'),
                 'copy': {
                     'happening': L['_copy'].get('happening'),
