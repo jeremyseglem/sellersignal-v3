@@ -34,7 +34,7 @@ _TITLE_TOKENS = {"MR", "MRS", "MS", "DR", "JR", "SR", "II", "III", "IV", "ESQ"}
 # Family-trust tokens we want to strip so a trust-titled owner still matches
 # when one of the trustees is named in a filing
 _TRUST_TOKENS = {"TRUSTEE", "TRUSTEES", "TTEE", "TTEES", "TRT", "TRUST",
-                 "FAMILY", "REVOCABLE", "LIVING", "ET", "AL"}
+                 "FAMILY", "REVOCABLE", "LIVING", "ET", "ANO", "AL"}
 
 
 def normalize_name(name: str) -> set[str]:
@@ -81,22 +81,70 @@ class DivorceFiling:
         return "DISSOL" in ct or "DIVORCE" in ct or "MARRIAGE" in ct
 
 
+# Case causes that represent actual dissolutions (divorce / legal separation).
+# Everything else — state-initiated child support, parenting plans alone,
+# out-of-state custody — is filtered out.
+_DISSOLUTION_CAUSES = {
+    "Dissolution no Children",
+    "Dissolution w/ Children",
+    "Dissolution of Domestic Partnership /No Children",
+    "Dissolution of Domestic Partnership /w Children",
+    "Legal Separation",
+    "Legal Separation w/ Children",
+    "Legal Separation, Domestic Partnership /No Children",
+}
+
+
+def _split_kc_case_name(case_name: str) -> tuple[str, str]:
+    """
+    KC Superior Court format: 'PETITIONER AND RESPONDENT' in a single field.
+    Returns (petitioner, respondent) or ('', '') if unparseable.
+    Strips 'ET ANO' / 'ET AL' suffixes from petitioner name.
+    """
+    if not case_name:
+        return "", ""
+    parts = re.split(r"\s+AND\s+", case_name.strip(), maxsplit=1)
+    if len(parts) != 2:
+        return "", ""
+    petitioner = re.sub(r"\s+ET\s+A(NO|L)\s*$", "", parts[0]).strip()
+    respondent = parts[1].strip()
+    return petitioner, respondent
+
+
 def load_divorce_filings_csv(path: str | Path) -> list[DivorceFiling]:
     """
-    Load a CSV export from KC Script Portal Family Law case search.
-    Expected columns (may vary by export format — normalize in code):
-      Case Number, Filing Date, Case Type, Petitioner Last, Petitioner First,
-      Respondent Last, Respondent First
+    Load filings from a KC Superior Court Script Portal export.
+
+    The portal has NO export button — operators copy-paste search result
+    tables from the browser, which produces tab-separated text with
+    headers:
+      Case Number, Filing Date, Case Name, Charge/Cause of Action,
+      Next Hearing, Status
+
+    'Case Name' is a single field: 'PETITIONER AND RESPONDENT'.
+    State-initiated cases ('STATE OF WASHINGTON AND X') are filtered out.
+
+    Supports either tab-separated or comma-separated input — we
+    auto-detect from the first line.
+
+    Legacy CSV format (separate Petitioner First/Last columns) is also
+    supported for backward compatibility with the sandbox test fixtures.
     """
     filings: list[DivorceFiling] = []
     p = Path(path)
     if not p.exists():
         return filings
 
+    # Auto-detect delimiter from the header line
     with p.open() as f:
-        reader = csv.DictReader(f)
+        first_line = f.readline()
+    delimiter = "\t" if "\t" in first_line else ","
+
+    with p.open() as f:
+        reader = csv.DictReader(f, delimiter=delimiter)
         for row in reader:
             try:
+                # Parse filing date
                 fd = row.get("Filing Date") or row.get("filing_date") or ""
                 dt = None
                 for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
@@ -107,19 +155,52 @@ def load_divorce_filings_csv(path: str | Path) -> list[DivorceFiling]:
                 if not dt:
                     continue
 
-                pet = " ".join([
-                    row.get("Petitioner First", row.get("petitioner_first", "")),
-                    row.get("Petitioner Last", row.get("petitioner_last", "")),
-                ]).strip()
-                resp = " ".join([
-                    row.get("Respondent First", row.get("respondent_first", "")),
-                    row.get("Respondent Last", row.get("respondent_last", "")),
-                ]).strip()
+                case_number = (row.get("Case Number")
+                               or row.get("case_number", "")).strip()
+
+                # ── Resolve petitioner/respondent names ──
+                # Modern KC format: single 'Case Name' field
+                case_name = (row.get("Case Name") or "").strip()
+                if case_name:
+                    # Skip state-initiated support cases
+                    if case_name.upper().startswith("STATE OF WASHINGTON"):
+                        continue
+                    pet, resp = _split_kc_case_name(case_name)
+                else:
+                    # Legacy format: separate first/last columns
+                    pet = " ".join([
+                        row.get("Petitioner First", row.get("petitioner_first", "")),
+                        row.get("Petitioner Last", row.get("petitioner_last", "")),
+                    ]).strip()
+                    resp = " ".join([
+                        row.get("Respondent First", row.get("respondent_first", "")),
+                        row.get("Respondent Last", row.get("respondent_last", "")),
+                    ]).strip()
+
+                if not pet or not resp:
+                    continue
+
+                # ── Resolve cause-of-action ──
+                # KC uses 'Charge/Cause of Action'; sandbox fixtures
+                # used 'Case Type'. Accept either.
+                cause = (row.get("Charge/Cause of Action")
+                         or row.get("Case Type")
+                         or row.get("case_type", "")).strip()
+
+                # Skip non-dissolution family-law filings at parse time.
+                # is_dissolution() on the object is a second line of defense
+                # for backward compat with code that doesn't pre-filter.
+                if cause and cause not in _DISSOLUTION_CAUSES:
+                    # Accept any Dissolution/Legal Separation even if the
+                    # exact label shifted slightly — substring check
+                    uc = cause.upper()
+                    if "DISSOL" not in uc and "LEGAL SEPARATION" not in uc:
+                        continue
 
                 filings.append(DivorceFiling(
-                    case_number=row.get("Case Number", row.get("case_number", "")),
+                    case_number=case_number,
                     filing_date=dt,
-                    case_type=row.get("Case Type", row.get("case_type", "")),
+                    case_type=cause,
                     petitioner_name=pet,
                     respondent_name=resp,
                 ))
