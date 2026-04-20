@@ -74,7 +74,37 @@ app.include_router(admin.router,          prefix="/api/admin",       tags=["admi
 # In dev, frontend runs separately on :5173 (Vite default).
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontend', 'dist')
 if os.path.isdir(FRONTEND_DIST):
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    # Serve actual build artifacts (JS, CSS, images, etc.) from /assets/*.
+    # React Router paths like /coverage, /zip/98004 don't map to real files —
+    # they're handled client-side — so the catch-all below returns index.html
+    # for any GET that isn't /api/* or /assets/* and doesn't have an extension.
+    app.mount("/assets",
+              StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
+              name="assets")
+
+    _INDEX_HTML = os.path.join(FRONTEND_DIST, "index.html")
+
+    @app.get("/")
+    async def serve_root():
+        return FileResponse(_INDEX_HTML)
+
+    # SPA catch-all: anything that isn't /api/*, /docs, /redoc, /openapi.json,
+    # or a static asset falls through to here and gets the React entry point.
+    # React Router reads the URL client-side and mounts the right page.
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # API routes are handled by their own routers registered above; if we
+        # get here with an /api/ prefix it means the route genuinely doesn't
+        # exist — return JSON 404 instead of the React shell.
+        if full_path.startswith("api/") or full_path.startswith("docs") \
+                or full_path == "openapi.json" or full_path.startswith("redoc"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        # For everything else (SPA routes like /zip/98004, /coverage, etc.)
+        # serve the React app and let client-side routing take over.
+        return FileResponse(_INDEX_HTML)
 else:
     @app.get("/")
     async def root():
