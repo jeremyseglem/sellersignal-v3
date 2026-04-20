@@ -89,6 +89,21 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
   const [hovered, setHovered] = useState(false);
   const action = lead.recommended_action;
 
+  // Build the secondary-meta line: owner name + type + tenure
+  const ownerBits = [];
+  if (lead.owner_name) ownerBits.push(lead.owner_name);
+  if (lead.owner_type && lead.owner_type !== 'unknown') {
+    ownerBits.push(lead.owner_type.toUpperCase());
+  }
+  if (lead.tenure_years != null) {
+    ownerBits.push(`${Math.round(lead.tenure_years)}yr`);
+  }
+
+  // Signal family label: replace underscores with spaces, keep lowercase
+  const signalLabel = lead.signal_family
+    ? lead.signal_family.replace(/_/g, ' ')
+    : null;
+
   return (
     <li
       onClick={onClick}
@@ -131,15 +146,30 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
           }}>
             {lead.address || 'Address unknown'}
           </div>
-          {lead.owner_name && (
+          {ownerBits.length > 0 && (
             <div style={{
               fontFamily: 'var(--font-serif)',
               fontSize: 12,
               color: 'var(--text-secondary)',
               fontStyle: 'italic',
               marginTop: 2,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
             }}>
-              {lead.owner_name}
+              {ownerBits.join(' · ')}
+            </div>
+          )}
+          {signalLabel && (
+            <div style={{
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              color: 'var(--text-tertiary)',
+              marginTop: 6,
+            }}>
+              {signalLabel}
             </div>
           )}
         </div>

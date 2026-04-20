@@ -8,21 +8,46 @@ function formatValue(v) {
   return `$${v}`;
 }
 
+function formatYears(y) {
+  if (y == null) return '—';
+  const r = Math.round(y);
+  return r === 1 ? '1 yr' : `${r} yr`;
+}
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch { return iso; }
+}
+
+function ownerTypeLabel(t) {
+  if (!t || t === 'unknown') return null;
+  const map = { llc: 'LLC', trust: 'Trust', individual: 'Individual', company: 'Company' };
+  return map[t.toLowerCase()] || t;
+}
+
 export default function ParcelDossier({ dossier, onClose }) {
   const [streetViewUrl, setStreetViewUrl] = useState(null);
+  const [streetViewOk, setStreetViewOk] = useState(true);
 
   useEffect(() => {
     if (!dossier?.pin) return;
-    setStreetViewUrl(null);
+    setStreetViewUrl(null); setStreetViewOk(true);
     mapApi.streetView(dossier.pin)
       .then((r) => setStreetViewUrl(r.url))
       .catch(() => setStreetViewUrl(null));
   }, [dossier?.pin]);
 
-  const p = dossier.parcel || {};
+  const p   = dossier.parcel || {};
   const inv = dossier.investigation || {};
   const rec = dossier.recommended_action;
   const why = dossier.why_not_selling;
+
+  const ownerTag = ownerTypeLabel(p.owner_type);
+  const signalLabel = p.signal_family ? p.signal_family.replace(/_/g, ' ') : null;
 
   return (
     <div
@@ -86,12 +111,42 @@ export default function ParcelDossier({ dossier, onClose }) {
             marginTop: 'var(--space-sm)',
             fontSize: 13,
             color: 'var(--text-secondary)',
+            alignItems: 'center',
+            flexWrap: 'wrap',
           }}>
             <div>{p.city}, {p.state}</div>
             <div>·</div>
             <div style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)', fontWeight: 600 }}>
               {formatValue(p.total_value)}
             </div>
+            {ownerTag && (
+              <>
+                <div>·</div>
+                <div style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: 'var(--text-tertiary)',
+                }}>
+                  {ownerTag}
+                </div>
+              </>
+            )}
+            {p.is_absentee && (
+              <>
+                <div>·</div>
+                <div style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: 'var(--accent)',
+                }}>
+                  Absentee
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -124,15 +179,16 @@ export default function ParcelDossier({ dossier, onClose }) {
             color: 'var(--text-tertiary)',
             marginTop: 2,
           }}>
-            {p.owner_type || 'unknown'} · {p.tenure_years ? `${p.tenure_years} yr tenure` : 'tenure unknown'}
+            {ownerTag || 'unknown'} · {formatYears(p.tenure_years)} tenure
           </div>
         </div>
 
-        {/* Street View */}
-        {streetViewUrl && (
+        {/* Street View — graceful when key isn't configured */}
+        {streetViewUrl && streetViewOk && (
           <img
             src={streetViewUrl}
             alt={`Street View of ${p.address}`}
+            onError={() => setStreetViewOk(false)}
             style={{
               width: '100%',
               marginTop: 'var(--space-md)',
@@ -147,7 +203,15 @@ export default function ParcelDossier({ dossier, onClose }) {
           <RecommendedActionBlock rec={rec} />
         )}
 
-        {/* Why not selling — if not actively prioritized */}
+        {/* Property detail grid — shown for all parcels */}
+        <PropertyGrid parcel={p} signalLabel={signalLabel} />
+
+        {/* Transfer history — if we have it */}
+        {(p.last_transfer_date || p.last_transfer_price) && (
+          <TransferHistoryBlock parcel={p} />
+        )}
+
+        {/* Why not selling — auto-generated read for non-actionable parcels */}
         {why && (
           <WhyNotSellingBlock why={why} />
         )}
@@ -155,6 +219,82 @@ export default function ParcelDossier({ dossier, onClose }) {
         {/* Investigation signals, if present */}
         {inv?.signals?.length > 0 && (
           <SignalsBlock signals={inv.signals} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PropertyGrid({ parcel, signalLabel }) {
+  const rows = [
+    { label: 'Cohort',          value: signalLabel || '—' },
+    { label: 'County assessed', value: parcel.total_value ? formatValue(parcel.total_value) : '—' },
+    { label: 'Tenure',          value: formatYears(parcel.tenure_years) },
+    { label: 'Property type',   value: parcel.prop_type || 'Residential' },
+  ];
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 'var(--space-md)',
+    }}>
+      {rows.map((r) => (
+        <div key={r.label}>
+          <div style={{
+            fontSize: 10,
+            color: 'var(--text-tertiary)',
+            fontWeight: 600,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+          }}>
+            {r.label}
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-display)',
+            fontSize: 14,
+            color: 'var(--text)',
+            marginTop: 2,
+            textTransform: r.label === 'Cohort' ? 'capitalize' : 'none',
+          }}>
+            {r.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TransferHistoryBlock({ parcel }) {
+  const ago = parcel.tenure_years != null ? ` (${formatYears(parcel.tenure_years)} ago)` : '';
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      padding: 'var(--space-md)',
+      background: 'var(--bg)',
+      borderRadius: 'var(--radius-md)',
+    }}>
+      <div style={{
+        fontSize: 11,
+        color: 'var(--text-tertiary)',
+        fontWeight: 600,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+      }}>
+        Transfer history
+      </div>
+      <div style={{
+        fontSize: 13,
+        color: 'var(--text)',
+        marginTop: 'var(--space-xs)',
+        fontFamily: 'var(--font-serif)',
+      }}>
+        Last sale: {formatDate(parcel.last_transfer_date)}{ago}
+        {parcel.last_transfer_price && (
+          <span style={{ color: 'var(--text-secondary)' }}>
+            {' · '}
+            {formatValue(parcel.last_transfer_price)}
+          </span>
         )}
       </div>
     </div>

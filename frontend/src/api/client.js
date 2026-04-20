@@ -36,6 +36,7 @@ async function request(path, options = {}) {
 export const coverage = {
   list: () => request('/coverage'),
   detail: (zip) => request(`/coverage/${zip}`),
+  stats:  (zip) => request(`/coverage/${zip}/stats`),
 };
 
 // ── Briefings ──────────────────────────────────────────────────────
