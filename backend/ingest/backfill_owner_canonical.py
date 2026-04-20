@@ -72,6 +72,141 @@ def _fetch_existing_pins(supa, zip_code: str, page: int = 1000) -> set[str]:
     return out
 
 
+def backfill_zip(zip_code: str, dry_run: bool = False,
+                 limit: Optional[int] = None, force: bool = False,
+                 sleep_ms: int = 50, verbose: bool = True) -> dict:
+    """
+    Programmatic entry point for canonicalize backfill.
+
+    Returns a dict with stats suitable for JSON response:
+      {
+        "zip_code":    str,
+        "dry_run":     bool,
+        "eligible":    int,     # parcels with owner_name
+        "already_done": int,    # skipped because canonical row exists
+        "processed":   int,     # API calls actually made
+        "low_conf":    int,     # confidence < 0.5
+        "errors":      list[{"pin": str, "msg": str}],
+        "low_conf_rows": list[{"pin": str, "raw": str, "confidence": float}],
+        "tokens_in":   int,
+        "tokens_out":  int,
+        "cost_usd":    float,
+        "wall_time_s": float,
+        "est_cost_usd": float,  # only populated on dry_run
+      }
+    """
+    def log(msg: str):
+        if verbose:
+            print(msg, flush=True)
+
+    stats = {
+        'zip_code': zip_code, 'dry_run': dry_run,
+        'eligible': 0, 'already_done': 0, 'processed': 0,
+        'low_conf': 0, 'errors': [], 'low_conf_rows': [],
+        'tokens_in': 0, 'tokens_out': 0,
+        'cost_usd': 0.0, 'wall_time_s': 0.0, 'est_cost_usd': 0.0,
+    }
+
+    log(f"[backfill] target ZIP: {zip_code}")
+    log(f"[backfill] model:      {MODEL}")
+
+    supa = get_supabase_client()
+
+    parcels = _fetch_all_parcels(supa, zip_code)
+    stats['eligible'] = len(parcels)
+    log(f"[backfill] parcels with owner_name: {len(parcels)}")
+    if not parcels:
+        log("[backfill] nothing to do")
+        return stats
+
+    if not force:
+        existing = _fetch_existing_pins(supa, zip_code)
+        before = len(parcels)
+        parcels = [p for p in parcels if p['pin'] not in existing]
+        stats['already_done'] = before - len(parcels)
+        log(f"[backfill] already canonicalized: {stats['already_done']}")
+        log(f"[backfill] remaining to process:  {len(parcels)}")
+
+    if limit:
+        parcels = parcels[:limit]
+        log(f"[backfill] --limit {limit} applied, processing: {len(parcels)}")
+
+    if dry_run:
+        log("[backfill] DRY RUN — sample of what would be processed:")
+        for p in parcels[:5]:
+            log(f"  {p['pin']}  {p['owner_name']!r}")
+        stats['est_cost_usd'] = round(len(parcels) * 0.0005, 4)
+        log(f"[backfill] estimated cost: ${stats['est_cost_usd']:.4f}")
+        return stats
+
+    if not parcels:
+        log("[backfill] nothing to process")
+        return stats
+
+    total_tokens_in = 0
+    total_tokens_out = 0
+    low_conf: list[dict] = []
+    errors: list[dict] = []
+    start = time.time()
+    sleep_s = max(0, sleep_ms) / 1000.0
+
+    for i, p in enumerate(parcels, 1):
+        pin = p['pin']
+        raw = p['owner_name'] or ''
+        result = canonicalize_owner_name(raw)
+
+        total_tokens_in += result.get('_tokens_in', 0) or 0
+        total_tokens_out += result.get('_tokens_out', 0) or 0
+        if '_error' in result:
+            errors.append({'pin': pin, 'msg': result['_error']})
+
+        if result.get('confidence', 0) < 0.5:
+            low_conf.append({'pin': pin, 'raw': raw,
+                             'confidence': result.get('confidence', 0)})
+
+        try:
+            upsert_canonical(supa, pin, result)
+        except Exception as e:
+            errors.append({'pin': pin, 'msg': f'upsert: {e}'})
+
+        if i % 50 == 0 or i == len(parcels):
+            elapsed = time.time() - start
+            rate = i / max(elapsed, 0.001)
+            eta = (len(parcels) - i) / max(rate, 0.001)
+            cost = (total_tokens_in * HAIKU_COST_IN_PER_MTOK +
+                    total_tokens_out * HAIKU_COST_OUT_PER_MTOK) / 1_000_000
+            log(f"  [{i}/{len(parcels)}] rate={rate:.1f}/s "
+                f"eta={eta:.0f}s cost=${cost:.4f} "
+                f"low_conf={len(low_conf)} err={len(errors)}")
+
+        if sleep_s:
+            time.sleep(sleep_s)
+
+    elapsed = time.time() - start
+    cost = (total_tokens_in * HAIKU_COST_IN_PER_MTOK +
+            total_tokens_out * HAIKU_COST_OUT_PER_MTOK) / 1_000_000
+
+    stats.update({
+        'processed': len(parcels),
+        'wall_time_s': round(elapsed, 2),
+        'tokens_in': total_tokens_in,
+        'tokens_out': total_tokens_out,
+        'cost_usd': round(cost, 4),
+        'low_conf': len(low_conf),
+        'low_conf_rows': low_conf[:50],   # cap response payload
+        'errors': errors[:50],
+    })
+
+    log("")
+    log(f"[backfill] DONE")
+    log(f"  processed:    {stats['processed']}")
+    log(f"  wall time:    {elapsed:.1f}s ({elapsed/60:.1f} min)")
+    log(f"  total cost:   ${cost:.4f}")
+    log(f"  low_conf:     {len(low_conf)} (<0.5)")
+    log(f"  errors:       {len(errors)}")
+    return stats
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('zip_code', help="ZIP to backfill, e.g. 98004")
@@ -85,117 +220,28 @@ def main() -> int:
                     help="Polite pause between calls (default 50ms)")
     args = ap.parse_args()
 
-    print(f"[backfill] target ZIP: {args.zip_code}")
-    print(f"[backfill] model:      {MODEL}")
+    stats = backfill_zip(
+        zip_code=args.zip_code,
+        dry_run=args.dry_run,
+        limit=args.limit,
+        force=args.force,
+        sleep_ms=args.sleep_ms,
+        verbose=True,
+    )
 
-    supa = get_supabase_client()
-
-    # Load the full parcel universe for this ZIP
-    parcels = _fetch_all_parcels(supa, args.zip_code)
-    print(f"[backfill] parcels with owner_name: {len(parcels)}")
-    if not parcels:
-        print("[backfill] nothing to do")
-        return 0
-
-    # Filter by existing canonical rows unless --force
-    if not args.force:
-        existing = _fetch_existing_pins(supa, args.zip_code)
-        before = len(parcels)
-        parcels = [p for p in parcels if p['pin'] not in existing]
-        print(f"[backfill] already canonicalized: {before - len(parcels)}")
-        print(f"[backfill] remaining to process:  {len(parcels)}")
-
-    if args.limit:
-        parcels = parcels[: args.limit]
-        print(f"[backfill] --limit {args.limit} applied, processing: {len(parcels)}")
-
-    if args.dry_run:
-        print("[backfill] DRY RUN — sample of what would be processed:")
-        for p in parcels[:5]:
-            print(f"  {p['pin']}  {p['owner_name']!r}")
-        est_cost = len(parcels) * 0.0005
-        print(f"[backfill] estimated cost: ${est_cost:.2f} at ~$0.0005/name")
-        return 0
-
-    if not parcels:
-        print("[backfill] nothing to process")
-        return 0
-
-    # Real run
-    total_tokens_in = 0
-    total_tokens_out = 0
-    low_conf: list[tuple[str, str, float]] = []
-    errors: list[tuple[str, str]] = []
-    start = time.time()
-    sleep_s = max(0, args.sleep_ms) / 1000.0
-
-    for i, p in enumerate(parcels, 1):
-        pin = p['pin']
-        raw = p['owner_name'] or ''
-        result = canonicalize_owner_name(raw)
-
-        # Telemetry (stripped before upsert)
-        total_tokens_in += result.get('_tokens_in', 0) or 0
-        total_tokens_out += result.get('_tokens_out', 0) or 0
-        if '_error' in result:
-            errors.append((pin, result['_error']))
-
-        # Record low-confidence for review surfacing
-        if result.get('confidence', 0) < 0.5:
-            low_conf.append((pin, raw, result.get('confidence', 0)))
-
-        # Write
-        try:
-            upsert_canonical(supa, pin, result)
-        except Exception as e:
-            errors.append((pin, f'upsert: {e}'))
-
-        # Progress every 50 or at end
-        if i % 50 == 0 or i == len(parcels):
-            elapsed = time.time() - start
-            rate = i / max(elapsed, 0.001)
-            eta = (len(parcels) - i) / max(rate, 0.001)
-            cost = (total_tokens_in * HAIKU_COST_IN_PER_MTOK +
-                    total_tokens_out * HAIKU_COST_OUT_PER_MTOK) / 1_000_000
-            print(f"  [{i}/{len(parcels)}] rate={rate:.1f}/s "
-                  f"eta={eta:.0f}s cost=${cost:.4f} "
-                  f"low_conf={len(low_conf)} err={len(errors)}")
-
-        if sleep_s:
-            time.sleep(sleep_s)
-
-    # Summary
-    elapsed = time.time() - start
-    cost = (total_tokens_in * HAIKU_COST_IN_PER_MTOK +
-            total_tokens_out * HAIKU_COST_OUT_PER_MTOK) / 1_000_000
-    print()
-    print(f"[backfill] DONE")
-    print(f"  processed:    {len(parcels)}")
-    print(f"  wall time:    {elapsed:.1f}s ({elapsed/60:.1f} min)")
-    print(f"  tokens in:    {total_tokens_in}")
-    print(f"  tokens out:   {total_tokens_out}")
-    print(f"  total cost:   ${cost:.4f}")
-    print(f"  per-name:     ${cost/max(len(parcels),1):.6f}")
-    print(f"  low_conf:     {len(low_conf)} (<0.5)")
-    print(f"  errors:       {len(errors)}")
-
-    if errors:
+    if stats.get('errors'):
         print()
         print("[backfill] ERRORS:")
-        for pin, msg in errors[:20]:
-            print(f"  {pin}: {msg}")
-        if len(errors) > 20:
-            print(f"  ... and {len(errors) - 20} more")
+        for e in stats['errors'][:20]:
+            print(f"  {e['pin']}: {e['msg']}")
 
-    if low_conf:
+    if stats.get('low_conf_rows'):
         print()
         print("[backfill] LOW CONFIDENCE (<0.5) — review these:")
-        for pin, raw, c in low_conf[:20]:
-            print(f"  {pin} conf={c:.2f}  {raw!r}")
-        if len(low_conf) > 20:
-            print(f"  ... and {len(low_conf) - 20} more")
+        for r in stats['low_conf_rows'][:20]:
+            print(f"  {r['pin']} conf={r['confidence']:.2f}  {r['raw']!r}")
 
-    return 0 if not errors else 1
+    return 0 if not stats.get('errors') else 1
 
 
 if __name__ == '__main__':

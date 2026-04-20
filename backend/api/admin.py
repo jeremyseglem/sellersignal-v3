@@ -7,9 +7,11 @@ return 503 (refuse-unsafe-default, don't open unauthenticated admin
 access).
 
 Endpoints:
-  POST /api/admin/rescore/{zip_code}       — re-run recommend_action on cached investigations
-  GET  /api/admin/rescore/{zip_code}/dry-run — preview deltas without writing
-  POST /api/admin/legal-filings/upload     — (placeholder, not yet wired)
+  POST /api/admin/rescore/{zip_code}           — re-run recommend_action on cached investigations
+  GET  /api/admin/rescore/{zip_code}/dry-run   — preview deltas without writing
+  POST /api/admin/canonicalize/{zip_code}      — parse owner_name via Haiku 4.5 into owner_canonical_v3
+  GET  /api/admin/canonicalize/{zip_code}/status — report canonicalize coverage
+  POST /api/admin/legal-filings/upload         — (placeholder, not yet wired)
 """
 import os
 from fastapi import APIRouter, HTTPException, Header, Depends, Path
@@ -111,3 +113,182 @@ async def rescore_zip_endpoint(
 async def admin_ping():
     """Cheap auth check. Returns {'ok': true} if the caller's key is valid."""
     return {"ok": True}
+
+
+# ─── Canonicalize owner names ────────────────────────────────────────────
+
+@router.post("/canonicalize/{zip_code}", dependencies=[Depends(require_admin)])
+async def canonicalize_zip_endpoint(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    dry_run: bool = False,
+    limit: Optional[int] = None,
+    force: bool = False,
+    sleep_ms: int = 50,
+):
+    """
+    Parse owner_name for every parcel in this ZIP via Claude Haiku 4.5,
+    writing structured output to owner_canonical_v3.
+
+    Idempotent: skips PINs that already have a canonical row (unless
+    ?force=true). Safe to re-run after adding new parcels.
+
+    Cost: ~$0.0005/parcel. A 6,000-parcel ZIP ≈ $3. Smoke-test with
+    ?limit=10 before a full run (expect ~$0.005).
+
+    Query params:
+      ?dry_run=true   — count + show first 5 parcels, no API calls
+      ?limit=N        — process only first N parcels (smoke test)
+      ?force=true     — re-parse parcels that already have a row
+      ?sleep_ms=N     — polite pause between calls (default 50ms)
+
+    Returns:
+      {
+        "zip_code":     str,
+        "dry_run":      bool,
+        "eligible":     int,     # parcels with owner_name
+        "already_done": int,     # skipped (had canonical row)
+        "processed":    int,     # API calls made this run
+        "low_conf":     int,     # confidence < 0.5
+        "errors":       list,
+        "low_conf_rows": list,
+        "tokens_in":    int,
+        "tokens_out":   int,
+        "cost_usd":     float,
+        "wall_time_s":  float,
+        "est_cost_usd": float,   # only on dry_run
+      }
+
+    Note: Haiku 4.5 rate limit is ~50 req/min on Tier 1 keys. A
+    6,000-parcel ZIP serial-runs in ~2 hours. Railway HTTP timeout
+    may interrupt — prefer smaller --limit batches for full backfills.
+    """
+    try:
+        from backend.ingest.backfill_owner_canonical import backfill_zip
+    except Exception as e:
+        raise HTTPException(500, f"backfill module failed to import: {e}")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('zip_code, parcel_count')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        raise HTTPException(404, f"ZIP {zip_code} not in coverage.")
+    if (cov.data.get('parcel_count') or 0) == 0:
+        raise HTTPException(
+            409,
+            f"ZIP {zip_code} has no parcels — run 'ingest' first.",
+        )
+
+    # Guard: refuse large runs without explicit limit to avoid HTTP timeout
+    if not dry_run and not limit and (cov.data.get('parcel_count') or 0) > 500:
+        raise HTTPException(
+            413,
+            f"ZIP {zip_code} has {cov.data['parcel_count']} parcels. "
+            "Full-ZIP canonicalize exceeds HTTP timeout — either set "
+            "?limit=500 and call repeatedly, or run from Railway shell: "
+            f"python -m backend.ingest.zip_builder canonicalize {zip_code}",
+        )
+
+    try:
+        result = backfill_zip(
+            zip_code=zip_code,
+            dry_run=dry_run,
+            limit=limit,
+            force=force,
+            sleep_ms=sleep_ms,
+            verbose=False,   # silence stdout; stats dict is the response
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Canonicalize failed: {e}")
+
+    return result
+
+
+@router.get("/canonicalize/{zip_code}/status",
+            dependencies=[Depends(require_admin)])
+async def canonicalize_status_endpoint(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+):
+    """
+    Report canonicalize coverage for a ZIP without any API calls.
+
+    Returns:
+      {
+        "zip_code":         str,
+        "parcel_count":     int,     # from zip_coverage_v3
+        "canonicalized":    int,     # count of owner_canonical_v3 rows whose pin is in this ZIP
+        "coverage_pct":     float,
+        "low_confidence":   int,     # confidence < 0.5
+        "by_entity_type":   {...}    # counts of individual/trust/llc/company/unknown
+      }
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    # Parcel count from coverage
+    cov = (supa.table('zip_coverage_v3')
+           .select('parcel_count')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        raise HTTPException(404, f"ZIP {zip_code} not in coverage.")
+    parcel_count = cov.data.get('parcel_count') or 0
+
+    # Pull pins in this ZIP
+    pins = []
+    offset = 0
+    while True:
+        page_res = (supa.table('parcels_v3')
+                    .select('pin')
+                    .eq('zip_code', zip_code)
+                    .range(offset, offset + 999)
+                    .execute())
+        batch = page_res.data or []
+        pins.extend(p['pin'] for p in batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+        if offset > 200000:
+            break
+
+    if not pins:
+        return {
+            'zip_code': zip_code, 'parcel_count': parcel_count,
+            'canonicalized': 0, 'coverage_pct': 0.0,
+            'low_confidence': 0, 'by_entity_type': {},
+        }
+
+    # Query canonical rows — batches of 500 to stay under URL length limits
+    entity_counts: dict[str, int] = {}
+    canonicalized = 0
+    low_conf = 0
+    BATCH = 500
+    for i in range(0, len(pins), BATCH):
+        batch = pins[i:i + BATCH]
+        res = (supa.table('owner_canonical_v3')
+               .select('pin, entity_type, confidence')
+               .in_('pin', batch)
+               .execute())
+        for row in (res.data or []):
+            canonicalized += 1
+            et = row.get('entity_type') or 'unknown'
+            entity_counts[et] = entity_counts.get(et, 0) + 1
+            if (row.get('confidence') or 0) < 0.5:
+                low_conf += 1
+
+    coverage_pct = round(100.0 * canonicalized / max(parcel_count, 1), 2)
+    return {
+        'zip_code': zip_code,
+        'parcel_count': parcel_count,
+        'canonicalized': canonicalized,
+        'coverage_pct': coverage_pct,
+        'low_confidence': low_conf,
+        'by_entity_type': entity_counts,
+    }
