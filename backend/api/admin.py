@@ -7,11 +7,13 @@ return 503 (refuse-unsafe-default, don't open unauthenticated admin
 access).
 
 Endpoints:
-  POST /api/admin/rescore/{zip_code}           — re-run recommend_action on cached investigations
-  GET  /api/admin/rescore/{zip_code}/dry-run   — preview deltas without writing
-  POST /api/admin/canonicalize/{zip_code}      — parse owner_name via Haiku 4.5 into owner_canonical_v3
+  POST /api/admin/rescore/{zip_code}             — re-run recommend_action on cached investigations
+  GET  /api/admin/rescore/{zip_code}/dry-run     — preview deltas without writing
+  POST /api/admin/canonicalize/{zip_code}        — parse owner_name via Haiku 4.5 into owner_canonical_v3
   GET  /api/admin/canonicalize/{zip_code}/status — report canonicalize coverage
-  POST /api/admin/legal-filings/upload         — (placeholder, not yet wired)
+  POST /api/admin/geometry/{zip_code}            — fill missing lat/lng from county ArcGIS
+  GET  /api/admin/geometry/{zip_code}/status     — report geometry coverage
+  POST /api/admin/legal-filings/upload           — (placeholder, not yet wired)
 """
 import os
 from fastapi import APIRouter, HTTPException, Header, Depends, Path
@@ -291,4 +293,138 @@ async def canonicalize_status_endpoint(
         'coverage_pct': coverage_pct,
         'low_confidence': low_conf,
         'by_entity_type': entity_counts,
+    }
+
+
+# ─── Geometry backfill ────────────────────────────────────────────────
+
+@router.post("/geometry/{zip_code}", dependencies=[Depends(require_admin)])
+async def geometry_backfill_endpoint(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    dry_run: bool = False,
+    limit: Optional[int] = None,
+    market_key: str = 'WA_KING',
+):
+    """
+    Fill lat/lng on parcels_v3 rows that are missing geometry.
+
+    Queries the county ArcGIS by PIN and updates parcels_v3.lat/lng
+    only. Does NOT touch owner_name, value, or any other column — safe
+    to run against canonicalized/classified/banded parcels.
+
+    Needed for 98004 because an earlier ingest produced 6,658 parcels
+    with null coordinates, making the map unusable.
+
+    Query params:
+      ?dry_run=true   — count PINs needing geometry, don't call ArcGIS
+      ?limit=N        — process only first N PINs (smoke test)
+      ?market_key=WA_KING — county config (only WA_KING supported today)
+
+    Returns:
+      {
+        "zip_code":     str,
+        "market_key":   str,
+        "dry_run":      bool,
+        "missing_geom": int,     # parcels with null lat/lng before
+        "fetched":      int,     # ArcGIS returned geometry for this many
+        "updated":      int,     # rows updated in Supabase
+        "not_found":    int,     # PINs ArcGIS has no record for
+        "errors":       list
+      }
+    """
+    try:
+        from backend.ingest.geometry_backfill import backfill_geometry_zip
+    except Exception as e:
+        raise HTTPException(500, f"geometry_backfill module failed to import: {e}")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('parcel_count')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        raise HTTPException(404, f"ZIP {zip_code} not in coverage.")
+
+    # Guard: full-ZIP ArcGIS + Supabase updates can easily exceed 60-120s HTTP timeout.
+    # Require explicit --limit for any run with more than 500 missing coords.
+    if not dry_run and not limit:
+        # Quickly estimate how many need backfill
+        quick_check = (supa.table('parcels_v3')
+                       .select('pin', count='exact')
+                       .eq('zip_code', zip_code)
+                       .or_('lat.is.null,lng.is.null')
+                       .limit(1)
+                       .execute())
+        approx_missing = quick_check.count if quick_check.count is not None else 0
+        if approx_missing > 500:
+            raise HTTPException(
+                413,
+                f"ZIP {zip_code} has ~{approx_missing} parcels missing geometry. "
+                "Full-ZIP backfill exceeds HTTP timeout — pass ?limit=500 and "
+                "call repeatedly until remaining = 0.",
+            )
+
+    try:
+        result = backfill_geometry_zip(
+            zip_code=zip_code,
+            market_key=market_key,
+            dry_run=dry_run,
+            limit=limit,
+            verbose=False,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Geometry backfill failed: {e}")
+
+    return result
+
+
+@router.get("/geometry/{zip_code}/status",
+            dependencies=[Depends(require_admin)])
+async def geometry_status_endpoint(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+):
+    """
+    Report geometry coverage for a ZIP. Zero cost, no ArcGIS calls.
+
+    Returns:
+      {
+        "zip_code":      str,
+        "parcel_count":  int,
+        "with_geom":     int,
+        "missing_geom":  int,
+        "coverage_pct":  float
+      }
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    cov = (supa.table('zip_coverage_v3')
+           .select('parcel_count')
+           .eq('zip_code', zip_code)
+           .maybe_single()
+           .execute())
+    if not cov or not cov.data:
+        raise HTTPException(404, f"ZIP {zip_code} not in coverage.")
+    parcel_count = cov.data.get('parcel_count') or 0
+
+    missing_res = (supa.table('parcels_v3')
+                   .select('pin', count='exact')
+                   .eq('zip_code', zip_code)
+                   .or_('lat.is.null,lng.is.null')
+                   .limit(1)
+                   .execute())
+    missing = missing_res.count or 0
+    with_geom = parcel_count - missing
+    coverage_pct = round(100.0 * with_geom / max(parcel_count, 1), 2)
+    return {
+        'zip_code': zip_code,
+        'parcel_count': parcel_count,
+        'with_geom': with_geom,
+        'missing_geom': missing,
+        'coverage_pct': coverage_pct,
     }
