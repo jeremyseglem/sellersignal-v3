@@ -137,15 +137,42 @@ async def get_zip_stats(zip_code: str):
         n = len(values)
         median_value = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2.0
 
-    # Investigation counts — by action_category
-    try:
-        invs = (supa.table('investigations_v3')
-                .select('pin, action_category, updated_at')
-                .eq('zip_code', zip_code)
-                .execute())
-    except Exception:
-        invs = None
-    inv_rows = (invs.data if invs else []) or []
+    # Investigation counts — by action_category.
+    # Paginate: Supabase REST client has a 1000-row default cap regardless
+    # of .limit(); range-based pagination is the only way past it.
+    # Also dedupe by pin because investigations_v3 has both 'screen' and
+    # 'deep' rows per parcel — we only want one per pin for the counts
+    # (prefer 'deep' since action_category there is authoritative).
+    inv_by_pin: dict = {}
+    offset = 0
+    PAGE = 1000
+    errors: list[str] = []
+    while True:
+        try:
+            page = (supa.table('investigations_v3')
+                    .select('pin, mode, action_category, updated_at')
+                    .eq('zip_code', zip_code)
+                    .range(offset, offset + PAGE - 1)
+                    .execute())
+        except Exception as e:
+            errors.append(f"investigations page at {offset}: {e}")
+            break
+        rows = page.data or []
+        for r in rows:
+            pin = r.get('pin')
+            if not pin:
+                continue
+            # Prefer 'deep' mode over 'screen' when both exist for same pin
+            existing = inv_by_pin.get(pin)
+            if existing is None or (r.get('mode') == 'deep' and existing.get('mode') != 'deep'):
+                inv_by_pin[pin] = r
+        if len(rows) < PAGE:
+            break
+        offset += PAGE
+        if offset > 100000:
+            break
+
+    inv_rows = list(inv_by_pin.values())
     investigated_count = len(inv_rows)
     call_now_count  = sum(1 for r in inv_rows if r.get('action_category') == 'call_now')
     build_now_count = sum(1 for r in inv_rows if r.get('action_category') == 'build_now')
@@ -156,7 +183,7 @@ async def get_zip_stats(zip_code: str):
         if stamps:
             last_refresh = max(stamps)
 
-    return {
+    resp = {
         'zip_code':           zip_code,
         'city':               city,
         'state':              state,
@@ -167,3 +194,8 @@ async def get_zip_stats(zip_code: str):
         'build_now_count':    build_now_count,
         'last_refresh':       last_refresh,
     }
+    if errors:
+        # Surface pagination errors rather than silently returning zero
+        # counts — callers can see something's wrong and act.
+        resp['warnings'] = errors
+    return resp
