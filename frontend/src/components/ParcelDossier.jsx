@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { map as mapApi } from '../api/client.js';
+import { map as mapApi, deepSignal as deepSignalApi } from '../api/client.js';
+import SixLettersModal from './SixLettersModal.jsx';
 
 function formatValue(v) {
   if (!v) return '—';
@@ -33,12 +34,29 @@ export default function ParcelDossier({ dossier, onClose }) {
   const [streetViewUrl, setStreetViewUrl] = useState(null);
   const [streetViewOk, setStreetViewOk] = useState(true);
 
+  // Deep Signal state — loads cached on pin change; generation is on-demand
+  const [deepSignal, setDeepSignal] = useState(null);
+  const [deepSignalLoading, setDeepSignalLoading] = useState(false);
+  const [deepSignalError, setDeepSignalError] = useState(null);
+
+  // Six Letters modal
+  const [sixLettersOpen, setSixLettersOpen] = useState(false);
+
   useEffect(() => {
     if (!dossier?.pin) return;
     setStreetViewUrl(null); setStreetViewOk(true);
     mapApi.streetView(dossier.pin)
       .then((r) => setStreetViewUrl(r.url))
       .catch(() => setStreetViewUrl(null));
+  }, [dossier?.pin]);
+
+  // Load cached Deep Signal when pin changes — non-blocking, silent on 404
+  useEffect(() => {
+    if (!dossier?.pin) return;
+    setDeepSignal(null); setDeepSignalError(null); setSixLettersOpen(false);
+    deepSignalApi.get(dossier.pin)
+      .then((r) => setDeepSignal(r))
+      .catch(() => setDeepSignal(null));  // 404 is expected when no cache exists
   }, [dossier?.pin]);
 
   const p   = dossier.parcel || {};
@@ -48,6 +66,24 @@ export default function ParcelDossier({ dossier, onClose }) {
 
   const ownerTag = ownerTypeLabel(p.owner_type);
   const signalLabel = p.signal_family ? p.signal_family.replace(/_/g, ' ') : null;
+
+  // Deep Signal is only available for investigated parcels (those with signals).
+  // The endpoint returns 409 for uninvestigated parcels — hide the button rather
+  // than letting the user click into an error.
+  const canGenerateDeepSignal = Boolean(inv?.signals?.length);
+
+  const handleGenerateDeepSignal = async () => {
+    if (!dossier?.pin) return;
+    setDeepSignalLoading(true); setDeepSignalError(null);
+    try {
+      const r = await deepSignalApi.generate(dossier.pin);
+      setDeepSignal(r);
+    } catch (e) {
+      setDeepSignalError(e?.detail?.message || e?.message || 'Generation failed');
+    } finally {
+      setDeepSignalLoading(false);
+    }
+  };
 
   return (
     <div
@@ -203,6 +239,36 @@ export default function ParcelDossier({ dossier, onClose }) {
           <RecommendedActionBlock rec={rec} />
         )}
 
+        {/* Action buttons — Deep Signal + Six Letters */}
+        {canGenerateDeepSignal && (
+          <ActionButtons
+            hasDeepSignal={Boolean(deepSignal)}
+            deepSignalLoading={deepSignalLoading}
+            onGenerateDeepSignal={handleGenerateDeepSignal}
+            onOpenSixLetters={() => setSixLettersOpen(true)}
+          />
+        )}
+
+        {/* Deep Signal error (only if generation fails) */}
+        {deepSignalError && (
+          <div style={{
+            marginTop: 'var(--space-md)',
+            padding: 'var(--space-sm) var(--space-md)',
+            background: 'rgba(158,75,60,0.08)',
+            borderLeft: '3px solid var(--call-now)',
+            borderRadius: 'var(--radius-md)',
+            fontSize: 12,
+            color: 'var(--text-secondary)',
+          }}>
+            Deep Signal failed: {deepSignalError}
+          </div>
+        )}
+
+        {/* Deep Signal content — scripts + what-not-to-say */}
+        {deepSignal && (deepSignal.motivation || deepSignal.call_script) && (
+          <DeepSignalBlock ds={deepSignal} />
+        )}
+
         {/* Property detail grid — shown for all parcels */}
         <PropertyGrid parcel={p} signalLabel={signalLabel} />
 
@@ -221,6 +287,212 @@ export default function ParcelDossier({ dossier, onClose }) {
           <SignalsBlock signals={inv.signals} />
         )}
       </div>
+
+      {/* Six Letters modal */}
+      {sixLettersOpen && (
+        <SixLettersModal
+          parcel={p}
+          onClose={() => setSixLettersOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Action buttons (Deep Signal + Six Letters)
+// ──────────────────────────────────────────────────────────────────────
+function ActionButtons({ hasDeepSignal, deepSignalLoading, onGenerateDeepSignal, onOpenSixLetters }) {
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      display: 'flex',
+      gap: 'var(--space-sm)',
+    }}>
+      <button
+        onClick={onGenerateDeepSignal}
+        disabled={deepSignalLoading}
+        style={{
+          flex: 1,
+          padding: '10px 12px',
+          fontFamily: 'var(--font-sans)',
+          fontSize: 12,
+          fontWeight: 600,
+          letterSpacing: '0.03em',
+          border: 'none',
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--text)',
+          color: 'var(--bg-card)',
+          cursor: deepSignalLoading ? 'wait' : 'pointer',
+          opacity: deepSignalLoading ? 0.6 : 1,
+        }}
+      >
+        {deepSignalLoading
+          ? 'Generating…'
+          : hasDeepSignal
+            ? 'Refresh Deep Signal'
+            : 'Deep Signal'}
+      </button>
+      <button
+        onClick={onOpenSixLetters}
+        style={{
+          flex: 1,
+          padding: '10px 12px',
+          fontFamily: 'var(--font-sans)',
+          fontSize: 12,
+          fontWeight: 600,
+          letterSpacing: '0.03em',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)',
+          background: 'transparent',
+          color: 'var(--text)',
+          cursor: 'pointer',
+        }}
+      >
+        Six Letters
+      </button>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Deep Signal display — motivation + 3 scripts + what-not-to-say
+// ──────────────────────────────────────────────────────────────────────
+function DeepSignalBlock({ ds }) {
+  const [activeScript, setActiveScript] = useState(
+    ds.best_channel === 'mail' ? 'mail'
+    : ds.best_channel === 'door' ? 'door'
+    : 'call'
+  );
+
+  const tabs = [
+    { key: 'call', label: 'Phone script',  content: ds.call_script },
+    { key: 'mail', label: 'Letter',        content: ds.mail_script },
+    { key: 'door', label: 'Door knock',    content: ds.door_script },
+  ];
+  const active = tabs.find((t) => t.key === activeScript) || tabs[0];
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      padding: 'var(--space-md)',
+      background: 'var(--bg)',
+      borderRadius: 'var(--radius-md)',
+      borderLeft: '3px solid var(--build-now)',
+    }}>
+      <div style={{
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
+        color: 'var(--build-now)',
+      }}>
+        Deep Signal
+      </div>
+
+      {/* Motivation — why this owner may sell */}
+      {ds.motivation && (
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 14,
+          color: 'var(--text)',
+          lineHeight: 1.55,
+          marginTop: 'var(--space-sm)',
+        }}>
+          {ds.motivation}
+        </p>
+      )}
+
+      {/* Meta row: timeline + best channel */}
+      {(ds.timeline || ds.best_channel) && (
+        <div style={{
+          display: 'flex',
+          gap: 'var(--space-md)',
+          marginTop: 'var(--space-sm)',
+          fontSize: 11,
+          color: 'var(--text-tertiary)',
+          fontWeight: 600,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+        }}>
+          {ds.timeline && <div>Timeline: {ds.timeline}</div>}
+          {ds.best_channel && <div>Lead with: {ds.best_channel}</div>}
+        </div>
+      )}
+
+      {/* Script tabs */}
+      <div style={{
+        marginTop: 'var(--space-md)',
+        display: 'flex',
+        gap: 4,
+        borderBottom: '1px solid var(--border)',
+      }}>
+        {tabs.filter((t) => t.content).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveScript(t.key)}
+            style={{
+              padding: '6px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: '0.03em',
+              border: 'none',
+              borderBottom: `2px solid ${activeScript === t.key ? 'var(--build-now)' : 'transparent'}`,
+              background: 'transparent',
+              color: activeScript === t.key ? 'var(--text)' : 'var(--text-tertiary)',
+              cursor: 'pointer',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Active script body */}
+      {active.content && (
+        <div style={{
+          marginTop: 'var(--space-sm)',
+          padding: 'var(--space-sm) 0',
+          fontFamily: 'var(--font-serif)',
+          fontSize: 13,
+          fontStyle: 'italic',
+          color: 'var(--text)',
+          lineHeight: 1.6,
+          whiteSpace: 'pre-line',
+        }}>
+          “{active.content}”
+        </div>
+      )}
+
+      {/* What not to say */}
+      {ds.what_not_to_say && (
+        <div style={{
+          marginTop: 'var(--space-md)',
+          padding: 'var(--space-sm) var(--space-md)',
+          background: 'rgba(158,75,60,0.06)',
+          borderLeft: '2px solid rgba(158,75,60,0.4)',
+          borderRadius: 'var(--radius-md)',
+        }}>
+          <div style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            color: 'var(--call-now)',
+            marginBottom: 4,
+          }}>
+            What not to say
+          </div>
+          <div style={{
+            fontSize: 12,
+            color: 'var(--text-secondary)',
+            lineHeight: 1.5,
+            fontFamily: 'var(--font-serif)',
+          }}>
+            {ds.what_not_to_say}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

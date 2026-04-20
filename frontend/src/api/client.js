@@ -84,6 +84,16 @@ export const playbook = {
   pdfUrl: (zip) => `${API_BASE}/playbook/${zip}/pdf`,  // direct <a href> target
 };
 
+// ── Deep Signal ────────────────────────────────────────────────────
+// GET returns cached Deep Signal or 404 — use to check existence.
+// POST generates on demand (cache-first; pass force=true to bypass cache).
+
+export const deepSignal = {
+  get:       (pin) => request(`/deep-signal/${pin}`),
+  generate:  (pin, force = false) =>
+    request(`/deep-signal/${pin}${force ? '?force=true' : ''}`, { method: 'POST' }),
+};
+
 // ── Health ─────────────────────────────────────────────────────────
 
 export const health = {

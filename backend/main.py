@@ -20,6 +20,7 @@ from backend.api import (
     health,
     coverage,
     admin,
+    deep_signal,
 )
 
 
@@ -67,6 +68,7 @@ app.include_router(investigations.router, prefix="/api/investigations", tags=["i
 app.include_router(playbook.router,       prefix="/api/playbook",    tags=["playbook"])
 app.include_router(map_data.router,       prefix="/api/map",         tags=["map"])
 app.include_router(admin.router,          prefix="/api/admin",       tags=["admin"])
+app.include_router(deep_signal.router,    prefix="/api/deep-signal", tags=["deep-signal"])
 
 
 # ── FRONTEND ───────────────────────────────────────────────────────────
