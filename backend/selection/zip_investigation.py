@@ -35,24 +35,42 @@ from backend.investigation import persistence
 
 def select_option_a_scope(parcels: list[dict]) -> list[dict]:
     """
-    Select Option A scope from a ZIP's parcels.
-      8 Band 3 (by value descending)
-     12 Band 2.5 (by value descending)
-     30 Band 2 tier-balanced (10 ultra $15M+, 10 luxury $6-15M, 10 mid $2-6M)
+    Select scope from a ZIP's parcels.
 
-    Returns deduplicated list of parcels (up to 50).
+    Philosophy: the app finds sellers, not luxury sellers. Band assignment
+    is the pressure filter (structural features: owner type, tenure,
+    absentee, archetype). Within the Band 2+ cohort we do NOT filter by
+    raw property value — a $400K home with an LLC owner and short tenure
+    has the same structural pressure as a $15M home with the same pattern.
+
+    Selection rule:
+      - All Band 3 parcels (by value desc)
+      - All Band 2.5 parcels (by value desc)
+      - All Band 2 parcels (by value desc)
+      - Deduplicated by pin
+
+    Rationale for keeping Band 2+ filter:
+      - Band 0 / Band 1 parcels are structurally low-pressure (long-term
+        owner-occupied with no trust/LLC/absentee markers). Investigating
+        them burns SerpAPI budget for rare yield. If beta evidence shows
+        we're missing sellers in those bands, we can expand later.
+      - Band is NOT a value proxy — a $600K Band-3 parcel (short-tenure
+        LLC) beats a $10M Band-0 parcel (30-year individual owner) every
+        time on seller likelihood. That's exactly what we want.
+
+    No cap — returns every Band 2+ parcel. Caller controls spending via
+    max_finalists for the deep pass and the monthly budget gate.
+
+    For a ZIP like 98004 this typically surfaces 200-500 parcels. For
+    broader markets (Charlotte suburbs, Bozeman) it may be more.
     """
     def val(p): return p.get('total_value') or 0
 
-    b3  = sorted([p for p in parcels if p.get('band') == 3],   key=lambda x: -val(x))[:8]
-    b25 = sorted([p for p in parcels if p.get('band') == 2.5], key=lambda x: -val(x))[:12]
-    b2  = [p for p in parcels if p.get('band') == 2]
+    b3  = sorted([p for p in parcels if p.get('band') == 3],   key=lambda x: -val(x))
+    b25 = sorted([p for p in parcels if p.get('band') == 2.5], key=lambda x: -val(x))
+    b2  = sorted([p for p in parcels if p.get('band') == 2],   key=lambda x: -val(x))
 
-    ultra  = sorted([p for p in b2 if val(p) >= 15_000_000], key=lambda x: -val(x))[:10]
-    luxury = sorted([p for p in b2 if 6_000_000 <= val(p) < 15_000_000], key=lambda x: -val(x))[:10]
-    mid    = sorted([p for p in b2 if 2_000_000 <= val(p) < 6_000_000], key=lambda x: -val(x))[:10]
-
-    scope = b3 + b25 + ultra + luxury + mid
+    scope = b3 + b25 + b2
     seen = set(); uniq = []
     for p in scope:
         pin = p.get('pin')

@@ -46,26 +46,21 @@ def _rank_key(lead):
 
 def select_option_a_scope(inventory: dict) -> list[dict]:
     """
-    Returns 50 leads in the Option A shape:
-      8 Band 3 + 12 Band 2.5 + 10 B2 ultra + 10 B2 luxury + 10 B2 mid
+    Returns all Band 2+ leads — no value filtering.
+
+    Philosophy: find sellers at all price points. Band is the pressure
+    filter (structural features), not value. See matching docstring in
+    backend/selection/zip_investigation.py for full rationale.
+
+    For 98004 this surfaces 200-500 leads; for broader-market ZIPs more.
     """
     leads = inventory['leads']
 
-    band3    = sorted([L for L in leads if L.get('band') == 3],    key=lambda x: -_rank_key(x))
-    band25   = sorted([L for L in leads if L.get('band') == 2.5],  key=lambda x: -_rank_key(x))
+    band3  = sorted([L for L in leads if L.get('band') == 3],   key=lambda x: -_rank_key(x))
+    band25 = sorted([L for L in leads if L.get('band') == 2.5], key=lambda x: -_rank_key(x))
+    band2  = sorted([L for L in leads if L.get('band') == 2],   key=lambda x: -_rank_key(x))
 
-    band2 = [L for L in leads if L.get('band') == 2]
-    def val(L): return L.get('value') or 0
-    b2_ultra  = sorted([L for L in band2 if val(L) >= 15_000_000],            key=lambda x: -_rank_key(x))
-    b2_luxury = sorted([L for L in band2 if 6_000_000 <= val(L) < 15_000_000], key=lambda x: -_rank_key(x))
-    b2_mid    = sorted([L for L in band2 if 2_000_000 <= val(L) < 6_000_000],  key=lambda x: -_rank_key(x))
-
-    scope = []
-    scope += band3[:8]
-    scope += band25[:12]
-    scope += b2_ultra[:10]
-    scope += b2_luxury[:10]
-    scope += b2_mid[:10]
+    scope = band3 + band25 + band2
 
     # Dedupe by pin
     seen = set()
