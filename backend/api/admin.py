@@ -333,7 +333,7 @@ async def geometry_backfill_endpoint(
       }
     """
     try:
-        from backend.ingest.geometry_backfill import backfill_geometry_zip
+        from backend.ingest.geometry_backfill import backfill_geometry_zip_async
     except Exception as e:
         raise HTTPException(500, f"geometry_backfill module failed to import: {e}")
 
@@ -369,7 +369,7 @@ async def geometry_backfill_endpoint(
             )
 
     try:
-        result = backfill_geometry_zip(
+        result = await backfill_geometry_zip_async(
             zip_code=zip_code,
             market_key=market_key,
             dry_run=dry_run,

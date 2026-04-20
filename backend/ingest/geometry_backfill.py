@@ -171,25 +171,16 @@ def _bulk_update_coords(supa, coords: dict[str, tuple[float, float]]) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Public API — programmatic entry point
+# Public API — async-native (preferred; safe inside FastAPI handlers)
 # ──────────────────────────────────────────────────────────────────────
-def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
-                          dry_run: bool = False, limit: Optional[int] = None,
-                          verbose: bool = True) -> dict:
+async def backfill_geometry_zip_async(
+    zip_code: str, market_key: str = 'WA_KING',
+    dry_run: bool = False, limit: Optional[int] = None,
+    verbose: bool = True,
+) -> dict:
     """
-    Backfill lat/lng for all parcels in a ZIP with null coordinates.
-
-    Returns stats dict:
-      {
-        "zip_code":       str,
-        "market_key":     str,
-        "dry_run":        bool,
-        "missing_geom":   int,        # PINs with null coords
-        "fetched":        int,        # geometry hits from ArcGIS
-        "updated":        int,        # rows updated in Supabase
-        "not_found":      int,        # PINs no ArcGIS match
-        "errors":         list
-      }
+    Async implementation. Safe to call from a FastAPI async endpoint
+    where an event loop is already running.
     """
     def log(msg: str):
         if verbose:
@@ -224,10 +215,9 @@ def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
         log(f"[geometry_backfill] sample PINs: {pins[:5]}")
         return stats
 
-    # Fetch geometry from ArcGIS
     log(f"[geometry_backfill] querying ArcGIS in batches of {BATCH_SIZE}...")
     try:
-        coords = asyncio.run(_fetch_geometry_for_pins(pins, market_key))
+        coords = await _fetch_geometry_for_pins(pins, market_key)
     except Exception as e:
         stats['errors'].append(f"ArcGIS fetch failed: {e}")
         log(f"[geometry_backfill] ArcGIS fetch failed: {e}")
@@ -239,10 +229,26 @@ def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
     if stats['not_found']:
         log(f"[geometry_backfill] {stats['not_found']} PINs had no ArcGIS geometry (may be retired parcels)")
 
-    # Write back
     if coords:
         log(f"[geometry_backfill] updating Supabase...")
         stats['updated'] = _bulk_update_coords(supa, coords)
         log(f"[geometry_backfill] updated {stats['updated']} rows")
 
     return stats
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sync wrapper for CLI use — NOT safe inside a running event loop
+# ──────────────────────────────────────────────────────────────────────
+def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
+                          dry_run: bool = False, limit: Optional[int] = None,
+                          verbose: bool = True) -> dict:
+    """
+    Synchronous wrapper around backfill_geometry_zip_async.
+    Creates its own event loop — do NOT call from inside async code;
+    use backfill_geometry_zip_async() there instead.
+    """
+    return asyncio.run(backfill_geometry_zip_async(
+        zip_code=zip_code, market_key=market_key,
+        dry_run=dry_run, limit=limit, verbose=verbose,
+    ))
