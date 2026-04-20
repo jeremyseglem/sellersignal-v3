@@ -46,7 +46,11 @@ MARKET_CONFIGS = {
     },
 }
 
-BATCH_SIZE = 200       # PINs per ArcGIS where-clause
+BATCH_SIZE = 50        # PINs per ArcGIS IN clause. 200 was too large —
+                       # URL-encoded IN(...) of 200 quoted 10-char PINs
+                       # exceeded ~4KB and was silently truncated somewhere
+                       # in the chain (only first ~100 matched). 50 gives
+                       # ~600-char IN list, well under any URL length limit.
 PAGE_SIZE = 2000       # features per response (ArcGIS max)
 REQUEST_TIMEOUT_SECONDS = 60
 
