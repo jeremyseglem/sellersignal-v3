@@ -23,6 +23,11 @@ parts/
 sdist/
 var/
 wheels/
+
+# Exception: commit the built React frontend so FastAPI can serve it
+# (until we configure Railway to build it during deploy)
+!frontend/dist/
+!frontend/dist/**
 *.egg-info/
 .installed.cfg
 *.egg
@@ -34,7 +39,6 @@ ENV/
 
 # Node / Frontend
 node_modules/
-frontend/dist/
 frontend/build/
 .vite/
 
