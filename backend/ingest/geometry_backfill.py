@@ -37,8 +37,12 @@ from backend.api.db import get_supabase_client
 # ──────────────────────────────────────────────────────────────────────
 MARKET_CONFIGS = {
     'WA_KING': {
+        # Geometry-only layer from KC GIS. Note: this is a DIFFERENT endpoint
+        # than the owner/value ingest source — this service exposes only
+        # OBJECTID, MAJOR, MINOR, PIN, and Shape. The PIN field here is a
+        # 10-char string that matches parcels_v3.pin.
         'url':       'https://gismaps.kingcounty.gov/arcgis/rest/services/Property/KingCo_Parcels/MapServer/0/query',
-        'pin_field': 'PARCELID',
+        'pin_field': 'PIN',
     },
 }
 
