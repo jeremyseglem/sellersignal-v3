@@ -2,23 +2,27 @@
 Raw signal matcher.
 
 Reads unmatched rows from raw_signals_v3, resolves party_names against
-owner_canonical_v3, writes matches to raw_signal_matches_v3, and
-promotes high-confidence matches into the existing investigations_v3
-flow so the scoring engine processes them naturally.
+owner_canonical_v3, and writes matches to raw_signal_matches_v3.
 
 This is the FINAL stage of the harvester pipeline:
-    harvester -> raw_signals_v3 -> [matcher] -> investigations_v3 -> scoring
+    harvester -> raw_signals_v3 -> [matcher] -> raw_signal_matches_v3
+                                                         │
+                                                         └─> served via
+                                                             /api/harvest/
+                                                             matches/{zip}
 
-Design:
+Design (Path B):
+- raw_signal_matches_v3 is the authoritative source of truth for
+  harvester-lineage matches. We do NOT write to investigations_v3 —
+  that table is the SerpAPI-era signal store and has different schema
+  assumptions (rollup flags, action categories, TTL, single-row-per-pin).
+  Mixing lineages risks blasting SerpAPI state on upsert.
 - Loops raw_signals with matched_at IS NULL
 - For each signal, dispatches to a type-specific matcher based on signal_type
-- Reuses the existing ingest/legal_filings.py matchers where possible
-  so the scoring logic doesn't diverge between SerpAPI-era code and
-  harvester-era code
+- Reuses the existing ingest/legal_filings.py matchers so the name-match
+  logic doesn't diverge between SerpAPI-era and harvester-era code
 - Writes raw_signal_matches_v3 rows for each match
 - Updates raw_signals_v3 matched_at + match_count
-- Inserts into investigations_v3 for matched parcels so the scoring
-  engine picks them up
 """
 
 from __future__ import annotations
@@ -192,8 +196,16 @@ def _process_one(
     zip_filter: Optional[str],
 ) -> int:
     """
-    Match a single raw_signal to parcels. Write match rows.
-    Returns number of parcels matched.
+    Match a single raw_signal to parcels. Write match rows to
+    raw_signal_matches_v3. Returns number of parcels matched.
+
+    Architecture note (Path B): harvester matches are NOT promoted to
+    investigations_v3. That table is the SerpAPI-era signal store; its
+    schema is tightly coupled to that lineage (rollup flags, action
+    categories, TTL, etc). Mixing harvester and SerpAPI signals into the
+    same row would require a merge strategy and risk blasting SerpAPI
+    state. Instead, raw_signal_matches_v3 is the source of truth for
+    harvester lineage, exposed via /api/harvest/matches/{zip}.
     """
     signal_type = row["signal_type"]
     dispatcher = _DISPATCH.get(signal_type)
@@ -225,11 +237,10 @@ def _process_one(
      .upsert(match_rows, on_conflict='raw_signal_id,pin')
      .execute())
 
-    # Mark raw_signal processed
+    # Mark raw_signal processed. Note: this must happen AFTER the match
+    # rows are written, so if match-write fails we don't falsely mark
+    # the signal as processed.
     _mark_matched(supa, row["id"], match_count=len(match_rows))
-
-    # Promote to investigations_v3 — one row per matched parcel
-    _promote_to_investigations(supa, row, candidates)
 
     return len(match_rows)
 
@@ -242,85 +253,6 @@ def _mark_matched(supa, raw_signal_id: int, match_count: int):
      })
      .eq('id', raw_signal_id)
      .execute())
-
-
-def _promote_to_investigations(supa, row: dict, candidates: list[dict]):
-    """
-    Insert one investigations_v3 row per matched parcel so the scoring
-    engine picks it up.
-
-    Important: we're writing minimal rows that the existing scoring code
-    already understands (signal_family, trigger_hint_json, etc.). The
-    scoring rescore will fill in everything else.
-    """
-    for c in candidates:
-        pin = c["parcel_id"]
-        signal_family = c.get("signal_family") or _infer_signal_family(row["signal_type"])
-        trigger_hint = c.get("trigger_hint") or {}
-
-        # Build a minimal signal row matching investigations_v3 shape.
-        # The scoring engine keys on signals[].type and signal_family.
-        signal_obj = {
-            "type":         row["signal_type"],
-            "category":     _category_for(row["signal_type"]),
-            "trust":        row["trust_level"],
-            "source_type":  row["source_type"],        # NEW: lets scoring distinguish
-                                                       # court_record from web_match
-            "detail":       trigger_hint,
-            "event_date":   row.get("event_date"),
-            "document_ref": row.get("document_ref"),
-        }
-
-        # Upsert into investigations_v3 (mode='harvester' is a new mode alongside
-        # screen/deep — signals from harvesters bypass SerpAPI entirely)
-        (supa.table('investigations_v3')
-         .upsert({
-             "pin":              pin,
-             "mode":             "harvester",
-             "zip_code":         _get_zip_for_pin(supa, pin),
-             "signals":          [signal_obj],
-             "signal_family":    signal_family,
-             "harvested_ref":    row["document_ref"],
-         }, on_conflict='pin,mode')
-         .execute())
-
-
-def _infer_signal_family(signal_type: str) -> str:
-    """Map harvester signal_type -> scoring's signal_family taxonomy."""
-    return {
-        "probate":      "probate_pending",
-        "divorce":      "divorce_unwinding",
-        "nod":          "foreclosure_pressure",
-        "trustee_sale": "foreclosure_pressure",
-        "lis_pendens":  "foreclosure_pressure",
-        "obituary":     "life_event_recent",
-    }.get(signal_type, "other")
-
-
-def _category_for(signal_type: str) -> str:
-    return {
-        "probate":      "life_event",
-        "divorce":      "life_event",
-        "nod":          "financial_pressure",
-        "trustee_sale": "financial_pressure",
-        "lis_pendens":  "financial_pressure",
-        "obituary":     "life_event",
-    }.get(signal_type, "other")
-
-
-_zip_cache: dict = {}
-
-def _get_zip_for_pin(supa, pin: str) -> Optional[str]:
-    if pin in _zip_cache:
-        return _zip_cache[pin]
-    r = (supa.table('parcels_v3')
-         .select('zip_code')
-         .eq('pin', pin)
-         .limit(1)
-         .execute()).data
-    z = r[0]['zip_code'] if r else None
-    _zip_cache[pin] = z
-    return z
 
 
 # ─── Dispatch table ────────────────────────────────────────────────────

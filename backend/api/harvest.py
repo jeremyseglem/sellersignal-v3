@@ -116,28 +116,33 @@ def harvest_run(
 @router.get("/status/{zip_code}")
 def harvest_status(zip_code: str):
     """
-    Summary of harvested signals visible for a ZIP.
+    Summary of harvested signals and matches for a ZIP.
 
     Counts:
-      - raw_signals_v3 rows by source_type
+      - raw_signals_v3 rows total + by (source_type, signal_type)
+      - raw_signals_v3 processed vs unmatched
       - raw_signal_matches_v3 rows scoped to this ZIP's parcels
-      - investigations_v3 rows with mode='harvester' for this ZIP
+      - Distinct matched parcels in this ZIP
     """
     supa = get_supabase_client()
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # Raw signals by source (NOT ZIP-scoped — harvesters pull KC-wide)
+    # All raw signals (not ZIP-scoped; harvesters pull KC-wide)
     all_raw = (supa.table('raw_signals_v3')
-               .select('source_type, signal_type', count='exact')
-               .execute())
+               .select('source_type, signal_type, matched_at')
+               .limit(100000)
+               .execute()).data or []
 
-    by_source: dict = {}
-    for row in all_raw.data or []:
-        k = row['source_type']
-        by_source[k] = by_source.get(k, 0) + 1
+    by_source_type: dict = {}
+    processed = 0
+    for row in all_raw:
+        key = f"{row['source_type']}::{row['signal_type']}"
+        by_source_type[key] = by_source_type.get(key, 0) + 1
+        if row.get('matched_at'):
+            processed += 1
 
-    # Matches for parcels in this ZIP
+    # Pins in this ZIP
     pins_in_zip_res = (supa.table('parcels_v3')
                        .select('pin')
                        .eq('zip_code', zip_code)
@@ -145,30 +150,130 @@ def harvest_status(zip_code: str):
                        .execute())
     pins = [r['pin'] for r in (pins_in_zip_res.data or [])]
 
+    # Matches for parcels in this ZIP + distinct match pins
     matched_count = 0
+    matched_pins: set = set()
     if pins:
-        # Chunk due to .in_ limits
         CHUNK = 200
         for i in range(0, len(pins), CHUNK):
             chunk = pins[i : i + CHUNK]
             res = (supa.table('raw_signal_matches_v3')
-                   .select('id', count='exact')
+                   .select('pin', count='exact')
                    .in_('pin', chunk)
+                   .limit(5000)
                    .execute())
             matched_count += res.count or 0
-
-    # Investigations from harvester mode
-    harvester_invs = (supa.table('investigations_v3')
-                      .select('pin', count='exact')
-                      .eq('zip_code', zip_code)
-                      .eq('mode', 'harvester')
-                      .execute())
+            for r in (res.data or []):
+                matched_pins.add(r['pin'])
 
     return {
-        "zip_code":                    zip_code,
-        "parcels_in_zip":              len(pins),
-        "raw_signals_total":           all_raw.count or 0,
-        "raw_signals_by_source":       by_source,
-        "matches_for_zip_parcels":     matched_count,
-        "harvester_investigations":    harvester_invs.count or 0,
+        "zip_code":              zip_code,
+        "parcels_in_zip":        len(pins),
+        "raw_signals_total":     len(all_raw),
+        "raw_signals_processed": processed,
+        "raw_signals_pending":   len(all_raw) - processed,
+        "raw_signals_by_type":   by_source_type,
+        "total_matches":         matched_count,
+        "distinct_matched_pins": len(matched_pins),
+    }
+
+
+@router.get("/matches/{zip_code}")
+def harvest_matches(zip_code: str, limit: int = 100):
+    """
+    The actual prospect list: matched parcels in this ZIP with their
+    triggering signals.
+
+    Returns one row per (parcel, signal) match, joined to parcel info
+    and signal detail. Sorted by most recent event_date first.
+    """
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    if limit < 1 or limit > 1000:
+        raise HTTPException(400, "limit must be 1–1000")
+
+    # Pins in this ZIP
+    pins_in_zip_res = (supa.table('parcels_v3')
+                       .select('pin, owner_name, address, city, total_value, owner_type')
+                       .eq('zip_code', zip_code)
+                       .limit(10000)
+                       .execute())
+    parcels_by_pin = {r['pin']: r for r in (pins_in_zip_res.data or [])}
+    pins = list(parcels_by_pin.keys())
+    if not pins:
+        return {"zip_code": zip_code, "matches": []}
+
+    # Fetch matches for these pins
+    all_matches: list[dict] = []
+    CHUNK = 200
+    for i in range(0, len(pins), CHUNK):
+        chunk = pins[i : i + CHUNK]
+        res = (supa.table('raw_signal_matches_v3')
+               .select('raw_signal_id, pin, match_strength, match_method, matched_at')
+               .in_('pin', chunk)
+               .limit(5000)
+               .execute())
+        all_matches.extend(res.data or [])
+
+    if not all_matches:
+        return {"zip_code": zip_code, "matches": []}
+
+    # Fetch the signal details for all matched raw_signal_ids
+    signal_ids = list({m['raw_signal_id'] for m in all_matches})
+    signals_by_id: dict = {}
+    CHUNK_S = 300
+    for i in range(0, len(signal_ids), CHUNK_S):
+        chunk = signal_ids[i : i + CHUNK_S]
+        res = (supa.table('raw_signals_v3')
+               .select('id, source_type, signal_type, trust_level, party_names, '
+                       'event_date, jurisdiction, document_ref, raw_data')
+               .in_('id', chunk)
+               .execute())
+        for r in (res.data or []):
+            signals_by_id[r['id']] = r
+
+    # Assemble the response: one row per (parcel, signal)
+    matches_out: list[dict] = []
+    for m in all_matches:
+        signal = signals_by_id.get(m['raw_signal_id'])
+        parcel = parcels_by_pin.get(m['pin'])
+        if not signal or not parcel:
+            continue
+
+        # Extract first party name for quick display
+        parties = signal.get('party_names') or []
+        first_party = parties[0].get('raw') if parties else None
+
+        matches_out.append({
+            "pin":              m['pin'],
+            "owner_name":       parcel.get('owner_name'),
+            "owner_type":       parcel.get('owner_type'),
+            "address":          parcel.get('address'),
+            "city":             parcel.get('city'),
+            "total_value":      parcel.get('total_value'),
+            "signal_type":      signal['signal_type'],
+            "signal_source":    signal['source_type'],
+            "trust_level":      signal['trust_level'],
+            "event_date":       signal.get('event_date'),
+            "matched_party":    first_party,
+            "all_parties":      parties,
+            "document_ref":     signal.get('document_ref'),
+            "case_detail":      signal.get('raw_data', {}),
+            "match_strength":   m['match_strength'],
+            "matched_at":       m['matched_at'],
+        })
+
+    # Sort by event_date desc (most recent first), null dates at bottom
+    matches_out.sort(
+        key=lambda r: r.get('event_date') or '',
+        reverse=True,
+    )
+
+    return {
+        "zip_code":       zip_code,
+        "total_matches":  len(matches_out),
+        "returned":       min(limit, len(matches_out)),
+        "matches":        matches_out[:limit],
     }
