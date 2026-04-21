@@ -317,6 +317,26 @@ class KCSuperiorCourtHarvester(BaseHarvester):
 
     def _row_to_signal(self, row: dict, signal_type: str) -> Optional[RawSignal]:
         """Convert a parsed KC result row into a RawSignal."""
+        # --- Fix 1: filter non-dissolution cases out of divorce stream ---
+        # KC caseType 211110 (Family/Domestic) is a bucket containing:
+        #   - "Dissolution w/ Children", "Dissolution w/ Real Property",
+        #     "Dissolution - No Children" (THESE are real divorces we want)
+        #   - "Petition for Entry of KC Support Order" (state-initiated child
+        #     support — NOT a divorce, petitioner is STATE OF WASHINGTON)
+        #   - "Out of State Support Registration /Foreign Judgment" (interstate
+        #     support enforcement — NOT a divorce)
+        #   - "Parentage" (paternity establishment — NOT a divorce)
+        #   - "Modification" (modifying an existing order)
+        # Only "Dissolution" cases represent actual marital breakups and thus
+        # real seller signal. Everything else gets filtered here so it never
+        # enters raw_signals_v3.
+        if signal_type == "divorce":
+            cause = (row.get("cause") or "").lower()
+            if "dissolution" not in cause:
+                log.debug(f"Skipping {row['case_number']}: cause='{cause}' "
+                          f"is not a dissolution")
+                return None
+
         parties = self._parse_parties(row["case_name"], signal_type)
         if not parties:
             log.debug(f"Skipping {row['case_number']}: no parties from "

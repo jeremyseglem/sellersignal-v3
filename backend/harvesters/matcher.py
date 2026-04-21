@@ -119,6 +119,14 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
 
     For the pilot we scope to a single ZIP. Full matcher runs would load
     all covered ZIPs, or process per-ZIP in a loop.
+
+    Fix 2: Exclude government-owned parcels. These parcels can't be sold
+    and lead to false-positive matches when court filings name
+    "STATE OF WASHINGTON" or similar as a party (e.g. state-initiated
+    child support enforcement). Filter applies to:
+      - owner_type='gov' as stamped by the canonicalizer
+      - owner_name containing government patterns (WSDOT, State of,
+        City of, County of, etc.)
     """
     # Parcels (filtered to ZIP if provided) — we need prop_type/use_code
     # for the divorce matcher's residential filter
@@ -127,7 +135,7 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
     parcels: list[dict] = []
     while True:
         q = supa.table('parcels_v3').select(
-            'pin, owner_name, prop_type, zip_code'
+            'pin, owner_name, owner_type, prop_type, zip_code'
         )
         if zip_filter:
             q = q.eq('zip_code', zip_filter)
@@ -138,6 +146,9 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
         offset += PAGE
         if offset > 200000:
             break
+
+    # Filter out gov-owned parcels — they can't be seller signals
+    parcels = [p for p in parcels if not _is_government_parcel(p)]
 
     # owner_canonical (for each pin, the parsed owner entities)
     pins = [p['pin'] for p in parcels]
@@ -157,6 +168,49 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
         }
 
     return owners_db, use_codes
+
+
+def _is_government_parcel(parcel: dict) -> bool:
+    """
+    True if this parcel is owned by a government entity and should be
+    excluded from matching.
+
+    Checks:
+      1. owner_type='gov' (preferred — comes from canonicalizer)
+      2. owner_name patterns: WSDOT, State of, City of, County of,
+         Of Washington State, State Dot, US of America, King County,
+         Port of, Public Utility, Sound Transit, Metro, School District
+    """
+    if (parcel.get('owner_type') or '').lower() == 'gov':
+        return True
+
+    name = (parcel.get('owner_name') or '').upper()
+    if not name:
+        return False
+
+    gov_patterns = (
+        "WSDOT",
+        "STATE OF",
+        "CITY OF",
+        "COUNTY OF",
+        "OF WASHINGTON STATE",
+        "STATE DOT",
+        "US OF AMERICA",
+        "UNITED STATES",
+        "KING COUNTY",
+        "PORT OF",
+        "PUBLIC UTILITY",
+        "SOUND TRANSIT",
+        "SCHOOL DISTRICT",
+        "METRO TRANSIT",
+        "FEDERAL HIGHWAY",
+        "DEPT OF TRANSPORT",
+        "DEPT OF ECOLOGY",
+        "WA STATE",
+        "BELLEVUE CITY",
+        "SEATTLE CITY",
+    )
+    return any(p in name for p in gov_patterns)
 
 
 def _load_canonical_for_pins(supa, pins: list[str]) -> dict:

@@ -113,7 +113,48 @@ def harvest_run(
     return stats
 
 
-@router.get("/status/{zip_code}")
+@router.post("/reset")
+def harvest_reset(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+):
+    """
+    Delete ALL rows from raw_signals_v3 and raw_signal_matches_v3.
+
+    For pilot iteration only — gives us a clean slate to re-run
+    harvesters after filter changes. Pass ?confirm=true to actually
+    perform the delete.
+    """
+    _require_admin(x_admin_key)
+
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This deletes all harvester data. Pass ?confirm=true to proceed.",
+        )
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Cascade: delete raw_signals deletes raw_signal_matches via FK
+    # But be explicit about both for safety + count reporting
+    matches_res = (supa.table('raw_signal_matches_v3')
+                   .delete()
+                   .neq('id', -1)      # match all rows (id > 0)
+                   .execute())
+    signals_res = (supa.table('raw_signals_v3')
+                   .delete()
+                   .neq('id', -1)
+                   .execute())
+
+    return {
+        "deleted_matches": len(matches_res.data or []),
+        "deleted_signals": len(signals_res.data or []),
+    }
+
+
+
 def harvest_status(zip_code: str):
     """
     Summary of harvested signals and matches for a ZIP.
@@ -179,13 +220,23 @@ def harvest_status(zip_code: str):
 
 
 @router.get("/matches/{zip_code}")
-def harvest_matches(zip_code: str, limit: int = 100):
+def harvest_matches(
+    zip_code: str,
+    limit: int = 100,
+    include_weak: bool = False,
+):
     """
     The actual prospect list: matched parcels in this ZIP with their
     triggering signals.
 
     Returns one row per (parcel, signal) match, joined to parcel info
     and signal detail. Sorted by most recent event_date first.
+
+    By default, weak-strength matches (surname-only, permissive name
+    collisions) are filtered out. Weak matches are overwhelmingly false
+    positives in practice — e.g. "John K Anderson" parcel matched to a
+    "Mark John Anderson" divorce party because both share the surname.
+    Use ?include_weak=true to see everything for debugging.
     """
     supa = get_supabase_client()
     if supa is None:
@@ -210,11 +261,13 @@ def harvest_matches(zip_code: str, limit: int = 100):
     CHUNK = 200
     for i in range(0, len(pins), CHUNK):
         chunk = pins[i : i + CHUNK]
-        res = (supa.table('raw_signal_matches_v3')
-               .select('raw_signal_id, pin, match_strength, match_method, matched_at')
-               .in_('pin', chunk)
-               .limit(5000)
-               .execute())
+        q = (supa.table('raw_signal_matches_v3')
+             .select('raw_signal_id, pin, match_strength, match_method, matched_at')
+             .in_('pin', chunk)
+             .limit(5000))
+        if not include_weak:
+            q = q.neq('match_strength', 'weak')
+        res = q.execute()
         all_matches.extend(res.data or [])
 
     if not all_matches:
