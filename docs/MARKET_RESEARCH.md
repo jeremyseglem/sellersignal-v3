@@ -386,46 +386,71 @@ direct), 2-3 days recorder. 8-13 total.
 
 ## New York City — HIGH FEASIBILITY (gold standard data)
 
-> **CRITICAL CAVEAT — NYC coop invisibility.** A previous session
-> flagged that NYC has structural blindspots the harvester model
-> can't reach. This is real and matters:
+> **NYC COOP / CONDO NUANCE.** Two structural data-access facts
+> worth knowing upfront. Both affect the approach but neither
+> makes NYC infeasible.
 >
-> **Coops** — roughly 70-75% of Manhattan apartments are coops, not
-> condos. In a coop, the cooperative corporation owns the building;
-> "owners" are shareholders in that corporation with proprietary
-> leases. Coop unit transfers are **stock transfers, not deeds** —
-> they don't appear in ACRIS at all. Coop boards approve every sale
-> privately. There is no public record tying an individual resident
-> to a specific coop unit. For coops, the harvester model is
-> **structurally impossible** — not just hard.
+> **Condos**: indexed by Borough-Block-Lot (BBL). Condo buildings
+> occupy one tax lot per building, so PLUTO (the first-hit NYC
+> parcel dataset) returns the sponsor entity or condo association
+> as "owner" rather than individual unit owners. Per-unit
+> ownership exists in ACRIS via condo declarations but requires
+> cross-referencing unit numbers to deed records. Doable, adds
+> a couple days of engineering vs a KC-style scan.
 >
-> **Condos** — NYC property is indexed by Borough-Block-Lot (BBL).
-> For condo buildings, the tax lot is the **whole building**, not
-> individual units. PLUTO (the first-hit NYC parcel dataset) has
-> one record per tax lot, which for a condo building means the
-> sponsor entity or condo association — not the 104 unit owners.
-> Per-unit ownership exists in ACRIS via condo declarations but
-> requires substantial additional cross-referencing. Doable, but
-> several days of extra engineering.
+> **Coops** (~70-75% of Manhattan apartments): cooperative
+> corporation owns the building. "Owners" are shareholders with
+> proprietary leases. Unit transfers are stock transfers, NOT
+> deeds — so they don't appear in ACRIS as DEEDs.
 >
-> **Net effect by borough and property type:**
+> **HOWEVER — coops are not invisible.** They're documented in
+> parallel data streams:
 >
-> | Property type | Borough concentration | Harvester feasibility |
-> |---|---|---|
-> | Single-family / brownstone | SI, Brooklyn, Queens, Bronx | Works cleanly |
-> | Condo unit (individual) | MN, newer BK/QN towers | Works with extra ACRIS work |
-> | Condo building / sponsor | All | Misleading — shows sponsor |
-> | **Coop** | **Most of MN** | **Structurally invisible** |
-> | Rental apt building | All | N/A (tenants aren't owners) |
+> 1. **UCC-1 Financing Statements with Cooperative Addendum**
+>    (NY Form UCC1CAd, revised 2001). When a coop is purchased
+>    with a loan (majority of cases), the lender MUST file a
+>    UCC-1 with the NYC City Register. Contains: debtor's exact
+>    full legal name (matched to NY ID per 2014 law), number of
+>    shares, apartment number, complete building address, and
+>    city tax block/lot. **This is ACRIS-filed and public.**
 >
-> **Practical read**: NYC is still a great market for harvesters
-> IF the target agents work Brooklyn brownstones, Queens and
-> Staten Island single-family, Bronx owner-occupied, or new-
-> development Manhattan condos (with the extra engineering).
-> If target agents work Park Avenue coops, this platform
-> **literally cannot find seller signals for them**. Engineering
-> time should only be spent on NYC after confirming which
-> property types the agent pipeline actually serves.
+> 2. **UCC-3 Termination Statements**. Filed when the loan is
+>    paid off (typically at sale). Marks owner exit + turnover.
+>
+> 3. **RPTT (Real Property Transfer Tax)** filings. NYC requires
+>    RPTT on every coop transfer for tax purposes. Public via
+>    NYC Department of Finance.
+>
+> 4. **Surrogate's Court probate filings**. When a coop
+>    shareholder dies, the executor files an inventory listing
+>    "X shares of [Coop Corp], appurtenant to Apt XY at
+>    [address]." The seller signal we actually want shows up
+>    here as text.
+>
+> **Query direction matters**: searching ACRIS for DEED
+> documents misses coops entirely. Searching for UCC-1 / UCC-3 /
+> RPTT document types surfaces them cleanly. Same ACRIS system,
+> different document-type filter.
+>
+> **Coverage by financing type**:
+> - Financed coop buyers (~60-70%): fully captured via UCC-1
+> - Cash coop buyers (~30-40%, mostly luxury Manhattan): no
+>   UCC-1, but still captured via RPTT at purchase + probate at
+>   death (which is when the seller signal hits anyway)
+> - Every coop transfer regardless of financing: RPTT captures
+> - Every coop decedent: Surrogate's Court captures
+>
+> **Practical net**: NYC coops require a harvester that
+> understands UCC-1CAd + RPTT document types on top of standard
+> deed parsing. Maybe 2-3 extra days of engineering. Then coops
+> are as visible as condos.
+>
+> **Remaining gap**: a cash-buyer coop owner who's alive and has
+> no court activity is hard to tie to a unit proactively. But
+> the moment any seller signal hits them (probate, divorce,
+> UCC-3 termination from refinance activity), they become
+> visible. For seller intelligence this is fine — we care about
+> pressure events, not a static ownership roster.
 
 **Scale**: ~1M parcels across 5 boroughs (Manhattan, Brooklyn,
 Queens, Bronx, Staten Island).
