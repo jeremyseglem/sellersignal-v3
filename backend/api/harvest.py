@@ -155,6 +155,7 @@ def harvest_reset(
 
 
 
+@router.get("/status/{zip_code}")
 def harvest_status(zip_code: str):
     """
     Summary of harvested signals and matches for a ZIP.
