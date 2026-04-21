@@ -184,13 +184,23 @@ def harvest_status(zip_code: str):
         if row.get('matched_at'):
             processed += 1
 
-    # Pins in this ZIP
-    pins_in_zip_res = (supa.table('parcels_v3')
-                       .select('pin')
-                       .eq('zip_code', zip_code)
-                       .limit(10000)
-                       .execute())
-    pins = [r['pin'] for r in (pins_in_zip_res.data or [])]
+    # Pins in this ZIP — paginate because Supabase REST caps at 1000/req
+    pins: list[str] = []
+    PAGE = 1000
+    offset = 0
+    while True:
+        res = (supa.table('parcels_v3')
+               .select('pin')
+               .eq('zip_code', zip_code)
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        batch = res.data or []
+        pins.extend(r['pin'] for r in batch)
+        if len(batch) < PAGE:
+            break
+        offset += PAGE
+        if offset > 100000:
+            break
 
     # Matches for parcels in this ZIP + distinct match pins
     matched_count = 0
@@ -246,13 +256,24 @@ def harvest_matches(
     if limit < 1 or limit > 1000:
         raise HTTPException(400, "limit must be 1–1000")
 
-    # Pins in this ZIP
-    pins_in_zip_res = (supa.table('parcels_v3')
-                       .select('pin, owner_name, address, city, total_value, owner_type')
-                       .eq('zip_code', zip_code)
-                       .limit(10000)
-                       .execute())
-    parcels_by_pin = {r['pin']: r for r in (pins_in_zip_res.data or [])}
+    # Pins in this ZIP — paginate because Supabase REST caps at 1000/req
+    parcels_by_pin: dict = {}
+    PAGE = 1000
+    offset = 0
+    while True:
+        res = (supa.table('parcels_v3')
+               .select('pin, owner_name, address, city, total_value, owner_type')
+               .eq('zip_code', zip_code)
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        batch = res.data or []
+        for r in batch:
+            parcels_by_pin[r['pin']] = r
+        if len(batch) < PAGE:
+            break
+        offset += PAGE
+        if offset > 100000:
+            break
     pins = list(parcels_by_pin.keys())
     if not pins:
         return {"zip_code": zip_code, "matches": []}
