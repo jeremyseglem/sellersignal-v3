@@ -55,7 +55,22 @@ class HarvestRunRequest(BaseModel):
         30,
         ge=1,
         le=730,
-        description="How many days back to harvest from today.",
+        description=(
+            "How many days back to harvest from today. Ignored if "
+            "since_date is provided."
+        ),
+    )
+    since_date: Optional[str] = Field(
+        None,
+        description="YYYY-MM-DD. Overrides since_days_ago if set.",
+    )
+    until_date: Optional[str] = Field(
+        None,
+        description=(
+            "YYYY-MM-DD. Upper bound. Defaults to today. Use with "
+            "since_date for arbitrary date windows (e.g. 30-day chunks "
+            "to stay under HTTP timeouts on large backfills)."
+        ),
     )
     zip_filter: Optional[str] = Field(
         "98004",
@@ -98,8 +113,24 @@ def harvest_run(
     if req.source not in HARVESTERS:
         raise HTTPException(400, f"Unknown source. Available: {list(HARVESTERS)}")
 
-    until = date.today()
-    since = until - timedelta(days=req.since_days_ago)
+    # Resolve date window: explicit dates override since_days_ago.
+    # Chunking strategy: to avoid Railway's ~5-min HTTP timeout on large
+    # backfills, callers can pass 30-day windows (e.g. since_date=2025-11-01,
+    # until_date=2025-12-01) and make multiple calls.
+    try:
+        if req.until_date:
+            until = date.fromisoformat(req.until_date)
+        else:
+            until = date.today()
+        if req.since_date:
+            since = date.fromisoformat(req.since_date)
+        else:
+            since = until - timedelta(days=req.since_days_ago)
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid date format (expected YYYY-MM-DD): {e}")
+
+    if since > until:
+        raise HTTPException(400, "since_date must be <= until_date")
 
     stats = run_harvest(
         source=req.source,
@@ -109,6 +140,43 @@ def harvest_run(
         zip_filter=req.zip_filter,
         dry_run=req.dry_run,
         match_after=req.match_after,
+    )
+    return stats
+
+
+@router.post("/match-only")
+def harvest_match_only(
+    x_admin_key: Optional[str] = Header(None),
+    zip_filter: Optional[str] = "98004",
+    batch_size: int = 100,
+    max_batches: int = 200,
+):
+    """
+    Run JUST the matcher against already-harvested signals. Skips the
+    harvest step entirely. Safe to run repeatedly — the matcher only
+    processes rows with matched_at IS NULL.
+
+    Use case: a previous harvest wrote signals to raw_signals_v3 but
+    the matcher phase never ran (e.g. HTTP timeout killed the request
+    handler mid-run). This endpoint picks up where it left off.
+
+    Typical runtime: ~1-3 minutes for a few thousand pending signals.
+    Far under the Railway HTTP timeout because matching is just DB
+    reads + writes (no external scraping).
+    """
+    _require_admin(x_admin_key)
+
+    # Import locally to avoid circular-ish load at module import time
+    from backend.harvesters import matcher
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    stats = matcher.process_unmatched(
+        supa,
+        zip_filter=zip_filter,
+        batch_size=batch_size,
+        max_batches=max_batches,
     )
     return stats
 
@@ -170,11 +238,22 @@ def harvest_status(zip_code: str):
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # All raw signals (not ZIP-scoped; harvesters pull KC-wide)
-    all_raw = (supa.table('raw_signals_v3')
+    # All raw signals — paginate because Supabase REST caps at 1000/req
+    all_raw: list[dict] = []
+    PAGE = 1000
+    offset = 0
+    while True:
+        res = (supa.table('raw_signals_v3')
                .select('source_type, signal_type, matched_at')
-               .limit(100000)
-               .execute()).data or []
+               .range(offset, offset + PAGE - 1)
+               .execute())
+        batch = res.data or []
+        all_raw.extend(batch)
+        if len(batch) < PAGE:
+            break
+        offset += PAGE
+        if offset > 500000:  # safety bound
+            break
 
     by_source_type: dict = {}
     processed = 0
