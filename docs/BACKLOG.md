@@ -8,6 +8,55 @@ in the queue."
 
 ---
 
+## Beta milestone: King County 10-ZIP benchmark
+
+**Scope**: 10 KC ZIPs covering ultra-luxury, luxury, luxury urban, 
+mid-market urban, gentrifying, investor-heavy, and tech-suburban markets.
+
+**Target ZIPs** (subject to adjustment):
+| ZIP | Market type |
+|---|---|
+| 98004 Bellevue | Ultra-luxury eastside (already loaded) |
+| 98039 Medina | Ultra-luxury, trust-heavy |
+| 98040 Mercer Island | Luxury, long-tenure |
+| 98112 Madison Park / Madrona | Urban luxury |
+| 98122 Central District | Gentrifying mid-market |
+| 98144 Beacon Hill | Mid-market, investor mix |
+| 98105 University District | Rental investor heavy |
+| 98052 Redmond | Tech-mid, newer ownership |
+| 98118 Columbia City / Rainier Valley | Emerging, investor activity |
+| 98102 Capitol Hill / Westlake | Condo-dominated, high turnover |
+
+**Why this scope proves the thesis**: variation forces the scoring engine
+to handle luxury estate-planning signals (Medina) alongside mid-market
+probate/divorce (Beacon Hill) alongside investor disposition (U-District,
+Columbia City). If signals surface meaningfully across all, the product
+works beyond luxury.
+
+**Cost to load**:
+- Parcel ingest: free (KC Assessor GIS)
+- Geometry backfill: free (KC ArcGIS)
+- Canonicalization: ~$65 (Haiku 4.5 × 9 new ZIPs × 6K avg parcels)
+- **Total: ~$100 one-time**
+
+**Harvester architecture decision — critical**: query per-filing, not
+per-parcel. Scraping WA Courts for every owner name (60K lookups across
+10 ZIPs) would rate-limit us. Instead: pull all new probate + divorce
+filings in KC for a date range (~1,000-1,200 records/month total), match
+party names against canonicalized owners in memory. Scales horizontally —
+adding a 11th or 100th ZIP adds zero scraping load since we're already
+pulling county-wide filings anyway.
+
+**Success criteria**:
+- 15-50 tiered seller leads per ZIP (Tier 1 call-now w/ chain of custody,
+  Tier 2 build-now, candidate pool background)
+- Signal density varies appropriately by market type
+- Cohort amplifiers (policy, STR bans, 1031) measurably lift conversion
+- Unit economics: <$5/ZIP/month ongoing
+- 3+ beta agents per ZIP report lead quality above par vs existing lists
+
+---
+
 ## Architectural decisions (approved, not yet built)
 
 ### 1. Harvester infrastructure (replace SerpAPI for primary signal discovery)
