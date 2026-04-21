@@ -273,6 +273,28 @@ def _process_one(
     if zip_filter:
         candidates = [c for c in candidates if c.get("parcel_id") in owners_db]
 
+    # Surname-required post-filter. The legacy name_match() uses
+    # token-overlap with min_overlap=2 which is too permissive: it matches
+    # "Robert Lee Harris" to "Robert Lee Steil" (overlap={Robert,Lee})
+    # and "Sandra Lee Westling" to "Sandra Lee Stark" (overlap={Sandra,Lee})
+    # because common first+middle names share 2 tokens.
+    #
+    # This filter enforces the basic genealogical requirement: the surname
+    # of a signal party MUST match the surname of the parcel owner. For
+    # individuals, this is the last token of each name. For trusts/LLCs,
+    # we check if the decedent's surname appears anywhere in the entity name
+    # (handles "Chen Family Trust" matching "Howard Tzu-Hao Chen").
+    #
+    # Known limitation: doesn't catch common-surname coincidences like
+    # "John K Anderson" vs "Mark John Anderson" (different people, same
+    # surname + shared given-name token). That requires rarity-weighted
+    # matching which is a future enhancement.
+    parties = row.get('party_names') or []
+    candidates = [
+        c for c in candidates
+        if _surname_gate(c["parcel_id"], owners_db, parties)
+    ]
+
     if not candidates:
         _mark_matched(supa, row["id"], match_count=0)
         return 0
@@ -376,3 +398,90 @@ _DISPATCH = {
     # Future: nod, lis_pendens, trustee_sale (via match_recorder_to_parcels),
     # obituary (direct name match with stricter threshold), llc_officer_change
 }
+
+
+# ─── Surname gate ──────────────────────────────────────────────────────
+
+# Trust/LLC/company owner-name noise tokens to strip before surname lookup
+_ENTITY_NOISE = {
+    "TRUST", "FAMILY", "REVOCABLE", "IRREVOCABLE", "LIVING", "TESTAMENTARY",
+    "LLC", "L.L.C.", "LP", "LLP", "INC", "INCORPORATED", "CORP", "CORPORATION",
+    "CO", "COMPANY", "ESTATE", "OF", "THE", "AND", "&",
+    "ET", "AL", "ANO", "JR", "SR", "II", "III", "IV",
+    "DTD", "DATED", "UTD", "UDT",  # "under trust dated"
+}
+
+
+def _extract_surnames(raw: str) -> set:
+    """
+    Best-effort surname extraction. Returns a set of uppercase candidate
+    surnames from a name string.
+
+    For "HOWARD TZU-HAO CHEN"           → {"CHEN"}
+    For "SMITH, JOHN"                   → {"SMITH"}
+    For "Chen Family Trust +Wei Tzu+"   → {"CHEN", "TZU"}  (trust with names)
+    For "ABC Holdings LLC"              → {"ABC", "HOLDINGS"} (LLC words)
+    For "John K Anderson"               → {"ANDERSON"}
+
+    We return a SET not a single surname because entities can reasonably
+    contain multiple humans' surnames (e.g. a family trust naming both
+    spouses). Matching any one is enough.
+    """
+    if not raw:
+        return set()
+
+    raw_upper = raw.upper()
+
+    # "LAST, FIRST" form — surname is before the comma
+    if "," in raw_upper:
+        surname = raw_upper.split(",", 1)[0].strip()
+        if surname:
+            return {surname}
+
+    # Extract alphabetic tokens, drop entity noise
+    import re
+    tokens = re.findall(r"[A-Z][A-Z'\-]+", raw_upper)
+    tokens = [t for t in tokens if t not in _ENTITY_NOISE and len(t) > 1]
+
+    if not tokens:
+        return set()
+
+    # Heuristic:
+    # - Individual name (no entity noise matched): last token is surname
+    # - Entity name (had entity noise): ALL remaining tokens are candidate
+    #   surnames (we don't know which)
+    had_entity_noise = any(
+        word in raw_upper.split()
+        for word in ("TRUST", "LLC", "INC", "CORP", "FAMILY", "ESTATE")
+    )
+
+    if had_entity_noise:
+        return set(tokens)
+
+    # Individual: last token is surname
+    return {tokens[-1]}
+
+
+def _surname_gate(pin: str, owners_db: dict, signal_parties: list) -> bool:
+    """
+    True if at least one signal party's surname matches the parcel owner's
+    surname.
+
+    Applies to all candidate matches returned by a dispatcher. Purpose:
+    filter out name-token-overlap false positives where only common
+    first+middle names collide (e.g. 'Robert Lee Harris' ≠ 'Robert Lee
+    Steil' despite sharing 'Robert' and 'Lee').
+    """
+    info = owners_db.get(pin) or {}
+    owner_name = info.get('owner_name', '')
+    owner_surnames = _extract_surnames(owner_name)
+    if not owner_surnames:
+        return False
+
+    for p in signal_parties:
+        party_raw = p.get('raw', '') if isinstance(p, dict) else ''
+        party_surnames = _extract_surnames(party_raw)
+        if party_surnames & owner_surnames:
+            return True
+
+    return False
