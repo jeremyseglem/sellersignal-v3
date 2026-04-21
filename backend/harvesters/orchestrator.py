@@ -158,6 +158,24 @@ def _upsert_batch(supa, rows: list[dict]) -> tuple[int, int]:
     if not rows:
         return 0, 0
 
+    # Dedup WITHIN the batch before upsert. Postgres refuses an ON CONFLICT
+    # upsert if the same conflict key appears twice in one statement
+    # (error 21000). Collisions can happen from:
+    #   - Pagination reshuffling when new filings insert mid-scrape
+    #   - Harvester-level duplicates from overlapping date windows
+    #   - Multiple parties in a case parsed as multiple rows (shouldn't happen
+    #     with current parser but defensive)
+    # Keep first occurrence of each (source_type, document_ref) tuple.
+    seen: set = set()
+    deduped: list[dict] = []
+    for r in rows:
+        key = (r["source_type"], r["document_ref"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    rows = deduped
+
     # Count how many of these document_refs already exist (for stats)
     refs_by_source: dict = {}
     for r in rows:
