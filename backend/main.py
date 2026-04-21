@@ -21,6 +21,7 @@ from backend.api import (
     coverage,
     admin,
     deep_signal,
+    harvest,
 )
 
 
@@ -69,6 +70,7 @@ app.include_router(playbook.router,       prefix="/api/playbook",    tags=["play
 app.include_router(map_data.router,       prefix="/api/map",         tags=["map"])
 app.include_router(admin.router,          prefix="/api/admin",       tags=["admin"])
 app.include_router(deep_signal.router,    prefix="/api/deep-signal", tags=["deep-signal"])
+app.include_router(harvest.router,        prefix="/api/harvest",     tags=["harvest"])
 
 
 # ── FRONTEND ───────────────────────────────────────────────────────────
