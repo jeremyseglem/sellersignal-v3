@@ -410,11 +410,22 @@ _DISPATCH = {
 
 # Trust/LLC/company owner-name noise tokens to strip before surname lookup
 _ENTITY_NOISE = {
-    "TRUST", "FAMILY", "REVOCABLE", "IRREVOCABLE", "LIVING", "TESTAMENTARY",
+    # Entity-type words
+    "TRUST", "TRUSTS", "FAMILY", "REVOCABLE", "IRREVOCABLE", "LIVING",
+    "TESTAMENTARY", "BYPASS", "CREDIT", "MARITAL", "DISCLAIMER", "BENEFICIARY",
+    "SURVIVOR", "SURVIVORS", "RESIDUE", "RESIDUARY", "DECLARATION", "AGREEMENT",
+    "SPECIAL", "NEEDS", "SUPPLEMENTAL", "CHARITABLE", "REMAINDER", "EDUCATION",
+    "DESCENDANTS", "GENERATION", "SKIPPING", "GRAT", "CLAT", "CRUT", "CRAT",
+    # Corp forms
     "LLC", "L.L.C.", "LP", "LLP", "INC", "INCORPORATED", "CORP", "CORPORATION",
-    "CO", "COMPANY", "ESTATE", "OF", "THE", "AND", "&",
+    "CO", "COMPANY", "HOLDINGS", "GROUP", "PARTNERS", "PARTNERSHIP",
+    "ASSOCIATES", "ASSOCIATION", "PROPERTIES", "PROPERTY", "REALTY", "REAL",
+    "ESTATE", "ESTATES", "INVESTMENTS", "INVESTMENT", "VENTURES", "ENTERPRISES",
+    # Common entity modifiers
+    "OF", "THE", "AND", "&", "FOR", "BY",
     "ET", "AL", "ANO", "JR", "SR", "II", "III", "IV",
-    "DTD", "DATED", "UTD", "UDT",  # "under trust dated"
+    "DTD", "DATED", "UTD", "UDT", "UTA", "U/W",  # "under trust dated", "under will"
+    "TTEE", "TRUSTEE", "CO-TRUSTEE", "SUCCESSOR", "CY",   # 'cy' from 'cy pres'
 }
 
 
