@@ -386,6 +386,47 @@ direct), 2-3 days recorder. 8-13 total.
 
 ## New York City — HIGH FEASIBILITY (gold standard data)
 
+> **CRITICAL CAVEAT — NYC coop invisibility.** A previous session
+> flagged that NYC has structural blindspots the harvester model
+> can't reach. This is real and matters:
+>
+> **Coops** — roughly 70-75% of Manhattan apartments are coops, not
+> condos. In a coop, the cooperative corporation owns the building;
+> "owners" are shareholders in that corporation with proprietary
+> leases. Coop unit transfers are **stock transfers, not deeds** —
+> they don't appear in ACRIS at all. Coop boards approve every sale
+> privately. There is no public record tying an individual resident
+> to a specific coop unit. For coops, the harvester model is
+> **structurally impossible** — not just hard.
+>
+> **Condos** — NYC property is indexed by Borough-Block-Lot (BBL).
+> For condo buildings, the tax lot is the **whole building**, not
+> individual units. PLUTO (the first-hit NYC parcel dataset) has
+> one record per tax lot, which for a condo building means the
+> sponsor entity or condo association — not the 104 unit owners.
+> Per-unit ownership exists in ACRIS via condo declarations but
+> requires substantial additional cross-referencing. Doable, but
+> several days of extra engineering.
+>
+> **Net effect by borough and property type:**
+>
+> | Property type | Borough concentration | Harvester feasibility |
+> |---|---|---|
+> | Single-family / brownstone | SI, Brooklyn, Queens, Bronx | Works cleanly |
+> | Condo unit (individual) | MN, newer BK/QN towers | Works with extra ACRIS work |
+> | Condo building / sponsor | All | Misleading — shows sponsor |
+> | **Coop** | **Most of MN** | **Structurally invisible** |
+> | Rental apt building | All | N/A (tenants aren't owners) |
+>
+> **Practical read**: NYC is still a great market for harvesters
+> IF the target agents work Brooklyn brownstones, Queens and
+> Staten Island single-family, Bronx owner-occupied, or new-
+> development Manhattan condos (with the extra engineering).
+> If target agents work Park Avenue coops, this platform
+> **literally cannot find seller signals for them**. Engineering
+> time should only be spent on NYC after confirming which
+> property types the agent pipeline actually serves.
+
 **Scale**: ~1M parcels across 5 boroughs (Manhattan, Brooklyn,
 Queens, Bronx, Staten Island).
 
@@ -518,8 +559,13 @@ residence, single-STR-per-host rule. Aggressive enforcement since
 **Phase 1 — Prove harvester model on free-data markets**:
 1. King County (in progress)
 2. **Maricopa** — cleanest API
-3. **NYC** — ACRIS gold standard, unique LL18 cohort
-4. **Cook County** — clean open data, unified Clerk/Recorder
+3. **Cook County** — clean open data, unified Clerk/Recorder
+4. **NYC — conditional on property mix**. ACRIS is gold standard
+   for what it covers, but see coop/condo caveat above. Only
+   prioritize here if beta agents work Brooklyn brownstones,
+   Queens/Staten Island single-family, or new-development condos
+   (with extra unit-level engineering). Skip or deprioritize if
+   agents work Manhattan coops.
 
 **Phase 2 — Expand luxury coverage**:
 5. **Palm Beach** — PAPA clean, FL homestead signals
