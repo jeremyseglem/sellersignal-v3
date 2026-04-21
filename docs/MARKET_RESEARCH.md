@@ -330,3 +330,248 @@ Versus SerpAPI equivalent at beta scale: $1,900+/month forever.
    20-60 hrs/year of scraper upkeep.
 6. **Government portals sometimes block IP ranges.** Residential
    proxy may be needed for 2-3 sources across the portfolio.
+
+---
+
+# Major Metro Expansion Research
+
+Researched 2026-04-20. Adds LA County, NYC (5 boroughs), Miami-Dade,
+Cook County (Chicago), and Denver.
+
+## Los Angeles County — MEDIUM FEASIBILITY (big caveat)
+
+**Scale**: ~2.4M parcels. Includes Beverly Hills, Malibu, Santa
+Monica, West Hollywood as separate cities under one county assessor.
+Probably the single largest luxury real estate market in the US.
+
+**Parcels**: Free downloads via LA County Enterprise GIS
+(`egis-lacounty.hub.arcgis.com`) and LA City Geohub
+(`geohub.lacity.org`). Bulk shapefiles, CSV exports. No API but
+downloads are fine for ingest.
+
+**Court records — THE CATCH**: LA Superior Court charges public
+access fees per search under California Rule of Court 2.506 / Gov
+Code 68150(l). Each name lookup on `lacourt.org/paos/v2public/CivilIndex/`
+incurs a fee. This is unique — the only market we've researched
+with explicit per-search pricing.
+
+Workarounds:
+1. **Commercial aggregators** (UniCourt, Trellis.Law) scrape LA
+   Superior daily and resell via API. They eat court fees,
+   probably $0.05-0.20/query at scale or subscription tiers.
+2. **Batch by date range** — if fees are per-query not per-result,
+   pull all new probate filings in a time window as one query.
+   Needs verification.
+
+Signal volume: LA Superior had **12,490 probate cases in 2021**,
+**13,063 in 2022**. Massive if affordable.
+
+**Recorder**: LA County Registrar-Recorder/County Clerk
+(`rrcc.lacounty.gov`). Public online search, scrapable. NODs, lis
+pendens, trustee sales.
+
+**STR**: LA home-sharing ordinance + per-city regs (Beverly Hills
+stricter, West Hollywood strictest). Cohort varies.
+
+**Luxury fit**: enormous. BH, Malibu, Holmby Hills, Bel-Air,
+Brentwood — multi-generational wealth estates with consistent
+probate activity.
+
+**Build**: 3-4 days parcel, 3-5 days court via aggregator (or 5-8
+direct), 2-3 days recorder. 8-13 total.
+
+**Net**: highest-reward, most complicated. Save for Phase 3.
+
+---
+
+## New York City — HIGH FEASIBILITY (gold standard data)
+
+**Scale**: ~1M parcels across 5 boroughs (Manhattan, Brooklyn,
+Queens, Bronx, Staten Island).
+
+**Parcels + Deeds — best public real estate data in America**:
+
+**ACRIS** (Automated City Register Information System) via NYC Open
+Data provides free downloadable CSVs:
+- `ACRIS - Real Property Master` — every recorded document
+- `ACRIS - Real Property Legals` — parcel + legal descriptions
+- `ACRIS - Real Property Parties` — all grantors/grantees
+- `ACRIS - Real Property References` — cross-references
+- `ACRIS - Real Property Remarks` — document notes
+
+Full history back to 1966. Covers 4 of 5 boroughs natively (Staten
+Island via Richmond County Clerk). A GitHub project
+(`fitnr/acris-download`) provides a Makefile that downloads the
+entire dataset and imports into PostgreSQL with one command.
+**Easiest ingest of any market we've researched.**
+
+**Court records — Surrogate's Court handles probate** per borough.
+Unified Court System eCourts (`nycourts.gov`) provides online case
+search by party name. Scrapable.
+
+**STR — HUGE COHORT SIGNAL**: NYC **Local Law 18** (September 2023)
+requires STR host registration with the Mayor's Office of Special
+Enforcement. Effectively banned most Airbnb — **~97% drop in listings**.
+Largest forced-sell cohort of any US market. Pre-2023 investor STR
+portfolios are now either selling at discount, converting to
+long-term rental (money-losing), or operating illegally.
+
+Registered/rejected hosts are public record via NYC Open Data.
+
+Plus: **421a tax abatement expirations** are a known NYC seller
+signal. Properties with expiring 421a benefits face sudden tax
+hikes.
+
+**Build**: 2-3 days parcel+deed (ACRIS is clean), 3-4 days
+Surrogate's Court (5 boroughs), 1-2 days LL18 tracker. ~7-9 total.
+
+**Net**: probably the single highest-value market. Best data, huge
+luxury inventory, unique LL18 cohort.
+
+---
+
+## Miami-Dade County — HIGH FEASIBILITY
+
+**Scale**: ~900K parcels. Miami Beach, Fisher Island, Coral Gables,
+Coconut Grove, Bal Harbour. Heavy international buyer presence =
+LLC/trust ownership.
+
+**Parcels**: Bulk CSV via `bbs.miamidadepa.gov` — free account with
+"credits" system (mild friction). Property Appraiser search free at
+`miamidade.gov/pa`. GIS Open Data Hub at `gis-mdc.opendata.arcgis.com`.
+
+**Court / recorder**: Miami-Dade Clerk of Court handles both court
+records and deed recording. Online search available. FL homestead +
+SOH portability = strong cohort for out-of-state movers.
+
+**STR**: FL pre-emption battles. County-level loose. City-level
+varies (Miami Beach strict, Miami moderate).
+
+**Build**: 2-3 days parcel, 2-3 days Clerk of Court. ~5-6 total.
+
+---
+
+## Cook County, IL (Chicago) — HIGH FEASIBILITY
+
+**Scale**: ~1.8M parcels across Chicago + 133 other municipalities.
+Luxury (Gold Coast, Lincoln Park) + working-class + investment.
+
+**Parcels + Deeds**: Excellent open data:
+- Cook County Open Data Portal (`datacatalog.cookcountyil.gov`) —
+  assessor parcel sales, property tax, full datasets
+- Cook Central GIS Hub (`hub-cookcountyil.opendata.arcgis.com`)
+- **Clerk absorbed Recorder of Deeds in 2020**, records unified.
+  Public search by address/PIN/grantor/grantee at
+  `cookcountyclerkil.gov/recordings/search-recordings`
+
+**Court**: Circuit Court of Cook County. Public docket lookup.
+Scrapable.
+
+**STR**: Chicago's 2016 Shared Housing Ordinance requires license,
+unit caps. Moderate cohort — less severe than NYC.
+
+**Build**: 2-3 days parcel, 3-4 days court, 1-2 days deed (unified
+now). ~6-9 total.
+
+**Net**: clean infrastructure, large market.
+
+---
+
+## Denver (City & County combined) — HIGH FEASIBILITY
+
+**Scale**: ~205K parcels. Smaller but with strong luxury pockets
+(Cherry Creek, Washington Park, Highlands) and investor activity.
+
+**Parcels**: Free. `denvergov.org/Property` + Spatialest.
+
+**Recorder**: Denver Clerk & Recorder has 11M+ documents since 1859
+online. Free public search.
+
+**Court**: Denver County Court + CO Second Judicial District
+(probate). State search at `coloradocourts.gov`. Scrapable.
+
+**STR — STRONG COHORT**: Denver requires STR to be primary
+residence, single-STR-per-host rule. Aggressive enforcement since
+2017. ~80% of commercial investor STR operations exited.
+
+**Build**: 1-2 days parcel, 2-3 days court, 1-2 days recorder.
+~5-6 total.
+
+**Net**: clean data, strong STR cohort, smaller volume but quality.
+
+---
+
+## Cross-metro comparison
+
+| Market | Parcels | Data Access | STR Cohort | Build Days |
+|---|---|---|---|---|
+| **NYC (5 boroughs)** | ~1M | **BEST (ACRIS)** | **STRONGEST** (LL18) | 7-9 |
+| **LA County** | ~2.4M | Parcels free, courts FEE | Medium (per-city) | 8-13 |
+| **Cook County** | ~1.8M | Excellent open data | Medium | 6-9 |
+| **Miami-Dade** | ~900K | Good + credits | Weak county-level | 5-6 |
+| **Denver** | ~205K | Very clean | **Strong** (primary-res rule) | 5-6 |
+
+---
+
+## Revised 10-market rollout order
+
+**Phase 1 — Prove harvester model on free-data markets**:
+1. King County (in progress)
+2. **Maricopa** — cleanest API
+3. **NYC** — ACRIS gold standard, unique LL18 cohort
+4. **Cook County** — clean open data, unified Clerk/Recorder
+
+**Phase 2 — Expand luxury coverage**:
+5. **Palm Beach** — PAPA clean, FL homestead signals
+6. **Miami-Dade** — FL homestead + international buyers
+7. **Denver** — strong STR cohort, smaller scale
+
+**Phase 3 — Special cases**:
+8. **LA County** — highest-value but court fee complication; solve
+   via Trellis.Law/UniCourt integration. Only worth it when luxury
+   agent pipeline justifies
+9. **Mecklenburg** — NC eCourts is new, test carefully
+
+**Phase 4 — Home market**:
+10. **Gallatin (Bozeman)** — smallest volume, strongest STR cohort,
+    Jeremy's market
+
+---
+
+## Full 10-market rollout economics
+
+- **Dev**: 60-80 focused days total (each state's courts differ)
+- **Canonicalization**: ~$1,000-1,500 total (Haiku 4.5)
+- **Ongoing**: ~$100-150/month infrastructure
+- **LA aggregator fees** if pursued: +$100-200/month
+- **Total beta-scale infrastructure for all 10 markets: $200-400/month**
+- **vs SerpAPI equivalent: $19,000+/month**
+
+**50-100x improvement in unit economics at full rollout.**
+
+---
+
+## Honest bottom line
+
+**The harvester model is feasible across every major US metro.**
+
+Variations:
+- Data access: NYC > Maricopa > Cook > Palm Beach > Miami-Dade >
+  Denver > KC > LA > Mecklenburg > Gallatin
+- Signal volume: LA > NYC > Cook > Maricopa > KC > Miami-Dade >
+  Palm Beach > Denver > Mecklenburg > Gallatin
+- STR cohort: NYC > Bozeman > Denver > Scottsdale (Maricopa) > LA >
+  Chicago > others (weak)
+- Luxury agent appeal: LA > NYC > Palm Beach > Miami-Dade > KC >
+  Denver > Gallatin > others
+
+**No market has a structural blocker.** LA's per-search court fee is
+solvable via commercial aggregator. Everything else scrapable.
+
+**Real constraint is engineering time.** Each state's courts are
+their own harvester. 5-10 days of focused work per state. Scaling
+requires either hiring a data engineer or a multi-month harvester
+sprint.
+
+The thesis holds: no-cost-per-scan seller intelligence works in
+every market that matters.
