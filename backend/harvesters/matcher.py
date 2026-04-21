@@ -395,8 +395,14 @@ def _dispatch_probate(row, owners_db, use_codes):
 _DISPATCH = {
     "divorce":      _dispatch_divorce,
     "probate":      _dispatch_probate,
+    # Obituary matches the same way as probate: single decedent party
+    # vs all parcel owners. Surname gate applies equally. The difference
+    # between the two is purely signal-source provenance, handled via
+    # source_type tagging in raw_signals_v3 (signal_source="obituary_rss"
+    # vs "kc_superior_court") — scoring can weight them differently.
+    "obituary":     _dispatch_probate,
     # Future: nod, lis_pendens, trustee_sale (via match_recorder_to_parcels),
-    # obituary (direct name match with stricter threshold), llc_officer_change
+    # llc_officer_change
 }
 
 

@@ -30,6 +30,7 @@ from typing import Optional
 from . import matcher
 from .base import RawSignal
 from .kc_superior_court import KCSuperiorCourtHarvester
+from .obituary import ObituaryHarvester
 from backend.api.db import get_supabase_client
 
 log = logging.getLogger(__name__)
@@ -39,7 +40,8 @@ log = logging.getLogger(__name__)
 
 HARVESTERS = {
     "kc_superior_court": lambda case_types: KCSuperiorCourtHarvester(case_types),
-    # Future: "kc_recorder", "obituary_rss", "wa_sos", "zillow_sitemap"
+    "obituary":          lambda _unused:    ObituaryHarvester(),
+    # Future: "kc_recorder", "wa_sos", "zillow_sitemap"
 }
 
 
