@@ -1446,9 +1446,16 @@ def harvest_matches(
         first_party = parties[0].get('raw') if parties else None
 
         # Find Personal Rep (if any) from case_parties
+        # Priority: 1) formal 'personal_representative' role,
+        #          2) 'petitioner' role (usually the family member seeking
+        #             to be appointed PR — workable lead even before formal
+        #             appointment), 3) fallback: no PR.
+        # Both roles are surfaced under personal_representative to keep
+        # agent UX simple. pr_role field distinguishes.
         case_num = signal.get('document_ref')
         case_parties = parties_by_case.get(case_num, []) if case_num else []
         personal_rep = None
+        pr_role_type = None
         for p in case_parties:
             if p['role'] == 'personal_representative':
                 personal_rep = {
@@ -1457,8 +1464,24 @@ def harvest_matches(
                     'name_first':     p['name_first'],
                     'name_middle':    p['name_middle'],
                     'classification': p['pr_classification'],
+                    'role_source':    'personal_representative',
                 }
-                break  # take the first one; typically there's only one
+                pr_role_type = 'appointed_pr'
+                break
+        if not personal_rep:
+            # Fallback: petitioner (most are family members seeking PR role)
+            for p in case_parties:
+                if p['role'] == 'petitioner':
+                    personal_rep = {
+                        'name':           p['name_raw'],
+                        'name_last':      p['name_last'],
+                        'name_first':     p['name_first'],
+                        'name_middle':    p['name_middle'],
+                        'classification': p.get('pr_classification') or 'family',
+                        'role_source':    'petitioner',
+                    }
+                    pr_role_type = 'petitioner'
+                    break
 
         # Compute actionability flag — the single bit of routing guidance
         # we surface at briefing level. Don't force agents to interpret
