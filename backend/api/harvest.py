@@ -736,14 +736,18 @@ def harvest_backfill_parties(
     h = KCSuperiorCourtHarvester(case_types=['probate'])
     session = h.build_session()
 
-    # Warm the session with a single search POST so portal treats subsequent
-    # case-detail requests as coming from a legitimate user session.
+    # Warm the session with a REAL date-range search that returns results.
+    # A zero-result warm-up (today-to-today) causes the portal to reject
+    # subsequent case-detail requests with "not authorized to view this case".
+    # April 21-27, 2025 reliably has ~170 probate filings — any non-empty
+    # week works, this one's chosen for being early in our data range.
     try:
         code = "511110"
         ctx = h._open_search_form(session, code)
-        # Tiny date window — just need the session cookies, not many results
-        today = date.today()
-        h._post_search(session, code, code, ctx, today, today)
+        h._post_search(
+            session, code, code, ctx,
+            date(2025, 4, 21), date(2025, 4, 27),
+        )
     except Exception as e:
         log.warning(f"Session warm-up failed (proceeding anyway): {e}")
 
