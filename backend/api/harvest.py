@@ -740,6 +740,7 @@ def harvest_backfill_parties(
     limit: int = 50,
     offset: int = 0,
     source_type: str = "kc_superior_court",
+    zip_code: Optional[str] = None,
 ):
     """
     Enrich existing probate/divorce signals with Participants-tab data.
@@ -756,9 +757,16 @@ def harvest_backfill_parties(
 
     Idempotent: cases already in case_parties_v3 are skipped. Safe to retry.
 
+    Case selection modes:
+      1) offset-based (default): scans signals in id order starting at `offset`
+      2) zip_code=XXXXX: restricts to signals that matched parcels in that ZIP.
+         This is the high-value mode for agents — prioritizes their territory.
+
     Params:
-      limit   — cap on cases to process this call (default 50, max 200).
-      offset  — skip this many signal IDs before scanning (for chunked runs).
+      limit    — cap on cases to process this call (default 50, max 200).
+      offset   — skip this many signal IDs before scanning (for chunked runs).
+      zip_code — if set, only process cases that have a match for a parcel
+                 in this ZIP (e.g. "98004"). Ignores offset.
 
     Typical rate: ~0.5s per case + ~2s per week warm-up. For 50 cases
     spread across ~5 weeks: ~40 sec wall-clock per call.
@@ -776,16 +784,80 @@ def harvest_backfill_parties(
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # Scan a wider window than the final limit so we can filter out
-    # already-scraped + missing-internal-id cases before picking `limit` many.
-    signals_res = (supa.table('raw_signals_v3')
+    if zip_code:
+        # ZIP-driven selection: find raw_signal_ids that matched parcels
+        # in this ZIP, then load those signals (not offset-based).
+        pins_in_zip: list = []
+        PAGE = 1000
+        z_off = 0
+        while True:
+            res = (supa.table('parcels_v3')
+                   .select('pin')
+                   .eq('zip_code', zip_code)
+                   .range(z_off, z_off + PAGE - 1)
+                   .execute())
+            batch = res.data or []
+            pins_in_zip.extend(r['pin'] for r in batch)
+            if len(batch) < PAGE:
+                break
+            z_off += PAGE
+            if z_off > 100000:
+                break
+
+        if not pins_in_zip:
+            return {
+                "processed":         0,
+                "message":           f"No parcels found in ZIP {zip_code}.",
+                "zip_code":          zip_code,
+            }
+
+        # Pull signal_ids for matches on these pins (prefer non-weak)
+        matched_signal_ids: set = set()
+        CHUNK = 200
+        for i in range(0, len(pins_in_zip), CHUNK):
+            chunk = pins_in_zip[i : i + CHUNK]
+            res = (supa.table('raw_signal_matches_v3')
+                   .select('raw_signal_id')
+                   .in_('pin', chunk)
+                   .neq('match_strength', 'weak')
+                   .limit(5000)
+                   .execute())
+            matched_signal_ids.update(
+                m['raw_signal_id'] for m in (res.data or [])
+            )
+
+        if not matched_signal_ids:
+            return {
+                "processed":         0,
+                "message":           f"No strong matches yet for ZIP {zip_code}.",
+                "zip_code":          zip_code,
+            }
+
+        # Load those signals
+        all_signals = []
+        CHUNK_S = 300
+        sig_ids_list = list(matched_signal_ids)
+        for i in range(0, len(sig_ids_list), CHUNK_S):
+            chunk = sig_ids_list[i : i + CHUNK_S]
+            res = (supa.table('raw_signals_v3')
                    .select('id, document_ref, raw_data, signal_type, event_date')
+                   .in_('id', chunk)
                    .eq('source_type', source_type)
                    .in_('signal_type', ['probate', 'divorce'])
-                   .order('id', desc=False)
-                   .range(offset, offset + 500 - 1)
                    .execute())
-    all_signals = signals_res.data or []
+            all_signals.extend(res.data or [])
+    else:
+        # Offset-based: scan signals in id order.
+        # Scan a wider window than the final limit so we can filter out
+        # already-scraped + missing-internal-id cases before picking `limit`.
+        signals_res = (supa.table('raw_signals_v3')
+                       .select('id, document_ref, raw_data, signal_type, event_date')
+                       .eq('source_type', source_type)
+                       .in_('signal_type', ['probate', 'divorce'])
+                       .order('id', desc=False)
+                       .range(offset, offset + 500 - 1)
+                       .execute())
+        all_signals = signals_res.data or []
 
     # Find which case_numbers already have parties scraped
     case_numbers_to_check = [
