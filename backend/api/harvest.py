@@ -181,6 +181,81 @@ def harvest_match_only(
     return stats
 
 
+@router.get("/diag/signal-date-range")
+def diag_signal_date_range(
+    x_admin_key: Optional[str] = Header(None),
+    signal_type: str = "probate",
+):
+    """
+    Diagnostic: summary of event_date distribution for a signal type.
+    Shows min/max date, how many signals have null event_date, and
+    a few sample rows from each extreme.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+
+    # Count total
+    total_res = (supa.table('raw_signals_v3')
+                 .select('id', count='exact')
+                 .eq('source_type', 'kc_superior_court')
+                 .eq('signal_type', signal_type)
+                 .limit(1)
+                 .execute())
+    total = total_res.count or 0
+
+    # Count with null event_date
+    null_res = (supa.table('raw_signals_v3')
+                .select('id', count='exact')
+                .eq('source_type', 'kc_superior_court')
+                .eq('signal_type', signal_type)
+                .is_('event_date', 'null')
+                .limit(1)
+                .execute())
+    null_count = null_res.count or 0
+
+    # Earliest 5 rows by event_date
+    earliest = (supa.table('raw_signals_v3')
+                .select('id, document_ref, event_date')
+                .eq('source_type', 'kc_superior_court')
+                .eq('signal_type', signal_type)
+                .not_.is_('event_date', 'null')
+                .order('event_date', desc=False)
+                .limit(5)
+                .execute()).data or []
+
+    # Latest 5 rows by event_date
+    latest = (supa.table('raw_signals_v3')
+              .select('id, document_ref, event_date')
+              .eq('source_type', 'kc_superior_court')
+              .eq('signal_type', signal_type)
+              .not_.is_('event_date', 'null')
+              .order('event_date', desc=True)
+              .limit(5)
+              .execute()).data or []
+
+    # Also sample 5 of the NULL-event-date signals
+    null_samples = (supa.table('raw_signals_v3')
+                    .select('id, document_ref, raw_data')
+                    .eq('source_type', 'kc_superior_court')
+                    .eq('signal_type', signal_type)
+                    .is_('event_date', 'null')
+                    .limit(5)
+                    .execute()).data or []
+    null_samples_min = [
+        {"id": r['id'], "document_ref": r.get('document_ref')}
+        for r in null_samples
+    ]
+
+    return {
+        "signal_type":       signal_type,
+        "total_signals":     total,
+        "null_event_date":   null_count,
+        "earliest_signals":  earliest,
+        "latest_signals":    latest,
+        "null_samples":      null_samples_min,
+    }
+
+
 @router.get("/diag/case-key-match")
 def diag_case_key_match(
     x_admin_key: Optional[str] = Header(None),
