@@ -336,6 +336,8 @@ def diag_fetch_participants(
     x_admin_key: Optional[str] = Header(None),
     internal_id: str = "5387893",
     warmup_mode: str = "real_search",
+    warmup_since: Optional[str] = None,
+    warmup_until: Optional[str] = None,
 ):
     """
     Diagnostic: fetch the Participants tab for ONE case using a specified
@@ -384,13 +386,21 @@ def diag_fetch_participants(
     elif warmup_mode in ("real_search", "real_plus_detail"):
         try:
             ctx = h._open_search_form(session, code)
-            # April 21-27 2025 we know has ~170 real probate filings
+            # Use custom dates if provided, else default to April 21-27 2025
+            if warmup_since and warmup_until:
+                from datetime import datetime
+                w_since = datetime.strptime(warmup_since, "%Y-%m-%d").date()
+                w_until = datetime.strptime(warmup_until, "%Y-%m-%d").date()
+            else:
+                w_since = date(2025, 4, 21)
+                w_until = date(2025, 4, 27)
             html = h._post_search(
                 session, code, code, ctx,
-                date(2025, 4, 21), date(2025, 4, 27),
+                w_since, w_until,
             )
             warm_info['status'] = 'OK'
             warm_info['warm_html_len'] = len(html)
+            warm_info['warm_range'] = f"{w_since}..{w_until}"
         except Exception as e:
             warm_info['status'] = f'ERROR: {str(e)[:100]}'
 
