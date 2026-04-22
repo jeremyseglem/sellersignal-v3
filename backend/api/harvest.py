@@ -181,6 +181,169 @@ def harvest_match_only(
     return stats
 
 
+@router.post("/backfill-internal-ids")
+def harvest_backfill_internal_ids(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    signal_type: str = "probate",
+    since: Optional[str] = None,  # 'YYYY-MM-DD'
+    until: Optional[str] = None,  # 'YYYY-MM-DD'
+    chunk_weeks: int = 1,
+):
+    """
+    Backfill the portal's internal_id into existing raw_signals_v3.raw_data.
+
+    The primary harvester previously didn't capture the per-case node ID
+    used to navigate into the Participants / Documents tabs. This endpoint
+    re-runs KC Superior Court searches week-by-week across a date range,
+    extracts internal_id from each result row's case-number link, and
+    UPDATEs the matching raw_signals_v3 row.
+
+    No signals are created or deleted — only the 'internal_id' key inside
+    each signal's raw_data JSONB is added. Safe to re-run.
+
+    Params:
+      signal_type  — 'probate' or 'divorce' (each searches a different
+                     case-type bucket on the portal)
+      since/until  — date range to cover. Defaults to the min/max event_date
+                     of un-backfilled signals in that signal_type.
+      chunk_weeks  — how many weeks per search call. Default 1 (safest for
+                     portal pagination at 20 results/page × 3 pages max).
+
+    Wall-clock: ~5 seconds per weekly search. A full 18-month backfill is
+    ~75 weekly searches ≈ 6 minutes. Well within HTTP timeout.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This re-searches the KC portal. Pass ?confirm=true to proceed.",
+        )
+
+    from datetime import datetime, date as date_cls, timedelta
+    from backend.harvesters.kc_superior_court import (
+        KCSuperiorCourtHarvester, CASE_TYPES,
+    )
+
+    if signal_type not in CASE_TYPES:
+        raise HTTPException(400, f"signal_type must be one of {list(CASE_TYPES.keys())}")
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Determine date range
+    if since:
+        start_date = datetime.strptime(since, "%Y-%m-%d").date()
+    else:
+        # Default: earliest un-backfilled signal of this type
+        start_date = date_cls(2025, 1, 1)
+    if until:
+        end_date = datetime.strptime(until, "%Y-%m-%d").date()
+    else:
+        end_date = date_cls.today()
+
+    if end_date < start_date:
+        raise HTTPException(400, "until must be >= since")
+
+    # Build a {case_number: signal_id} index from DB for fast lookup
+    signal_ids_by_case: dict = {}
+    OFFSET_STEP = 1000
+    sig_offset = 0
+    while True:
+        res = (supa.table('raw_signals_v3')
+               .select('id, document_ref, raw_data')
+               .eq('source_type', 'kc_superior_court')
+               .eq('signal_type', signal_type)
+               .range(sig_offset, sig_offset + OFFSET_STEP - 1)
+               .execute())
+        batch = res.data or []
+        if not batch:
+            break
+        for r in batch:
+            case_num = r.get('document_ref')
+            if not case_num:
+                continue
+            raw_data = r.get('raw_data') or {}
+            if raw_data.get('internal_id'):
+                continue  # already backfilled
+            signal_ids_by_case[case_num] = (r['id'], raw_data)
+        if len(batch) < OFFSET_STEP:
+            break
+        sig_offset += OFFSET_STEP
+
+    if not signal_ids_by_case:
+        return {
+            "message":          "No signals need internal_id backfill.",
+            "signals_updated":  0,
+        }
+
+    log.info(f"Need to backfill internal_id for {len(signal_ids_by_case)} {signal_type} signals")
+
+    # Run searches week-by-week
+    h = KCSuperiorCourtHarvester(case_types=[signal_type])
+    session = h.build_session()
+    code, sel, _ = CASE_TYPES[signal_type]
+
+    signals_updated = 0
+    searches_run = 0
+    errors: list = []
+    cur = start_date
+    while cur <= end_date:
+        win_start = cur
+        win_end = min(cur + timedelta(days=7 * chunk_weeks - 1), end_date)
+        try:
+            ctx = h._open_search_form(session, code)
+            html = h._post_search(session, code, sel, ctx, win_start, win_end)
+            rows = h._parse_result_rows(html)
+            # Handle pagination — pages beyond the first
+            page_idx = 1
+            while h._has_next_page_link(html, page_idx):
+                html = h._get_next_page(session, code, page_idx)
+                rows.extend(h._parse_result_rows(html))
+                page_idx += 1
+                if page_idx > 10:
+                    break  # safety
+
+            # Match case_numbers to DB rows and update
+            for row in rows:
+                case_num = row.get('case_number')
+                internal_id = row.get('internal_id')
+                if not case_num or not internal_id:
+                    continue
+                if case_num not in signal_ids_by_case:
+                    continue
+                sig_id, raw_data = signal_ids_by_case[case_num]
+                new_raw = dict(raw_data)
+                new_raw['internal_id'] = internal_id
+                (supa.table('raw_signals_v3')
+                 .update({'raw_data': new_raw})
+                 .eq('id', sig_id)
+                 .execute())
+                signals_updated += 1
+                del signal_ids_by_case[case_num]
+
+            searches_run += 1
+        except Exception as e:
+            errors.append({
+                "window":  f"{win_start}..{win_end}",
+                "error":   str(e)[:200],
+            })
+            if len(errors) > 10:
+                break
+
+        cur = win_end + timedelta(days=1)
+
+    return {
+        "signal_type":          signal_type,
+        "date_range":           f"{start_date}..{end_date}",
+        "searches_run":         searches_run,
+        "signals_updated":      signals_updated,
+        "signals_still_needing_backfill": len(signal_ids_by_case),
+        "errors":               errors,
+    }
+
+
 @router.post("/backfill-parties")
 def harvest_backfill_parties(
     x_admin_key: Optional[str] = Header(None),
