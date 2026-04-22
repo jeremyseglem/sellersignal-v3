@@ -384,6 +384,36 @@ def diag_fetch_participants(
             warm_info['warm_html_len'] = len(html)
         except Exception as e:
             warm_info['status'] = f'ERROR: {str(e)[:100]}'
+    elif warmup_mode == "paginated_warmup":
+        # Full pagination through all pages of the given week — mimics
+        # what backfill-parties does.
+        try:
+            from datetime import datetime
+            if not (warmup_since and warmup_until):
+                return {"error": "paginated_warmup requires warmup_since and warmup_until"}
+            w_since = datetime.strptime(warmup_since, "%Y-%m-%d").date()
+            w_until = datetime.strptime(warmup_until, "%Y-%m-%d").date()
+            ctx = h._open_search_form(session, code)
+            html = h._post_search(session, code, code, ctx, w_since, w_until)
+            page_idx = 1
+            pages_fetched = 1
+            all_case_numbers = [r.get('case_number') for r in h._parse_result_rows(html)]
+            while h._has_next_page_link(html, page_idx):
+                html = h._get_next_page(session, code, page_idx)
+                page_idx += 1
+                pages_fetched += 1
+                all_case_numbers.extend(r.get('case_number') for r in h._parse_result_rows(html))
+                if page_idx > 15:
+                    break
+            warm_info['status'] = 'OK'
+            warm_info['warm_range'] = f"{w_since}..{w_until}"
+            warm_info['pages_fetched'] = pages_fetched
+            warm_info['total_cases_authorized'] = len(all_case_numbers)
+            warm_info['first_cases'] = all_case_numbers[:5]
+            warm_info['last_cases'] = all_case_numbers[-5:] if len(all_case_numbers) > 5 else []
+        except Exception as e:
+            warm_info['status'] = f'ERROR: {str(e)[:100]}'
+
     elif warmup_mode in ("real_search", "real_plus_detail"):
         try:
             ctx = h._open_search_form(session, code)
