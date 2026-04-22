@@ -1128,6 +1128,142 @@ def harvest_backfill_parties(
     }
 
 
+@router.get("/diag/portal-health")
+def diag_portal_health(
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Quick check whether the KC Superior Court portal is responsive.
+    Tests the search form endpoint and a known-good case's participants.
+
+    Returns status dict. Used to gate backfill-parties runs — if portal
+    is degraded, don't burn time trying.
+    """
+    _require_admin(x_admin_key)
+    from backend.harvesters.kc_superior_court import (
+        KCSuperiorCourtHarvester, BASE, FORM_BASE_PATH,
+    )
+    from backend.harvesters.kc_court_participants import _parse_participants_html
+    from datetime import date
+
+    h = KCSuperiorCourtHarvester(case_types=['probate'])
+    session = h.build_session()
+    code = "511110"
+
+    health = {"portal_healthy": False, "checks": {}}
+
+    # Check 1: Search form loads
+    try:
+        ctx = h._open_search_form(session, code)
+        health['checks']['search_form'] = 'OK'
+    except Exception as e:
+        health['checks']['search_form'] = f"FAIL: {str(e)[:120]}"
+        return health
+
+    # Check 2: POST search returns real results
+    try:
+        html = h._post_search(session, code, code, ctx, date(2025, 4, 21), date(2025, 4, 27))
+        health['checks']['search_post_len'] = len(html)
+        rows = h._parse_result_rows(html)
+        health['checks']['search_rows_page1'] = len(rows)
+        if len(rows) < 5:
+            health['checks']['search_verdict'] = 'FAIL: too few rows'
+            return health
+    except Exception as e:
+        health['checks']['search_post'] = f"FAIL: {str(e)[:120]}"
+        return health
+
+    # Check 3: Known-good case 5387893 (YURDIN, LAWRENCE S)
+    try:
+        search_referer = f"{BASE}{FORM_BASE_PATH}?caseType=511110"
+        import requests
+        part_url = f"{BASE}/node/420?Id=5387893&folder=FV-Public-Case-Participants-Portal"
+        session.get(f"{BASE}/?q=node/420/5387893",
+                    headers={'Referer': search_referer}, timeout=15)
+        r = session.get(part_url, headers={'Referer': search_referer}, timeout=15)
+        health['checks']['participants_http'] = r.status_code
+        health['checks']['participants_len'] = len(r.text)
+        if 'table-condensed' in r.text:
+            parties = _parse_participants_html(r.text)
+            health['checks']['participants_parsed'] = len(parties)
+            health['portal_healthy'] = True
+        else:
+            health['checks']['participants_verdict'] = 'FAIL: no table-condensed'
+    except Exception as e:
+        health['checks']['participants'] = f"FAIL: {str(e)[:120]}"
+
+    return health
+
+
+@router.get("/diag/parties-count")
+def diag_parties_count(
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Return counts of parties in case_parties_v3 by role and pr_classification.
+    Also counts how many DISTINCT case_numbers have parties scraped (vs total
+    signals) so we can track coverage.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    result: dict = {}
+
+    # Total parties rows
+    total = (supa.table('case_parties_v3')
+             .select('id', count='exact')
+             .limit(1)
+             .execute())
+    result['total_party_rows'] = total.count or 0
+
+    # Sentinel rows (no participants found)
+    sentinels = (supa.table('case_parties_v3')
+                 .select('id', count='exact')
+                 .eq('raw_role', '(no participants found)')
+                 .limit(1)
+                 .execute())
+    result['sentinel_rows'] = sentinels.count or 0
+
+    # Real party rows
+    result['real_party_rows'] = result['total_party_rows'] - result['sentinel_rows']
+
+    # By role
+    role_counts: dict = {}
+    for role in ['deceased', 'personal_representative', 'petitioner',
+                 'attorney', 'respondent', 'other']:
+        c = (supa.table('case_parties_v3')
+             .select('id', count='exact')
+             .eq('role', role)
+             .limit(1)
+             .execute())
+        role_counts[role] = c.count or 0
+    result['by_role'] = role_counts
+
+    # By pr_classification (for personal_representative role)
+    pr_counts: dict = {}
+    for cls in ['family', 'corporate', 'attorney', 'unknown']:
+        c = (supa.table('case_parties_v3')
+             .select('id', count='exact')
+             .eq('role', 'personal_representative')
+             .eq('pr_classification', cls)
+             .limit(1)
+             .execute())
+        pr_counts[cls] = c.count or 0
+    result['pr_classification'] = pr_counts
+
+    # Distinct case_numbers scraped
+    # Supabase doesn't have a clean DISTINCT COUNT via REST, so approximate
+    # via sentinel + real and note it's an upper bound
+    result['note'] = ("Case coverage: a case_number may have multiple rows "
+                      "(decedent + PR + attorney + etc), so total_party_rows "
+                      "> distinct case_numbers scraped. Real coverage requires "
+                      "a SELECT DISTINCT or use per-case query.")
+
+    return result
+
+
 @router.post("/rematch")
 def harvest_rematch(
     x_admin_key: Optional[str] = Header(None),
