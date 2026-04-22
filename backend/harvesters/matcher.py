@@ -285,26 +285,41 @@ def _process_one(
     # we check if the decedent's surname appears anywhere in the entity name
     # (handles "Chen Family Trust" matching "Howard Tzu-Hao Chen").
     #
-    # Known limitation: doesn't catch common-surname coincidences like
-    # "John K Anderson" vs "Mark John Anderson" (different people, same
-    # surname + shared given-name token). That requires rarity-weighted
-    # matching which is a future enhancement.
+    # The gate now returns a STRENGTH ("strict" / "weak") rather than a
+    # bool. Common-surname-only matches with no distinctive token overlap
+    # get downgraded to "weak" so they survive for agent review via
+    # include_weak=true but don't pollute the default strict list.
     parties = row.get('party_names') or []
-    candidates = [
-        c for c in candidates
-        if _surname_gate(c["parcel_id"], owners_db, parties)
-    ]
+    gate_strengths: dict = {}
+    filtered_candidates = []
+    for c in candidates:
+        strength = _surname_gate(c["parcel_id"], owners_db, parties)
+        if strength is None:
+            continue
+        gate_strengths[c["parcel_id"]] = strength
+        filtered_candidates.append(c)
+    candidates = filtered_candidates
 
     if not candidates:
         _mark_matched(supa, row["id"], match_count=0)
         return 0
 
-    # Write raw_signal_matches_v3 rows
+    # Write raw_signal_matches_v3 rows. The effective strength is the
+    # WEAKER of (dispatcher's initial strength) and (surname gate's
+    # strength). So a probate with strict dispatch + weak gate = weak.
+    def _combine(dispatcher_strength: str, gate_strength: str) -> str:
+        if dispatcher_strength == "weak" or gate_strength == "weak":
+            return "weak"
+        return "strict"
+
     match_rows = [
         {
             "raw_signal_id":  row["id"],
             "pin":            c["parcel_id"],
-            "match_strength": c.get("trigger_hint", {}).get("match_strength", "strict"),
+            "match_strength": _combine(
+                c.get("trigger_hint", {}).get("match_strength", "strict"),
+                gate_strengths[c["parcel_id"]],
+            ),
             "match_method":   f"legacy::{signal_type}",
         }
         for c in candidates
@@ -416,6 +431,10 @@ _ENTITY_NOISE = {
     "SURVIVOR", "SURVIVORS", "RESIDUE", "RESIDUARY", "DECLARATION", "AGREEMENT",
     "SPECIAL", "NEEDS", "SUPPLEMENTAL", "CHARITABLE", "REMAINDER", "EDUCATION",
     "DESCENDANTS", "GENERATION", "SKIPPING", "GRAT", "CLAT", "CRUT", "CRAT",
+    # Trust-document boilerplate (new — kills Kramer-style cascades)
+    "UNDER", "WILL", "WILLS", "LAST", "TESTAMENT", "FBO", "BENEFIT", "BENEFITS",
+    "DECEDENT", "DECEASED", "LATE", "BEHALF", "DULY", "OTHER", "USE",
+    "REV", "TST", "LWT", "REVOCABEL",  # LWT = "last will and testament", REVOCABEL = common misspelling
     # Corp forms
     "LLC", "L.L.C.", "LP", "LLP", "INC", "INCORPORATED", "CORP", "CORPORATION",
     "CO", "COMPANY", "HOLDINGS", "GROUP", "PARTNERS", "PARTNERSHIP",
@@ -424,9 +443,115 @@ _ENTITY_NOISE = {
     # Common entity modifiers
     "OF", "THE", "AND", "&", "FOR", "BY",
     "ET", "AL", "ANO", "JR", "SR", "II", "III", "IV",
-    "DTD", "DATED", "UTD", "UDT", "UTA", "U/W",  # "under trust dated", "under will"
-    "TTEE", "TRUSTEE", "CO-TRUSTEE", "SUCCESSOR", "CY",   # 'cy' from 'cy pres'
+    "DTD", "DATED", "UTD", "UDT", "UTA", "U/W",
+    "TTEE", "TRUSTEE", "CO-TRUSTEE", "SUCCESSOR", "CY", "TTE",  # TTE = trustee variant
 }
+
+# Common US surnames (top ~60 by census frequency) + common Asian-American
+# surnames with heavy KC presence. When a match between owner and party
+# ONLY shares a common surname, we require additional distinctive-token
+# overlap to prevent cascades like "Bradford Lee Smith" → "Jason Lee Smith".
+COMMON_SURNAMES = {
+    # Top 50 US surnames
+    "SMITH", "JOHNSON", "WILLIAMS", "BROWN", "JONES", "GARCIA", "MILLER",
+    "DAVIS", "RODRIGUEZ", "MARTINEZ", "HERNANDEZ", "LOPEZ", "GONZALEZ",
+    "WILSON", "ANDERSON", "THOMAS", "TAYLOR", "MOORE", "JACKSON", "MARTIN",
+    "LEE", "PEREZ", "THOMPSON", "WHITE", "HARRIS", "SANCHEZ", "CLARK",
+    "RAMIREZ", "LEWIS", "ROBINSON", "WALKER", "YOUNG", "ALLEN", "KING",
+    "WRIGHT", "SCOTT", "TORRES", "NGUYEN", "HILL", "FLORES", "GREEN",
+    "ADAMS", "NELSON", "BAKER", "HALL", "RIVERA", "CAMPBELL", "MITCHELL",
+    "CARTER", "ROBERTS",
+    # Top 51-100 US surnames (important Bellevue/KC presence: Parker,
+    # Peterson, Howard, Morgan, Bailey, Reed, Edwards, Phillips, Evans,
+    # Turner, Cook, Rogers, Morgan, Ross, Foster, James, Bennett)
+    "GOMEZ", "PHILLIPS", "EVANS", "TURNER", "DIAZ", "PARKER", "CRUZ",
+    "EDWARDS", "COLLINS", "REYES", "STEWART", "MORRIS", "MORALES",
+    "MURPHY", "COOK", "ROGERS", "GUTIERREZ", "ORTIZ", "MORGAN", "COOPER",
+    "PETERSON", "BAILEY", "REED", "KELLY", "HOWARD", "RAMOS", "COX",
+    "WARD", "RICHARDSON", "WATSON", "BROOKS", "CHAVEZ", "WOOD", "JAMES",
+    "BENNETT", "GRAY", "MENDOZA", "RUIZ", "HUGHES", "PRICE", "ALVAREZ",
+    "CASTILLO", "SANDERS", "PATEL", "MYERS", "LONG", "ROSS", "FOSTER",
+    "JIMENEZ",
+    # Heavy Asian-American presence in KC (Bellevue/Redmond/Sammamish).
+    # NOTE: HAN intentionally excluded — it's more commonly a given-name
+    # fragment (Wei-Han, Po-Han) than a surname in Chinese contexts.
+    "CHEN", "KIM", "WANG", "LI", "LIN", "ZHANG", "WU", "CHANG", "LIU",
+    "HUANG", "YANG", "CHO", "PARK", "CHOI", "JUNG", "KANG",
+    # Common Vietnamese
+    "TRAN", "PHAM", "HUYNH", "HOANG", "PHAN",
+}
+
+# Common given (first) names — when both owner and party tokens overlap
+# only on first-name tokens (no surname), that's not a real match. E.g.
+# Donald Carlson Trust matching Donald Esfeld probate via shared "Donald".
+COMMON_FIRST_NAMES = {
+    # Top male given names
+    "JAMES", "JOHN", "ROBERT", "MICHAEL", "WILLIAM", "DAVID", "RICHARD",
+    "JOSEPH", "THOMAS", "CHARLES", "CHRISTOPHER", "DANIEL", "MATTHEW",
+    "ANTHONY", "DONALD", "MARK", "PAUL", "STEVEN", "ANDREW", "KENNETH",
+    "GEORGE", "JOSHUA", "KEVIN", "BRIAN", "EDWARD", "RONALD", "TIMOTHY",
+    "JASON", "JEFFREY", "RYAN", "GARY", "NICHOLAS", "ERIC", "JONATHAN",
+    "STEPHEN", "LARRY", "JUSTIN", "SCOTT", "BRANDON", "FRANK", "BENJAMIN",
+    "GREGORY", "SAMUEL", "RAYMOND", "PATRICK", "ALEXANDER", "JACK", "DENNIS",
+    "JERRY", "TYLER", "AARON", "JOSE", "HENRY", "ADAM", "DOUGLAS", "NATHAN",
+    "PETER", "ZACHARY", "KYLE", "NOAH", "ALAN", "ETHAN", "JEREMY", "WAYNE",
+    "KEITH", "CHRISTIAN", "ROGER", "TERRY", "ARTHUR", "SEAN", "LAWRENCE",
+    "JESSE", "AUSTIN", "JOE", "HAROLD", "JORDAN", "BRYAN", "BILLY", "BRUCE",
+    "ALBERT", "WILLIE", "GABRIEL", "LOGAN", "ALAN", "JUAN", "CARL", "RALPH",
+    "HOWARD",
+    # Top female given names
+    "MARY", "PATRICIA", "JENNIFER", "LINDA", "ELIZABETH", "BARBARA", "SUSAN",
+    "JESSICA", "SARAH", "KAREN", "LISA", "NANCY", "BETTY", "SANDRA",
+    "MARGARET", "ASHLEY", "KIMBERLY", "EMILY", "DONNA", "MICHELLE", "CAROL",
+    "AMANDA", "MELISSA", "DEBORAH", "STEPHANIE", "DOROTHY", "REBECCA",
+    "SHARON", "LAURA", "CYNTHIA", "AMY", "KATHLEEN", "ANGELA", "SHIRLEY",
+    "BRENDA", "PAMELA", "NICOLE", "ANNA", "SAMANTHA", "KATHERINE", "CHRISTINE",
+    "HELEN", "DEBRA", "RACHEL", "CAROLYN", "JANET", "MARIA", "CATHERINE",
+    "HEATHER", "DIANE", "OLIVIA", "JULIE", "JOYCE", "VICTORIA", "RUTH",
+    "VIRGINIA", "LAUREN", "KELLY", "CHRISTINA", "JOAN", "EVELYN", "JUDITH",
+    "ANDREA", "HANNAH", "JACQUELINE", "GLORIA", "JEAN", "KATHRYN", "ALICE",
+    "TERESA", "DORIS", "SARA", "JANICE", "MARILYN", "MARIE", "LESLEY",
+    "MARTHA", "LOIS", "JEANNE", "JANE", "SUZAN", "SUZANNE",
+    # Middle-name fragments commonly appearing
+    "LEE", "ANN", "ANNE", "MAY", "JO", "KAY", "SUE",
+}
+
+
+def _distinctive_tokens(raw: str) -> set:
+    """
+    Extract tokens that are NOT in our common-surname OR common-first-name
+    OR entity-noise sets. These are the "distinctive" tokens — names,
+    words, or identifiers that are unlikely to coincidentally overlap
+    between unrelated people.
+
+    Splits on whitespace AND hyphens so that hyphenated Korean/Chinese
+    given names align correctly:
+      "Chia Tzu Chen"     → {"CHIA", "TZU", "CHEN"}
+      "Howard Tzu-Hao Chen" → {"HOWARD", "TZU", "HAO", "CHEN"}
+
+    Then filters out common-first-name, common-surname, and entity-noise
+    tokens to leave only distinctive ones:
+      {"CHIA", "TZU", "CHEN"}            → {"CHIA", "TZU"}         (CHEN common)
+      {"HOWARD", "TZU", "HAO", "CHEN"}   → {"TZU", "HAO"}          (HOWARD common, CHEN common)
+      {"DAVID", "PARKER"}                → {}                       (both common)
+      {"BRADFORD", "LEE", "SMITH"}       → {"BRADFORD"}             (LEE common, SMITH common)
+
+    The distinctive-overlap check then asks: do both names share at
+    least one distinctive token? If not, surname-only overlap is
+    insufficient evidence.
+    """
+    if not raw:
+        return set()
+    import re
+    # Split on whitespace, hyphens, punctuation — all as word separators
+    tokens = re.split(r"[\s+,./()\-']+", raw.upper())
+    tokens = [t for t in tokens if t and len(t) > 1 and t.isalpha()]
+    return {
+        t for t in tokens
+        if t not in COMMON_SURNAMES
+        and t not in COMMON_FIRST_NAMES
+        and t not in _ENTITY_NOISE
+    }
 
 
 def _extract_surnames(raw: str) -> set:
@@ -437,12 +562,15 @@ def _extract_surnames(raw: str) -> set:
     For "HOWARD TZU-HAO CHEN"           → {"CHEN"}
     For "SMITH, JOHN"                   → {"SMITH"}
     For "Chen Family Trust +Wei Tzu+"   → {"CHEN", "TZU"}  (trust with names)
-    For "ABC Holdings LLC"              → {"ABC", "HOLDINGS"} (LLC words)
+    For "ABC Holdings LLC"              → {"ABC"}          (LLC words stripped)
     For "John K Anderson"               → {"ANDERSON"}
+    For "Donald And Lesley Carlson Trust +Conrad Jeannie+"
+                                         → {"CARLSON", "CONRAD"}  (first names filtered)
 
-    We return a SET not a single surname because entities can reasonably
-    contain multiple humans' surnames (e.g. a family trust naming both
-    spouses). Matching any one is enough.
+    For entity names (Trust/LLC/etc.), we return ALL non-noise non-first-name
+    tokens as candidate surnames. Filtering common first names prevents
+    false-positive matches where only a shared Donald or Jeannie causes
+    a match between unrelated trusts.
     """
     if not raw:
         return set()
@@ -463,42 +591,66 @@ def _extract_surnames(raw: str) -> set:
     if not tokens:
         return set()
 
-    # Heuristic:
-    # - Individual name (no entity noise matched): last token is surname
-    # - Entity name (had entity noise): ALL remaining tokens are candidate
-    #   surnames (we don't know which)
     had_entity_noise = any(
         word in raw_upper.split()
         for word in ("TRUST", "LLC", "INC", "CORP", "FAMILY", "ESTATE")
     )
 
     if had_entity_noise:
-        return set(tokens)
+        # For entities: return all non-noise tokens as surname candidates,
+        # but exclude obvious first names so that a shared "Donald" between
+        # unrelated trusts doesn't cause a false match.
+        surname_candidates = {t for t in tokens if t not in COMMON_FIRST_NAMES}
+        # If first-name filter would leave us with nothing, fall back to
+        # all tokens (some names ARE common first names, e.g. "James Trust")
+        return surname_candidates if surname_candidates else set(tokens)
 
     # Individual: last token is surname
     return {tokens[-1]}
 
 
-def _surname_gate(pin: str, owners_db: dict, signal_parties: list) -> bool:
+def _surname_gate(pin: str, owners_db: dict, signal_parties: list) -> "str | None":
     """
-    True if at least one signal party's surname matches the parcel owner's
-    surname.
+    Returns the match strength based on surname + distinctive token overlap:
+      - "strict": overlap includes an uncommon surname, OR overlap is on a
+                  common surname but distinctive-token corroboration exists
+      - "weak":   overlap is only on a common surname with no distinctive
+                  token corroboration (e.g. Bradford Lee Smith vs Jason
+                  Lee Smith — both Smith families but clearly different people)
+      - None:     no surname overlap at all — reject outright
 
-    Applies to all candidate matches returned by a dispatcher. Purpose:
-    filter out name-token-overlap false positives where only common
-    first+middle names collide (e.g. 'Robert Lee Harris' ≠ 'Robert Lee
-    Steil' despite sharing 'Robert' and 'Lee').
+    Callers use this to stamp match_strength; agents filter weak matches
+    via include_weak=false (default).
     """
     info = owners_db.get(pin) or {}
     owner_name = info.get('owner_name', '')
     owner_surnames = _extract_surnames(owner_name)
     if not owner_surnames:
-        return False
+        return None
+
+    owner_distinctive_cache = None
+    saw_weak = False
 
     for p in signal_parties:
         party_raw = p.get('raw', '') if isinstance(p, dict) else ''
         party_surnames = _extract_surnames(party_raw)
-        if party_surnames & owner_surnames:
-            return True
+        overlap = party_surnames & owner_surnames
+        if not overlap:
+            continue
 
-    return False
+        # Uncommon surname overlap → strict match
+        if any(s not in COMMON_SURNAMES for s in overlap):
+            return "strict"
+
+        # Overlap is all common surnames — check for distinctive corroboration
+        if owner_distinctive_cache is None:
+            owner_distinctive_cache = _distinctive_tokens(owner_name)
+        party_distinctive = _distinctive_tokens(party_raw)
+        if owner_distinctive_cache & party_distinctive:
+            return "strict"
+
+        # No distinctive overlap — weak match (but keep going; a later
+        # party might have a stronger match)
+        saw_weak = True
+
+    return "weak" if saw_weak else None

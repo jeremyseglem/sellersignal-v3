@@ -181,6 +181,84 @@ def harvest_match_only(
     return stats
 
 
+@router.post("/rematch")
+def harvest_rematch(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    zip_filter: Optional[str] = "98004",
+):
+    """
+    Delete ALL existing raw_signal_matches_v3 rows, then reset
+    raw_signals_v3 matched_at to NULL, then re-run the matcher against
+    the existing signal data.
+
+    Use case: matcher rules changed (e.g. expanded noise list,
+    rarity filter) and we want to re-score everything in DB under
+    the new rules. No re-scrape needed — everything recomputes from
+    the raw_signals already present.
+
+    Pass ?confirm=true to actually execute.
+    """
+    _require_admin(x_admin_key)
+
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This deletes all matches and resets signal processing state. "
+            "Pass ?confirm=true to proceed.",
+        )
+
+    from backend.harvesters import matcher
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # 1. Delete all existing matches
+    del_res = (supa.table('raw_signal_matches_v3')
+               .delete()
+               .neq('id', -1)
+               .execute())
+    deleted_matches = len(del_res.data or [])
+
+    # 2. Reset matched_at to NULL on all raw_signals so matcher will
+    #    re-process them. Paginate to avoid row-limit issues.
+    page = 1000
+    offset = 0
+    reset_count = 0
+    while True:
+        rows = (supa.table('raw_signals_v3')
+                .select('id')
+                .not_.is_('matched_at', 'null')
+                .range(offset, offset + page - 1)
+                .execute()).data or []
+        if not rows:
+            break
+        ids = [r['id'] for r in rows]
+        (supa.table('raw_signals_v3')
+         .update({'matched_at': None})
+         .in_('id', ids)
+         .execute())
+        reset_count += len(ids)
+        if len(rows) < page:
+            break
+        # do NOT advance offset — updating rows to NULL may change the
+        # result set; keep querying from 0 until empty
+
+    # 3. Re-run matcher
+    stats = matcher.process_unmatched(
+        supa,
+        zip_filter=zip_filter,
+        batch_size=100,
+        max_batches=500,
+    )
+
+    return {
+        "deleted_matches": deleted_matches,
+        "signals_reset": reset_count,
+        "match_stats": stats,
+    }
+
+
 @router.post("/reset")
 def harvest_reset(
     x_admin_key: Optional[str] = Header(None),
