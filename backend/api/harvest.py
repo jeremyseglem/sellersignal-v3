@@ -181,6 +181,81 @@ def harvest_match_only(
     return stats
 
 
+@router.get("/diag/case-key-match")
+def diag_case_key_match(
+    x_admin_key: Optional[str] = Header(None),
+    signal_type: str = "probate",
+    since: str = "2025-10-20",
+    until: str = "2025-10-26",
+):
+    """
+    Diagnostic: show the FIRST 20 DB document_ref values in this date
+    range side-by-side with what the live KC search returns. Pinpoints
+    why backfill-internal-ids isn't matching.
+
+    Read-only. No writes.
+    """
+    _require_admin(x_admin_key)
+    from datetime import datetime
+    from backend.harvesters.kc_superior_court import (
+        KCSuperiorCourtHarvester, CASE_TYPES,
+    )
+
+    start_date = datetime.strptime(since, "%Y-%m-%d").date()
+    end_date = datetime.strptime(until, "%Y-%m-%d").date()
+
+    supa = get_supabase_client()
+
+    # DB side: event_date filter
+    res = (supa.table('raw_signals_v3')
+           .select('id, document_ref, event_date, raw_data')
+           .eq('source_type', 'kc_superior_court')
+           .eq('signal_type', signal_type)
+           .gte('event_date', str(start_date))
+           .lte('event_date', str(end_date))
+           .order('id', desc=False)
+           .limit(20)
+           .execute())
+    db_rows = res.data or []
+    db_docs = [
+        {
+            "id":            r['id'],
+            "document_ref":  r.get('document_ref'),
+            "event_date":    r.get('event_date'),
+            "has_internal":  bool(r.get('raw_data', {}).get('internal_id')),
+        }
+        for r in db_rows
+    ]
+
+    # Live scrape side
+    h = KCSuperiorCourtHarvester(case_types=[signal_type])
+    session = h.build_session()
+    code, sel, _ = CASE_TYPES[signal_type]
+    live_rows: list = []
+    try:
+        ctx = h._open_search_form(session, code)
+        html = h._post_search(session, code, sel, ctx, start_date, end_date)
+        parsed = h._parse_result_rows(html)
+        for row in parsed[:20]:
+            live_rows.append({
+                "case_number":      row.get('case_number'),
+                "case_number_raw":  row.get('case_number_raw'),
+                "internal_id":      row.get('internal_id'),
+                "filing_date":      row.get('filing_date_raw'),
+                "case_name":        row.get('case_name')[:40] if row.get('case_name') else None,
+            })
+    except Exception as e:
+        live_rows = [{"error": str(e)[:300]}]
+
+    return {
+        "date_range":   f"{start_date}..{end_date}",
+        "db_count":     len(db_rows),
+        "db_sample":    db_docs,
+        "live_count":   len(live_rows),
+        "live_sample":  live_rows,
+    }
+
+
 @router.post("/backfill-internal-ids")
 def harvest_backfill_internal_ids(
     x_admin_key: Optional[str] = Header(None),
