@@ -331,6 +331,148 @@ def diag_case_key_match(
     }
 
 
+@router.get("/diag/fetch-participants")
+def diag_fetch_participants(
+    x_admin_key: Optional[str] = Header(None),
+    internal_id: str = "5387893",
+    warmup_mode: str = "real_search",
+):
+    """
+    Diagnostic: fetch the Participants tab for ONE case using a specified
+    warm-up strategy and return the raw HTML + parse result so we can see
+    why production fetches are returning 'No participants table found'.
+
+    warmup_mode options:
+      - 'today'         Warm session with today-to-today search (returns 0 rows).
+                        This is what backfill-parties currently does.
+      - 'real_search'   Warm with a 1-week date-range search that returns real
+                        results (April 21-27 2025, which we know has 171 cases).
+      - 'real_plus_detail'  As above, but then also visit the specific case's
+                           detail page (?q=node/420/{id}) before the Participants
+                           tab, to establish a 'currently viewing' session.
+      - 'none'          No warm-up at all.
+
+    Returns:
+      warmup_mode, html_length, html_preview (first 500 chars after the
+      nav chrome), parse_success, parse_parties (structured party list
+      if parse succeeded), and a 'participants_text_snippet' for quick
+      visual inspection of the page's actual participant data.
+    """
+    _require_admin(x_admin_key)
+    from backend.harvesters.kc_superior_court import (
+        KCSuperiorCourtHarvester, CASE_TYPES, BASE, FORM_BASE_PATH,
+    )
+    from backend.harvesters.kc_court_participants import (
+        _parse_participants_html,
+    )
+    from datetime import date, timedelta
+
+    h = KCSuperiorCourtHarvester(case_types=['probate'])
+    session = h.build_session()
+    code = "511110"
+
+    warm_info = {}
+    if warmup_mode == "today":
+        try:
+            ctx = h._open_search_form(session, code)
+            today = date.today()
+            html = h._post_search(session, code, code, ctx, today, today)
+            warm_info['status'] = 'OK'
+            warm_info['warm_html_len'] = len(html)
+        except Exception as e:
+            warm_info['status'] = f'ERROR: {str(e)[:100]}'
+    elif warmup_mode in ("real_search", "real_plus_detail"):
+        try:
+            ctx = h._open_search_form(session, code)
+            # April 21-27 2025 we know has ~170 real probate filings
+            html = h._post_search(
+                session, code, code, ctx,
+                date(2025, 4, 21), date(2025, 4, 27),
+            )
+            warm_info['status'] = 'OK'
+            warm_info['warm_html_len'] = len(html)
+        except Exception as e:
+            warm_info['status'] = f'ERROR: {str(e)[:100]}'
+
+    search_referer = f"{BASE}{FORM_BASE_PATH}?caseType=511110"
+
+    # Optionally bootstrap detail page first
+    detail_html_len = None
+    if warmup_mode == "real_plus_detail":
+        try:
+            detail_url = f"{BASE}/?q=node/420/{internal_id}"
+            r = session.get(
+                detail_url,
+                headers={'Referer': search_referer},
+                timeout=30,
+            )
+            detail_html_len = len(r.text)
+        except Exception as e:
+            detail_html_len = f"ERR: {str(e)[:80]}"
+
+    # Fetch the Participants tab directly
+    part_url = (
+        f"{BASE}/node/420"
+        f"?Id={internal_id}"
+        f"&folder=FV-Public-Case-Participants-Portal"
+    )
+    part_info = {}
+    try:
+        import requests
+        r = session.get(
+            part_url,
+            headers={'Referer': search_referer},
+            timeout=30,
+        )
+        part_info['status_code'] = r.status_code
+        part_info['html_length'] = len(r.text)
+        # Try parsing
+        parties = _parse_participants_html(r.text)
+        part_info['parse_party_count'] = len(parties)
+        part_info['parsed_parties'] = [
+            {
+                'role': p.role,
+                'raw_role': p.raw_role,
+                'name_raw': p.name_raw,
+                'pr_classification': p.pr_classification,
+            }
+            for p in parties
+        ]
+        # Find "Participants" text in page and snippet around it
+        html_up = r.text
+        snippet = None
+        # Look for 'table-condensed' class (the parties table)
+        if 'table-condensed' in html_up:
+            idx = html_up.index('table-condensed')
+            snippet = html_up[max(0, idx - 200):idx + 1500]
+            part_info['has_table_condensed_class'] = True
+        else:
+            part_info['has_table_condensed_class'] = False
+            # Find 'Participant' occurrence
+            if 'Participant' in html_up:
+                idx = html_up.index('Participant')
+                snippet = html_up[max(0, idx - 200):idx + 1000]
+            else:
+                part_info['has_participant_text'] = False
+        part_info['snippet'] = snippet[:2000] if snippet else None
+
+        # Also check for key errors
+        if 'not authorized' in html_up.lower():
+            part_info['authorization_error'] = True
+        if 'page not found' in html_up.lower():
+            part_info['page_not_found_error'] = True
+    except Exception as e:
+        part_info['fetch_error'] = str(e)[:200]
+
+    return {
+        'internal_id':      internal_id,
+        'warmup_mode':      warmup_mode,
+        'warm_info':        warm_info,
+        'detail_html_len':  detail_html_len,
+        'part_info':        part_info,
+    }
+
+
 @router.post("/backfill-internal-ids")
 def harvest_backfill_internal_ids(
     x_admin_key: Optional[str] = Header(None),
