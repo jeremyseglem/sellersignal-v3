@@ -299,9 +299,18 @@ def fetch_case_participants(
     search_referer: str,
     case_url_code: str = "511110",
     polite_delay: float = 0.4,
+    max_retries: int = 2,
+    retry_backoff: float = 2.0,
 ) -> list[ParsedParty]:
     """
     Fetch and parse the Participants tab for a single case.
+
+    The KC Superior Court portal occasionally returns a ~28KB generic
+    "Case Data" shell page (no participants table, no explicit error)
+    instead of the ~52KB authorized participants view. This is usually
+    transient and retries recover. We detect this by checking whether
+    the response HTML contains the 'table-condensed' class and retry
+    up to max_retries times with exponential backoff.
 
     Args:
         session: A requests.Session already warm from performing a search
@@ -311,47 +320,79 @@ def fetch_case_participants(
         search_referer: URL of the search-results page, used as Referer.
         case_url_code: "511110" for probate, "211110" for domestic.
         polite_delay: Seconds to sleep before request. Default 0.4s.
+        max_retries: Number of retries on degraded response. Default 2
+                     (total 3 attempts).
+        retry_backoff: Seconds between retries, multiplied per attempt.
 
     Returns:
         list of ParsedParty objects. Empty if fetch fails or no parties
-        are parseable.
+        are parseable (after retries).
     """
     if polite_delay > 0:
         time.sleep(polite_delay)
 
-    # Bootstrap: visit the detail-page entry link to establish view session
     detail_url = f"{BASE}/?q=node/420/{internal_id}"
-    try:
-        session.get(
-            detail_url,
-            headers={"Referer": search_referer},
-            timeout=30,
-        )
-    except requests.RequestException as e:
-        log.warning(f"Bootstrap GET failed for case {internal_id}: {e}")
-        return []
-
-    # Now fetch the Participants tab
     part_url = (
         f"{BASE}/node/420"
         f"?Id={internal_id}"
         f"&folder=FV-Public-Case-Participants-Portal"
     )
-    try:
-        resp = session.get(
-            part_url,
-            headers={"Referer": detail_url},
-            timeout=30,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        log.warning(f"Participants GET failed for case {internal_id}: {e}")
-        return []
 
-    parties = _parse_participants_html(resp.text)
-    if not parties:
-        log.debug(f"No parties parsed for case internal_id={internal_id}")
-    return parties
+    for attempt in range(max_retries + 1):
+        # Bootstrap: visit the detail-page entry link to establish view session
+        try:
+            session.get(
+                detail_url,
+                headers={"Referer": search_referer},
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            log.warning(
+                f"Bootstrap GET failed for case {internal_id} (attempt {attempt + 1}): {e}"
+            )
+            if attempt < max_retries:
+                time.sleep(retry_backoff * (attempt + 1))
+                continue
+            return []
+
+        # Now fetch the Participants tab
+        try:
+            resp = session.get(
+                part_url,
+                headers={"Referer": detail_url},
+                timeout=30,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            log.warning(
+                f"Participants GET failed for case {internal_id} (attempt {attempt + 1}): {e}"
+            )
+            if attempt < max_retries:
+                time.sleep(retry_backoff * (attempt + 1))
+                continue
+            return []
+
+        html = resp.text
+        # Degraded-response detection: the healthy authorized page has the
+        # 'table-condensed' class on the parties table; the shell page
+        # does not. ~28KB = shell, ~50KB+ = authorized.
+        if 'table-condensed' not in html:
+            if attempt < max_retries:
+                log.info(
+                    f"Case {internal_id} returned shell page "
+                    f"(len={len(html)}); retry {attempt + 1}/{max_retries}"
+                )
+                time.sleep(retry_backoff * (attempt + 1))
+                continue
+            # Fall through — parser will return empty list
+
+        parties = _parse_participants_html(html)
+        if not parties and 'table-condensed' in html:
+            # Table was present but no rows parsed — genuinely empty
+            log.debug(f"No parties parsed for case internal_id={internal_id}")
+        return parties
+
+    return []  # should be unreachable, safety
 
 
 def compute_html_hash(html: str) -> str:

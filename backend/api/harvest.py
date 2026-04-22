@@ -182,6 +182,67 @@ def harvest_match_only(
     return stats
 
 
+@router.get("/diag/parties-count")
+def diag_parties_count(
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Return total rows in case_parties_v3 and a per-role/classification
+    breakdown. Fast, read-only. Used to measure backfill progress.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Total rows
+    total_res = (supa.table('case_parties_v3')
+                 .select('case_number', count='exact')
+                 .limit(1)
+                 .execute())
+    total_rows = total_res.count or 0
+
+    # Distinct cases with at least one party
+    # Supabase doesn't do SELECT DISTINCT via REST, paginate & accumulate
+    distinct_cases: set = set()
+    sentinel_cases: set = set()
+    role_counts: dict = {}
+    pr_class_counts: dict = {}
+    OFFSET_STEP = 1000
+    offset = 0
+    while True:
+        res = (supa.table('case_parties_v3')
+               .select('case_number, role, raw_role, pr_classification')
+               .range(offset, offset + OFFSET_STEP - 1)
+               .execute())
+        batch = res.data or []
+        if not batch:
+            break
+        for r in batch:
+            cn = r.get('case_number')
+            if cn:
+                distinct_cases.add(cn)
+            role = r.get('role') or 'unknown'
+            role_counts[role] = role_counts.get(role, 0) + 1
+            rr = r.get('raw_role') or ''
+            if '(no participants found)' in rr:
+                sentinel_cases.add(cn)
+            pc = r.get('pr_classification') or 'none'
+            pr_class_counts[pc] = pr_class_counts.get(pc, 0) + 1
+        if len(batch) < OFFSET_STEP:
+            break
+        offset += OFFSET_STEP
+
+    return {
+        "total_party_rows":            total_rows,
+        "distinct_cases_with_data":    len(distinct_cases),
+        "sentinel_cases_no_parties":   len(sentinel_cases),
+        "real_cases_with_parties":     len(distinct_cases) - len(sentinel_cases),
+        "role_counts":                 role_counts,
+        "pr_classification_counts":    pr_class_counts,
+    }
+
+
 @router.get("/diag/signal-date-range")
 def diag_signal_date_range(
     x_admin_key: Optional[str] = Header(None),
