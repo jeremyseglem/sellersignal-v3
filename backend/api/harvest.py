@@ -181,6 +181,188 @@ def harvest_match_only(
     return stats
 
 
+@router.post("/backfill-parties")
+def harvest_backfill_parties(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    source_type: str = "wa_state_courts",
+):
+    """
+    Enrich existing probate/divorce signals with Participants-tab data.
+
+    For each raw_signals_v3 row of source_type='wa_state_courts' that
+    has an internal_id in raw_data and no matching row in case_parties_v3,
+    fetch the Participants tab and insert parsed parties.
+
+    Idempotent: safe to re-run. Rows already present (unique key
+    case_number+source_type+role+name_raw) are upserted.
+
+    This endpoint runs in chunks (default 50 cases per call, ~30 sec
+    wall-clock). Multiple calls with increasing offset work through the
+    full backlog. For the ~8,705 current probate signals that's ~175
+    calls @ 30sec each = ~90 min total if run serially.
+
+    Rate limited by the polite_delay in the fetcher (0.4s between cases)
+    so we don't hammer the KC portal.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This fetches from the live KC portal. Pass ?confirm=true to proceed.",
+        )
+    if limit < 1 or limit > 200:
+        raise HTTPException(400, "limit must be 1–200")
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Find signals needing enrichment: have internal_id, don't have case_parties rows yet.
+    # We use a NOT EXISTS pattern via application-side filtering since Supabase
+    # REST doesn't support subqueries cleanly.
+    signals_res = (supa.table('raw_signals_v3')
+                   .select('id, document_ref, raw_data, signal_type')
+                   .eq('source_type', source_type)
+                   .in_('signal_type', ['probate', 'divorce'])
+                   .order('id', desc=False)
+                   .range(offset, offset + 500 - 1)   # scan wider than we'll process
+                   .execute())
+    all_signals = signals_res.data or []
+
+    # Find which case_numbers already have parties scraped
+    case_numbers_to_check = [
+        s['document_ref'] for s in all_signals if s.get('document_ref')
+    ]
+    already_scraped: set = set()
+    if case_numbers_to_check:
+        CHK = 300
+        for i in range(0, len(case_numbers_to_check), CHK):
+            chunk = case_numbers_to_check[i : i + CHK]
+            res = (supa.table('case_parties_v3')
+                   .select('case_number')
+                   .in_('case_number', chunk)
+                   .eq('source_type', source_type)
+                   .execute())
+            already_scraped.update(r['case_number'] for r in (res.data or []))
+
+    # Filter to signals needing scrape
+    needs_scrape = [
+        s for s in all_signals
+        if s.get('document_ref')
+        and s.get('raw_data', {}).get('internal_id')
+        and s['document_ref'] not in already_scraped
+    ][:limit]
+
+    if not needs_scrape:
+        return {
+            "processed":         0,
+            "skipped_no_id":     sum(
+                1 for s in all_signals
+                if not s.get('raw_data', {}).get('internal_id')
+            ),
+            "already_scraped":   len(already_scraped),
+            "message":           "Nothing to process in this window.",
+            "offset_scanned":    offset,
+            "offset_scanned_to": offset + len(all_signals),
+        }
+
+    # Now run the scraper
+    from backend.harvesters.kc_superior_court import (
+        KCSuperiorCourtHarvester, CASE_TYPES, BASE, FORM_BASE_PATH,
+    )
+    from backend.harvesters.kc_court_participants import (
+        fetch_case_participants, compute_html_hash,
+    )
+    from datetime import date
+
+    h = KCSuperiorCourtHarvester(case_types=['probate'])
+    session = h.build_session()
+
+    # Warm the session with a single search POST so portal treats subsequent
+    # case-detail requests as coming from a legitimate user session.
+    try:
+        code = "511110"
+        ctx = h._open_search_form(session, code)
+        # Tiny date window — just need the session cookies, not many results
+        today = date.today()
+        h._post_search(session, code, code, ctx, today, today)
+    except Exception as e:
+        log.warning(f"Session warm-up failed (proceeding anyway): {e}")
+
+    search_referer = f"{BASE}{FORM_BASE_PATH}?caseType=511110"
+
+    processed = 0
+    inserted_parties = 0
+    no_parties_count = 0
+    errors: list = []
+
+    for signal in needs_scrape:
+        case_num = signal['document_ref']
+        internal_id = signal['raw_data']['internal_id']
+        try:
+            parties = fetch_case_participants(
+                session, internal_id, search_referer, polite_delay=0.4,
+            )
+            processed += 1
+
+            if not parties:
+                # Record an empty marker so we don't keep re-fetching. We
+                # insert a single sentinel row with role='none'. This is
+                # cleaner than polluting the schema with a separate
+                # 'no_parties_scraped' timestamp column.
+                (supa.table('case_parties_v3')
+                 .upsert({
+                    'case_number':    case_num,
+                    'source_type':    source_type,
+                    'role':           'other',
+                    'raw_role':       '(no participants found)',
+                    'name_raw':       '(empty)',
+                 }, on_conflict='case_number,source_type,role,name_raw')
+                 .execute())
+                no_parties_count += 1
+                continue
+
+            rows = [
+                {
+                    'case_number':       case_num,
+                    'source_type':       source_type,
+                    'role':              p.role,
+                    'raw_role':          p.raw_role,
+                    'name_raw':          p.name_raw,
+                    'name_last':         p.name_last,
+                    'name_first':        p.name_first,
+                    'name_middle':       p.name_middle,
+                    'represented_by':    p.represented_by,
+                    'pr_classification': p.pr_classification,
+                }
+                for p in parties
+            ]
+            (supa.table('case_parties_v3')
+             .upsert(rows, on_conflict='case_number,source_type,role,name_raw')
+             .execute())
+            inserted_parties += len(rows)
+        except Exception as e:
+            errors.append({'case_number': case_num, 'error': str(e)[:200]})
+            if len(errors) > 20:
+                log.error(f"Too many errors, aborting: {errors[-1]}")
+                break
+
+    return {
+        "processed":         processed,
+        "inserted_parties":  inserted_parties,
+        "no_parties_found":  no_parties_count,
+        "errors":            errors,
+        "offset_start":      offset,
+        "offset_end":        offset + len(all_signals),
+        "next_offset":       offset + len(all_signals),
+        "remaining_unscraped_in_window":
+            max(0, len(needs_scrape) - processed),
+    }
+
+
 @router.post("/rematch")
 def harvest_rematch(
     x_admin_key: Optional[str] = Header(None),
@@ -466,6 +648,26 @@ def harvest_matches(
         for r in (res.data or []):
             signals_by_id[r['id']] = r
 
+    # Enrich with case_parties (Personal Rep data). We fetch all parties
+    # for the case_numbers we have signals for, then index by case_number.
+    case_numbers = [
+        s.get('document_ref') for s in signals_by_id.values()
+        if s.get('document_ref') and s.get('source_type') == 'wa_state_courts'
+    ]
+    parties_by_case: dict = {}
+    if case_numbers:
+        CHUNK_C = 200
+        for i in range(0, len(case_numbers), CHUNK_C):
+            chunk = case_numbers[i : i + CHUNK_C]
+            res = (supa.table('case_parties_v3')
+                   .select('case_number, role, raw_role, name_raw, '
+                           'name_last, name_first, name_middle, '
+                           'represented_by, pr_classification')
+                   .in_('case_number', chunk)
+                   .execute())
+            for p in (res.data or []):
+                parties_by_case.setdefault(p['case_number'], []).append(p)
+
     # Assemble the response: one row per (parcel, signal)
     matches_out: list[dict] = []
     for m in all_matches:
@@ -477,6 +679,38 @@ def harvest_matches(
         # Extract first party name for quick display
         parties = signal.get('party_names') or []
         first_party = parties[0].get('raw') if parties else None
+
+        # Find Personal Rep (if any) from case_parties
+        case_num = signal.get('document_ref')
+        case_parties = parties_by_case.get(case_num, []) if case_num else []
+        personal_rep = None
+        for p in case_parties:
+            if p['role'] == 'personal_representative':
+                personal_rep = {
+                    'name':           p['name_raw'],
+                    'name_last':      p['name_last'],
+                    'name_first':     p['name_first'],
+                    'name_middle':    p['name_middle'],
+                    'classification': p['pr_classification'],
+                }
+                break  # take the first one; typically there's only one
+
+        # Compute actionability flag — the single bit of routing guidance
+        # we surface at briefing level. Don't force agents to interpret
+        # pr_classification strings.
+        if personal_rep:
+            if personal_rep['classification'] == 'family':
+                contact_status = 'family_pr_identified'
+            elif personal_rep['classification'] in ('corporate', 'attorney'):
+                contact_status = 'unworkable_pr'
+            else:
+                contact_status = 'pr_unknown_classification'
+        elif case_num and case_parties:
+            contact_status = 'no_pr_yet'
+        elif case_num:
+            contact_status = 'parties_not_scraped'
+        else:
+            contact_status = 'not_applicable'
 
         matches_out.append({
             "pin":              m['pin'],
@@ -495,6 +729,10 @@ def harvest_matches(
             "case_detail":      signal.get('raw_data', {}),
             "match_strength":   m['match_strength'],
             "matched_at":       m['matched_at'],
+            # NEW — contact routing data from Phase 1.5
+            "personal_representative": personal_rep,
+            "contact_status":          contact_status,
+            "all_case_parties":        case_parties,
         })
 
     # Sort by event_date desc (most recent first), null dates at bottom

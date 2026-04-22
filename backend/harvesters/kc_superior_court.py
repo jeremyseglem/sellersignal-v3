@@ -303,6 +303,17 @@ class KCSuperiorCourtHarvester(BaseHarvester):
             if not m:
                 continue
 
+            # Extract the portal's internal node ID from the case-number link.
+            # Each case in search results is a link like <a href="?q=node/420/7629118">.
+            # That trailing integer is a stable internal ID we need to visit
+            # the case's Participants / Documents / Events tabs.
+            internal_id = None
+            first_link = cells[0].find("a", href=True)
+            if first_link:
+                id_match = re.search(r"/(\d+)(?:$|\?|#)", first_link["href"])
+                if id_match:
+                    internal_id = id_match.group(1)
+
             rows_out.append({
                 "case_number":     m.group(1),
                 "case_number_raw": texts[0],
@@ -311,6 +322,7 @@ class KCSuperiorCourtHarvester(BaseHarvester):
                 "cause":           texts[3] if len(texts) > 3 else "",
                 "next_hearing":    texts[4] if len(texts) > 4 else "",
                 "status":          texts[5] if len(texts) > 5 else "",
+                "internal_id":     internal_id,
             })
 
         return rows_out
@@ -366,6 +378,10 @@ class KCSuperiorCourtHarvester(BaseHarvester):
                 "cause":           row["cause"],
                 "next_hearing":    row["next_hearing"],
                 "status":          row["status"],
+                # Internal node ID for the portal — used later to fetch
+                # Participants / Documents / Events tabs. Captured here so
+                # we don't have to re-search to find it.
+                "internal_id":     row.get("internal_id"),
             },
         )
 
