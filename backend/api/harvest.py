@@ -12,6 +12,7 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import time
 import logging
 from datetime import date, timedelta
 from typing import Optional
@@ -837,17 +838,40 @@ def harvest_backfill_parties(
         # page of results currently being viewed. Paginating to page 2
         # REVOKES authorization for page 1's cases. So we must fetch
         # Participants for each target case BEFORE moving to the next page.
+        #
+        # ADDITIONAL CONSTRAINT discovered empirically: the portal also
+        # depletes authorization after ~3-4 Participants fetches within
+        # a single page view. Solution: re-GET the same ?page= URL between
+        # each Participants fetch. This refreshes auth cheaply without
+        # changing which page we're on.
         page_idx = 1
         while not week_done:
             # Parse this page's case rows
             page_rows = h._parse_result_rows(html)
             # Match against our target cases
+            cases_processed_on_this_page = 0
             for row in page_rows:
                 iid = row.get('internal_id')
                 if not iid or iid not in targets_by_internal_id:
                     continue  # this case isn't in my backfill batch
                 signal = targets_by_internal_id.pop(iid)  # don't process twice
                 case_num = signal['document_ref']
+
+                # Refresh authorization by re-GETting the current page.
+                # First case on the page doesn't need this (POST/GET already
+                # set fresh auth); subsequent cases do.
+                if cases_processed_on_this_page > 0:
+                    try:
+                        html = h._get_next_page(session, code, page_idx)
+                        time.sleep(0.25)
+                    except Exception as e:
+                        errors.append({
+                            'case_number': case_num,
+                            'error': f"auth refresh GET ?page={page_idx} failed: {str(e)[:120]}",
+                        })
+                        continue
+                cases_processed_on_this_page += 1
+
                 try:
                     parties = fetch_case_participants(
                         session, iid, search_referer, polite_delay=0.3,
