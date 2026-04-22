@@ -871,26 +871,33 @@ def harvest_backfill_parties(
         #
         # ADDITIONAL CONSTRAINT discovered empirically: the portal also
         # depletes authorization after ~3-4 Participants fetches within
-        # a single page view. Solution: re-load the SAME page (via re-POST
-        # for page 0, or re-GET ?page=N for later pages) between each
-        # Participants fetch. Refreshes auth cheaply.
+        # a single page view. Solution: rebuild the entire session (fresh
+        # cookies) between EACH case. Yes, it's heavy-handed (~2 extra
+        # HTTP calls per case, total ~28k extra calls for full backfill)
+        # but it's the only approach that reliably works for >10 cases
+        # on a single page.
         #
         # Drupal pagination: POST returns display-page-1 (Drupal page 0,
         # no ?page= param). Clicking "2" goes to ?page=1 = display-page-2.
         # `drupal_page` tracks the URL param (0 = no param / POST result).
         drupal_page = 0
+        # Diagnostic trace for this week
+        case_trace: list = []
 
-        def _refresh_current_page() -> str:
-            """Re-load whatever page we're currently viewing.
-            For drupal_page=0, that means re-POSTing the search form.
-            For drupal_page>=1, GET ?page={drupal_page}.
-            """
-            if drupal_page == 0:
-                ctx2 = h._open_search_form(session, code)
-                return h._post_search(
-                    session, code, code, ctx2, week_start, week_end,
-                )
-            return h._get_next_page(session, code, drupal_page)
+        def _rebuild_and_warm() -> str:
+            """Build a fresh session, warm it with a search POST for this
+            week, and (if not on page 0) paginate to the current page.
+            Returns the HTML of the current page."""
+            nonlocal session
+            session = h.build_session()
+            ctx2 = h._open_search_form(session, code)
+            new_html = h._post_search(
+                session, code, code, ctx2, week_start, week_end,
+            )
+            # If we're past page 0, paginate up to our current page
+            for p in range(1, drupal_page + 1):
+                new_html = h._get_next_page(session, code, p)
+            return new_html
 
         while not week_done:
             # Parse this page's case rows (fresh from the current `html`)
@@ -903,16 +910,21 @@ def harvest_backfill_parties(
                 signal = targets_by_internal_id.pop(iid)
                 case_num = signal['document_ref']
 
-                # Refresh auth by re-loading the current page.
-                # First case on the page has fresh auth already.
+                # Rebuild session between cases to get fresh auth.
+                # Skip for the very first case (session is already fresh
+                # from the week-warmup at the top of this loop).
                 if cases_processed_on_this_page > 0:
                     try:
-                        html = _refresh_current_page()
-                        time.sleep(0.25)
+                        html = _rebuild_and_warm()
+                        time.sleep(0.3)
                     except Exception as e:
                         errors.append({
                             'case_number': case_num,
-                            'error': f"auth refresh (drupal_page={drupal_page}) failed: {str(e)[:120]}",
+                            'error': f"session rebuild (drupal_page={drupal_page}) failed: {str(e)[:120]}",
+                        })
+                        case_trace.append({
+                            'case': case_num, 'drupal_page': drupal_page,
+                            'step': 'rebuild_failed',
                         })
                         continue
                 cases_processed_on_this_page += 1
@@ -922,6 +934,10 @@ def harvest_backfill_parties(
                         session, iid, search_referer, polite_delay=0.3,
                     )
                     processed += 1
+                    case_trace.append({
+                        'case': case_num, 'drupal_page': drupal_page,
+                        'parties': len(parties),
+                    })
 
                     if not parties:
                         (supa.table('case_parties_v3')
@@ -969,8 +985,7 @@ def harvest_backfill_parties(
             if not targets_by_internal_id:
                 week_done = True
                 break
-            # Are there more result pages to try?
-            # Check against the HTML we currently have (may have been refreshed)
+            # Check if there's a next page in the CURRENT html.
             if not h._has_next_page_link(html, drupal_page + 1):
                 # No more pages; any remaining targets just aren't findable
                 # via this week's search (e.g. disposed/sealed cases that
@@ -981,18 +996,30 @@ def harvest_backfill_parties(
                 # Safety cap — some pathological weeks might exceed this
                 week_done = True
                 break
-            # Fetch next page — this REPLACES the previous page's authorization.
+            # Advance to next page. This also rebuilds session for fresh auth.
             try:
+                session = h.build_session()
+                ctx2 = h._open_search_form(session, code)
+                html = h._post_search(
+                    session, code, code, ctx2, week_start, week_end,
+                )
                 next_drupal = drupal_page + 1
-                html = h._get_next_page(session, code, next_drupal)
+                for p in range(1, next_drupal + 1):
+                    html = h._get_next_page(session, code, p)
                 drupal_page = next_drupal
             except Exception as e:
                 errors.append({
                     'week':  f"{week_start}..{week_end}",
-                    'error': f"page ?page={drupal_page + 1} fetch failed: {str(e)[:100]}",
+                    'error': f"advance to ?page={drupal_page + 1} failed: {str(e)[:100]}",
                 })
                 week_done = True
                 break
+
+        # Attach trace to errors for diagnostic visibility
+        if case_trace:
+            # Keep trace small to avoid blowing up response size
+            if len(case_trace) <= 60:
+                errors.append({'week_trace': case_trace})
 
     return {
         "processed":            processed,
