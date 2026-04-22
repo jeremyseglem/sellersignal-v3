@@ -502,6 +502,28 @@ def diag_fetch_participants(
             part_info['authorization_error'] = True
         if 'page not found' in html_up.lower():
             part_info['page_not_found_error'] = True
+
+        # Extra indicators to diagnose generic-page state
+        indicators: dict = {}
+        for marker in [
+            'Participants', 'Case Data', 'Documents', 'Events',
+            'please refine', 'session expired', 'login',
+            'folder=FV-Public-Case-Participants',
+            'data-drupal-selector', 'drupal-settings-json',
+            'BigPipe', 'big_pipe', 'ECPFormCode',
+            'Please try again', 'page unavailable',
+        ]:
+            indicators[marker] = marker in html_up
+        part_info['indicators'] = indicators
+
+        # Middle snippet — body area
+        body_start = html_up.find('<body')
+        if body_start > 0:
+            part_info['body_snippet_middle'] = html_up[body_start:body_start + 2500]
+        # End snippet — last 1500 chars before </body>
+        body_end = html_up.rfind('</body>')
+        if body_end > 0:
+            part_info['body_snippet_end'] = html_up[max(0, body_end - 1500):body_end + 10]
     except Exception as e:
         part_info['fetch_error'] = str(e)[:200]
 
