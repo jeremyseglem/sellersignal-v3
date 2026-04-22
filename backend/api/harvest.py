@@ -808,19 +808,21 @@ def harvest_backfill_parties(
 
     for week_start, week_signals in sorted(groups.items()):
         week_end = week_start + timedelta(days=6)
+        # Index this week's target cases by internal_id for O(1) lookup
+        # during page processing.
+        targets_by_internal_id = {
+            s['raw_data']['internal_id']: s for s in week_signals
+        }
+        # Also index by case_number so we can match against search rows
+        # which give us case_number but signals are keyed by internal_id.
+        # (internal_id is the authoritative key; case_number is the DB ref.)
+        week_done = False
         try:
-            # 1) Warm-up: fresh search form + search this specific week
+            # 1) Fresh warm-up: search form + post search for THIS week only
             ctx = h._open_search_form(session, code)
             html = h._post_search(
                 session, code, code, ctx, week_start, week_end,
             )
-            # 2) Paginate through all result pages so ALL cases are authorized
-            page_idx = 1
-            while h._has_next_page_link(html, page_idx):
-                html = h._get_next_page(session, code, page_idx)
-                page_idx += 1
-                if page_idx > 15:
-                    break  # safety — a single week shouldn't exceed this
             weeks_processed += 1
         except Exception as e:
             errors.append({
@@ -831,53 +833,97 @@ def harvest_backfill_parties(
                 break
             continue
 
-        # 3) Now fetch Participants for each case in this week
-        for signal in week_signals:
-            case_num = signal['document_ref']
-            internal_id = signal['raw_data']['internal_id']
-            try:
-                parties = fetch_case_participants(
-                    session, internal_id, search_referer, polite_delay=0.3,
-                )
-                processed += 1
+        # 2) CRITICAL: the portal authorizes case-detail access ONLY for the
+        # page of results currently being viewed. Paginating to page 2
+        # REVOKES authorization for page 1's cases. So we must fetch
+        # Participants for each target case BEFORE moving to the next page.
+        page_idx = 1
+        while not week_done:
+            # Parse this page's case rows
+            page_rows = h._parse_result_rows(html)
+            # Match against our target cases
+            for row in page_rows:
+                iid = row.get('internal_id')
+                if not iid or iid not in targets_by_internal_id:
+                    continue  # this case isn't in my backfill batch
+                signal = targets_by_internal_id.pop(iid)  # don't process twice
+                case_num = signal['document_ref']
+                try:
+                    parties = fetch_case_participants(
+                        session, iid, search_referer, polite_delay=0.3,
+                    )
+                    processed += 1
 
-                if not parties:
-                    # Sentinel — don't re-fetch this case next run
+                    if not parties:
+                        (supa.table('case_parties_v3')
+                         .upsert({
+                            'case_number':    case_num,
+                            'source_type':    source_type,
+                            'role':           'other',
+                            'raw_role':       '(no participants found)',
+                            'name_raw':       '(empty)',
+                         }, on_conflict='case_number,source_type,role,name_raw')
+                         .execute())
+                        no_parties_count += 1
+                        continue
+
+                    rows_ins = [
+                        {
+                            'case_number':       case_num,
+                            'source_type':       source_type,
+                            'role':              p.role,
+                            'raw_role':          p.raw_role,
+                            'name_raw':          p.name_raw,
+                            'name_last':         p.name_last,
+                            'name_first':        p.name_first,
+                            'name_middle':       p.name_middle,
+                            'represented_by':    p.represented_by,
+                            'pr_classification': p.pr_classification,
+                        }
+                        for p in parties
+                    ]
                     (supa.table('case_parties_v3')
-                     .upsert({
-                        'case_number':    case_num,
-                        'source_type':    source_type,
-                        'role':           'other',
-                        'raw_role':       '(no participants found)',
-                        'name_raw':       '(empty)',
-                     }, on_conflict='case_number,source_type,role,name_raw')
+                     .upsert(rows_ins,
+                             on_conflict='case_number,source_type,role,name_raw')
                      .execute())
-                    no_parties_count += 1
-                    continue
+                    inserted_parties += len(rows_ins)
+                except Exception as e:
+                    errors.append({
+                        'case_number': case_num,
+                        'error':       str(e)[:200],
+                    })
+                    if len(errors) > 20:
+                        week_done = True
+                        break
 
-                rows = [
-                    {
-                        'case_number':       case_num,
-                        'source_type':       source_type,
-                        'role':              p.role,
-                        'raw_role':          p.raw_role,
-                        'name_raw':          p.name_raw,
-                        'name_last':         p.name_last,
-                        'name_first':        p.name_first,
-                        'name_middle':       p.name_middle,
-                        'represented_by':    p.represented_by,
-                        'pr_classification': p.pr_classification,
-                    }
-                    for p in parties
-                ]
-                (supa.table('case_parties_v3')
-                 .upsert(rows, on_conflict='case_number,source_type,role,name_raw')
-                 .execute())
-                inserted_parties += len(rows)
+            # Done with this page's targets. Are there any week targets left?
+            if not targets_by_internal_id:
+                week_done = True
+                break
+            # Are there more result pages to try?
+            if not h._has_next_page_link(html, page_idx):
+                # No more pages; any remaining targets just aren't findable
+                # via this week's search (e.g. disposed/sealed cases that
+                # don't appear in KC search results). Skip them.
+                week_done = True
+                break
+            if page_idx >= 15:
+                # Safety cap — some pathological weeks might exceed this
+                week_done = True
+                break
+            # Fetch next page — this REPLACES the previous page's
+            # authorization. That's fine: we already processed every target
+            # we could find on prior pages.
+            try:
+                html = h._get_next_page(session, code, page_idx + 1)
+                page_idx += 1
             except Exception as e:
-                errors.append({'case_number': case_num, 'error': str(e)[:200]})
-                if len(errors) > 20:
-                    break
+                errors.append({
+                    'week':  f"{week_start}..{week_end}",
+                    'error': f"page {page_idx+1} fetch failed: {str(e)[:100]}",
+                })
+                week_done = True
+                break
 
     return {
         "processed":            processed,
