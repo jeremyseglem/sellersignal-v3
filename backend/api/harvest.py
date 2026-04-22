@@ -187,12 +187,12 @@ def harvest_backfill_parties(
     confirm: bool = False,
     limit: int = 50,
     offset: int = 0,
-    source_type: str = "wa_state_courts",
+    source_type: str = "kc_superior_court",
 ):
     """
     Enrich existing probate/divorce signals with Participants-tab data.
 
-    For each raw_signals_v3 row of source_type='wa_state_courts' that
+    For each raw_signals_v3 row of source_type='kc_superior_court' that
     has an internal_id in raw_data and no matching row in case_parties_v3,
     fetch the Participants tab and insert parsed parties.
 
@@ -652,7 +652,7 @@ def harvest_matches(
     # for the case_numbers we have signals for, then index by case_number.
     case_numbers = [
         s.get('document_ref') for s in signals_by_id.values()
-        if s.get('document_ref') and s.get('source_type') == 'wa_state_courts'
+        if s.get('document_ref') and s.get('source_type') == 'kc_superior_court'
     ]
     parties_by_case: dict = {}
     if case_numbers:

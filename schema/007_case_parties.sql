@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS case_parties_v3 (
     case_number        TEXT NOT NULL,
     -- e.g. "25-4-07651-0" — matches raw_signals_v3.document_ref for probate/divorce
 
-    source_type        TEXT NOT NULL DEFAULT 'wa_state_courts',
+    source_type        TEXT NOT NULL DEFAULT 'kc_superior_court',
     -- Matches raw_signals_v3.source_type — scoped so case_number collisions
     -- across jurisdictions don't conflict
 
