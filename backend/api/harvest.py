@@ -808,17 +808,47 @@ def harvest_pending_parties(
             break
         off += STEP
 
-    # 2) If zip_code specified, get the case_numbers of matches in that ZIP
+    # 2) If zip_code specified, get the case_numbers of matches in that ZIP.
+    # We join raw_signal_matches_v3 → raw_signals_v3 via raw_signal_id.
     target_case_nums: Optional[set] = None
     if zip_code:
-        zip_match_res = (supa.table('matches_v3')
-                         .select('document_ref')
-                         .eq('zip_code', zip_code)
-                         .execute())
-        target_case_nums = set(
-            r['document_ref'] for r in (zip_match_res.data or [])
-            if r.get('document_ref')
-        )
+        # Find pins in this zip
+        pins_res = (supa.table('parcels_v3')
+                    .select('pin')
+                    .eq('zip_code', zip_code)
+                    .execute())
+        pins_in_zip = [r['pin'] for r in (pins_res.data or [])]
+        if not pins_in_zip:
+            return {'pending': [], 'total': 0, 'zip_code': zip_code,
+                    'note': 'no parcels found in zip'}
+
+        # Get raw_signal_ids from matches on those pins
+        signal_ids: set = set()
+        CHUNK = 500
+        for i in range(0, len(pins_in_zip), CHUNK):
+            chunk = pins_in_zip[i:i + CHUNK]
+            res = (supa.table('raw_signal_matches_v3')
+                   .select('raw_signal_id')
+                   .in_('pin', chunk)
+                   .neq('match_strength', 'weak')
+                   .limit(5000)
+                   .execute())
+            signal_ids.update(r['raw_signal_id'] for r in (res.data or []))
+
+        # Look up document_refs for those signal ids
+        target_case_nums = set()
+        if signal_ids:
+            ids_list = list(signal_ids)
+            for i in range(0, len(ids_list), CHUNK):
+                chunk = ids_list[i:i + CHUNK]
+                res = (supa.table('raw_signals_v3')
+                       .select('document_ref')
+                       .in_('id', chunk)
+                       .execute())
+                target_case_nums.update(
+                    r['document_ref'] for r in (res.data or [])
+                    if r.get('document_ref')
+                )
 
     # 3) Scan raw_signals_v3 for candidates
     pending: list = []
