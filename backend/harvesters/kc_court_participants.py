@@ -94,11 +94,28 @@ def _normalize_role(raw: str) -> str:
 
 _CORPORATE_PR_PATTERNS = re.compile(
     r"\b("
+    # Banks & trust services
     r"BANK|TRUST\s+SERVICES|TRUST\s+COMPANY|TRUSTEE\s+SERVICES|"
     r"FIDUCIARY|FIRST\s+AMERICAN|STATE\s+STREET|NORTHERN\s+TRUST|"
     r"WELLS\s+FARGO|BANK\s+OF\s+AMERICA|U\.?S\.?\s+BANK|"
     r"CAPITAL\s+ONE|CHARLES\s+SCHWAB|FIDELITY|VANGUARD|"
-    r"INC\.?|LLC\.?|L\.?L\.?C\.?|CORP\.?|CORPORATION|COMPANY"
+    # Medical / healthcare institutions
+    r"HOSPITAL|MEDICAL\s+CENTER|MEDICAL\s+CTR|HEALTHCARE|"
+    r"HEALTH\s+SYSTEM|HEALTH$|HEALTH\s+SVCS|FRANCISCAN|"
+    r"VIRGINIA\s+MASON|SWEDISH\s+MEDICAL|OVERLAKE\s+MEDICAL|"
+    r"KAISER\s+PERMANENTE|PROVIDENCE\s+HEALTH|EVERGREEN\s+HEALTH|"
+    # Care facilities
+    r"NURSING|HOSPICE|CONVALESCENT|ADULT\s+FAMILY\s+HOME|"
+    r"ASSISTED\s+LIVING|RETIREMENT\s+CENTER|LONG\s+TERM\s+CARE|"
+    # Government / institutional
+    r"DEPARTMENT\s+OF|DSHS|STATE\s+OF\s+WASHINGTON|COUNTY\s+OF|"
+    r"SOCIAL\s+SECURITY\s+ADMIN|VETERANS\s+AFFAIRS|MEDICARE|"
+    # Nonprofits / foundations
+    r"FOUNDATION|CHARITY|CHARITIES|UNITED\s+WAY|"
+    r"RED\s+CROSS|SALVATION\s+ARMY|GOODWILL|"
+    # Generic corporate suffixes
+    r"INC\.?|LLC\.?|L\.?L\.?C\.?|CORP\.?|CORPORATION|COMPANY|"
+    r"N\.?\s*A\.?$|NATIONAL\s+ASSOCIATION"
     r")\b",
     re.IGNORECASE,
 )
@@ -122,6 +139,15 @@ def classify_pr(name_raw: str) -> str:
         return "corporate"
     if _ATTORNEY_PR_PATTERNS.search(name_upper):
         return "attorney"
+
+    # Heuristic: individuals on the KC portal are always "LAST, FIRST MIDDLE"
+    # with a comma. A 3+ word uppercase name with NO comma is institutional
+    # (e.g. "VIRGINIA MASON FRANCISCAN HEALTH", "STATE OF WASHINGTON DSHS").
+    # Catch these even if no specific keyword matched.
+    if "," not in name_raw:
+        tokens = [t for t in name_raw.split() if t]
+        if len(tokens) >= 3 and name_raw.isupper():
+            return "corporate"
 
     # "LAST, FIRST MIDDLE" or "FIRST MIDDLE LAST" — individual human.
     # Allow single-char tokens (middle initials like "JUDITH P").
