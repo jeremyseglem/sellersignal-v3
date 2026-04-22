@@ -646,6 +646,40 @@ def harvest_backfill_internal_ids(
     }
 
 
+@router.post("/clear-sentinel-parties")
+def harvest_clear_sentinels(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+):
+    """
+    Delete '(no participants found)' sentinel rows from case_parties_v3.
+
+    Earlier versions of backfill-parties failed with "not authorized" due
+    to wrong session warm-up and wrote sentinels for cases that actually
+    have participants. This endpoint clears those sentinels so the cases
+    can be re-scraped.
+
+    Only deletes rows where raw_role='(no participants found)'. Real
+    party data is never touched.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(400, "Pass ?confirm=true to proceed.")
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    res = (supa.table('case_parties_v3')
+           .delete()
+           .eq('raw_role', '(no participants found)')
+           .execute())
+    return {
+        "deleted_count": len(res.data or []),
+        "message":       "Cleared sentinel rows. Cases are unblocked for re-scraping.",
+    }
+
+
 @router.post("/backfill-parties")
 def harvest_backfill_parties(
     x_admin_key: Optional[str] = Header(None),
@@ -657,20 +691,24 @@ def harvest_backfill_parties(
     """
     Enrich existing probate/divorce signals with Participants-tab data.
 
-    For each raw_signals_v3 row of source_type='kc_superior_court' that
-    has an internal_id in raw_data and no matching row in case_parties_v3,
-    fetch the Participants tab and insert parsed parties.
+    KC Superior Court portal authorizes case-detail access via search-result
+    session state: you can only fetch the Participants tab for cases that
+    were returned by a recent search that YOU paginated through. A search
+    for April dates won't authorize an August case.
 
-    Idempotent: safe to re-run. Rows already present (unique key
-    case_number+source_type+role+name_raw) are upserted.
+    So: this endpoint groups the `limit` candidate cases by event-date WEEK,
+    and for each week (1) performs a search covering that week, (2) paginates
+    through all result pages to authorize every case, (3) fetches
+    Participants for every case in that week's batch.
 
-    This endpoint runs in chunks (default 50 cases per call, ~30 sec
-    wall-clock). Multiple calls with increasing offset work through the
-    full backlog. For the ~8,705 current probate signals that's ~175
-    calls @ 30sec each = ~90 min total if run serially.
+    Idempotent: cases already in case_parties_v3 are skipped. Safe to retry.
 
-    Rate limited by the polite_delay in the fetcher (0.4s between cases)
-    so we don't hammer the KC portal.
+    Params:
+      limit   — cap on cases to process this call (default 50, max 200).
+      offset  — skip this many signal IDs before scanning (for chunked runs).
+
+    Typical rate: ~0.5s per case + ~2s per week warm-up. For 50 cases
+    spread across ~5 weeks: ~40 sec wall-clock per call.
     """
     _require_admin(x_admin_key)
     if not confirm:
@@ -685,15 +723,14 @@ def harvest_backfill_parties(
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # Find signals needing enrichment: have internal_id, don't have case_parties rows yet.
-    # We use a NOT EXISTS pattern via application-side filtering since Supabase
-    # REST doesn't support subqueries cleanly.
+    # Scan a wider window than the final limit so we can filter out
+    # already-scraped + missing-internal-id cases before picking `limit` many.
     signals_res = (supa.table('raw_signals_v3')
-                   .select('id, document_ref, raw_data, signal_type')
+                   .select('id, document_ref, raw_data, signal_type, event_date')
                    .eq('source_type', source_type)
                    .in_('signal_type', ['probate', 'divorce'])
                    .order('id', desc=False)
-                   .range(offset, offset + 500 - 1)   # scan wider than we'll process
+                   .range(offset, offset + 500 - 1)
                    .execute())
     all_signals = signals_res.data or []
 
@@ -713,11 +750,12 @@ def harvest_backfill_parties(
                    .execute())
             already_scraped.update(r['case_number'] for r in (res.data or []))
 
-    # Filter to signals needing scrape
+    # Filter to signals needing scrape + with internal_id + with event_date
     needs_scrape = [
         s for s in all_signals
         if s.get('document_ref')
         and s.get('raw_data', {}).get('internal_id')
+        and s.get('event_date')  # need date to group by week
         and s['document_ref'] not in already_scraped
     ][:limit]
 
@@ -728,107 +766,129 @@ def harvest_backfill_parties(
                 1 for s in all_signals
                 if not s.get('raw_data', {}).get('internal_id')
             ),
+            "skipped_no_date":   sum(
+                1 for s in all_signals
+                if s.get('raw_data', {}).get('internal_id')
+                and not s.get('event_date')
+            ),
             "already_scraped":   len(already_scraped),
             "message":           "Nothing to process in this window.",
             "offset_scanned":    offset,
             "offset_scanned_to": offset + len(all_signals),
         }
 
-    # Now run the scraper
+    # Group signals by ISO week (Monday-based). Each week-group will get
+    # one warm-up search covering that full week.
+    from datetime import datetime, date as date_cls, timedelta
     from backend.harvesters.kc_superior_court import (
         KCSuperiorCourtHarvester, CASE_TYPES, BASE, FORM_BASE_PATH,
     )
-    from backend.harvesters.kc_court_participants import (
-        fetch_case_participants, compute_html_hash,
-    )
-    from datetime import date
+    from backend.harvesters.kc_court_participants import fetch_case_participants
+
+    def _week_start(event_date_str: str) -> date_cls:
+        """Return Monday of the week containing the event date."""
+        d = datetime.strptime(event_date_str, "%Y-%m-%d").date()
+        return d - timedelta(days=d.weekday())
+
+    groups: dict = {}   # week_start -> [signals]
+    for s in needs_scrape:
+        wk = _week_start(s['event_date'])
+        groups.setdefault(wk, []).append(s)
 
     h = KCSuperiorCourtHarvester(case_types=['probate'])
     session = h.build_session()
-
-    # Warm the session with a REAL date-range search that returns results.
-    # A zero-result warm-up (today-to-today) causes the portal to reject
-    # subsequent case-detail requests with "not authorized to view this case".
-    # April 21-27, 2025 reliably has ~170 probate filings — any non-empty
-    # week works, this one's chosen for being early in our data range.
-    try:
-        code = "511110"
-        ctx = h._open_search_form(session, code)
-        h._post_search(
-            session, code, code, ctx,
-            date(2025, 4, 21), date(2025, 4, 27),
-        )
-    except Exception as e:
-        log.warning(f"Session warm-up failed (proceeding anyway): {e}")
-
+    code = "511110"
     search_referer = f"{BASE}{FORM_BASE_PATH}?caseType=511110"
 
     processed = 0
     inserted_parties = 0
     no_parties_count = 0
     errors: list = []
+    weeks_processed = 0
 
-    for signal in needs_scrape:
-        case_num = signal['document_ref']
-        internal_id = signal['raw_data']['internal_id']
+    for week_start, week_signals in sorted(groups.items()):
+        week_end = week_start + timedelta(days=6)
         try:
-            parties = fetch_case_participants(
-                session, internal_id, search_referer, polite_delay=0.4,
+            # 1) Warm-up: fresh search form + search this specific week
+            ctx = h._open_search_form(session, code)
+            html = h._post_search(
+                session, code, code, ctx, week_start, week_end,
             )
-            processed += 1
-
-            if not parties:
-                # Record an empty marker so we don't keep re-fetching. We
-                # insert a single sentinel row with role='none'. This is
-                # cleaner than polluting the schema with a separate
-                # 'no_parties_scraped' timestamp column.
-                (supa.table('case_parties_v3')
-                 .upsert({
-                    'case_number':    case_num,
-                    'source_type':    source_type,
-                    'role':           'other',
-                    'raw_role':       '(no participants found)',
-                    'name_raw':       '(empty)',
-                 }, on_conflict='case_number,source_type,role,name_raw')
-                 .execute())
-                no_parties_count += 1
-                continue
-
-            rows = [
-                {
-                    'case_number':       case_num,
-                    'source_type':       source_type,
-                    'role':              p.role,
-                    'raw_role':          p.raw_role,
-                    'name_raw':          p.name_raw,
-                    'name_last':         p.name_last,
-                    'name_first':        p.name_first,
-                    'name_middle':       p.name_middle,
-                    'represented_by':    p.represented_by,
-                    'pr_classification': p.pr_classification,
-                }
-                for p in parties
-            ]
-            (supa.table('case_parties_v3')
-             .upsert(rows, on_conflict='case_number,source_type,role,name_raw')
-             .execute())
-            inserted_parties += len(rows)
+            # 2) Paginate through all result pages so ALL cases are authorized
+            page_idx = 1
+            while h._has_next_page_link(html, page_idx):
+                html = h._get_next_page(session, code, page_idx)
+                page_idx += 1
+                if page_idx > 15:
+                    break  # safety — a single week shouldn't exceed this
+            weeks_processed += 1
         except Exception as e:
-            errors.append({'case_number': case_num, 'error': str(e)[:200]})
-            if len(errors) > 20:
-                log.error(f"Too many errors, aborting: {errors[-1]}")
+            errors.append({
+                'week':  f"{week_start}..{week_end}",
+                'error': f"warmup failed: {str(e)[:150]}",
+            })
+            if len(errors) > 10:
                 break
+            continue
+
+        # 3) Now fetch Participants for each case in this week
+        for signal in week_signals:
+            case_num = signal['document_ref']
+            internal_id = signal['raw_data']['internal_id']
+            try:
+                parties = fetch_case_participants(
+                    session, internal_id, search_referer, polite_delay=0.3,
+                )
+                processed += 1
+
+                if not parties:
+                    # Sentinel — don't re-fetch this case next run
+                    (supa.table('case_parties_v3')
+                     .upsert({
+                        'case_number':    case_num,
+                        'source_type':    source_type,
+                        'role':           'other',
+                        'raw_role':       '(no participants found)',
+                        'name_raw':       '(empty)',
+                     }, on_conflict='case_number,source_type,role,name_raw')
+                     .execute())
+                    no_parties_count += 1
+                    continue
+
+                rows = [
+                    {
+                        'case_number':       case_num,
+                        'source_type':       source_type,
+                        'role':              p.role,
+                        'raw_role':          p.raw_role,
+                        'name_raw':          p.name_raw,
+                        'name_last':         p.name_last,
+                        'name_first':        p.name_first,
+                        'name_middle':       p.name_middle,
+                        'represented_by':    p.represented_by,
+                        'pr_classification': p.pr_classification,
+                    }
+                    for p in parties
+                ]
+                (supa.table('case_parties_v3')
+                 .upsert(rows, on_conflict='case_number,source_type,role,name_raw')
+                 .execute())
+                inserted_parties += len(rows)
+            except Exception as e:
+                errors.append({'case_number': case_num, 'error': str(e)[:200]})
+                if len(errors) > 20:
+                    break
 
     return {
-        "processed":         processed,
-        "inserted_parties":  inserted_parties,
-        "no_parties_found":  no_parties_count,
-        "errors":            errors,
-        "offset_start":      offset,
-        "offset_end":        offset + len(all_signals),
-        "next_offset":       offset + len(all_signals),
-        "remaining_unscraped_in_window":
-            max(0, len(needs_scrape) - processed),
+        "processed":            processed,
+        "inserted_parties":     inserted_parties,
+        "no_parties_found":     no_parties_count,
+        "weeks_processed":      weeks_processed,
+        "total_weeks_in_batch": len(groups),
+        "errors":               errors,
+        "offset_start":         offset,
+        "offset_end":           offset + len(all_signals),
+        "next_offset":          offset + len(all_signals),
     }
 
 
