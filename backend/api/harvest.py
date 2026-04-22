@@ -760,6 +760,207 @@ def harvest_backfill_internal_ids(
     }
 
 
+@router.get("/pending-parties")
+def harvest_pending_parties(
+    x_admin_key: Optional[str] = Header(None),
+    zip_code: Optional[str] = None,
+    limit: int = 100,
+):
+    """
+    Return the list of probate/divorce cases that still need Participants
+    scraping — i.e. have an internal_id but no corresponding rows in
+    case_parties_v3.
+
+    Used when scraping from an external environment (e.g. a local script)
+    to circumvent KC portal rate-limiting on Railway's IP. Callers scrape
+    the Participants tab themselves, then POST the parsed data back via
+    /api/harvest/ingest-parties.
+
+    If zip_code is provided, only returns cases whose matched parcels
+    fall in that ZIP (useful for territory-targeted backfills).
+
+    Returns:
+      {
+        'pending': [{'case_number', 'internal_id', 'event_date',
+                     'signal_type', 'case_name'}],
+        'total':   <count>,
+      }
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # 1) Get already-scraped case_numbers from case_parties_v3
+    already_scraped: set = set()
+    off = 0
+    STEP = 1000
+    while True:
+        res = (supa.table('case_parties_v3')
+               .select('case_number')
+               .range(off, off + STEP - 1)
+               .execute())
+        batch = res.data or []
+        if not batch:
+            break
+        already_scraped.update(r['case_number'] for r in batch)
+        if len(batch) < STEP:
+            break
+        off += STEP
+
+    # 2) If zip_code specified, get the case_numbers of matches in that ZIP
+    target_case_nums: Optional[set] = None
+    if zip_code:
+        zip_match_res = (supa.table('matches_v3')
+                         .select('document_ref')
+                         .eq('zip_code', zip_code)
+                         .execute())
+        target_case_nums = set(
+            r['document_ref'] for r in (zip_match_res.data or [])
+            if r.get('document_ref')
+        )
+
+    # 3) Scan raw_signals_v3 for candidates
+    pending: list = []
+    off = 0
+    STEP = 1000
+    while len(pending) < limit:
+        res = (supa.table('raw_signals_v3')
+               .select('document_ref, raw_data, event_date, signal_type')
+               .eq('source_type', 'kc_superior_court')
+               .in_('signal_type', ['probate', 'divorce'])
+               .order('id', desc=False)
+               .range(off, off + STEP - 1)
+               .execute())
+        batch = res.data or []
+        if not batch:
+            break
+        for s in batch:
+            case_num = s.get('document_ref')
+            if not case_num:
+                continue
+            iid = (s.get('raw_data') or {}).get('internal_id')
+            if not iid:
+                continue
+            if case_num in already_scraped:
+                continue
+            if target_case_nums is not None and case_num not in target_case_nums:
+                continue
+            pending.append({
+                'case_number': case_num,
+                'internal_id': iid,
+                'event_date':  s.get('event_date'),
+                'signal_type': s.get('signal_type'),
+                'case_name':   (s.get('raw_data') or {}).get('case_name'),
+            })
+            if len(pending) >= limit:
+                break
+        if len(batch) < STEP:
+            break
+        off += STEP
+
+    return {
+        'pending':   pending,
+        'total':     len(pending),
+        'zip_code':  zip_code,
+    }
+
+
+from pydantic import BaseModel as _PydBase
+
+
+class _IngestParty(_PydBase):
+    role:              str
+    raw_role:          Optional[str] = None
+    name_raw:          str
+    name_last:         Optional[str] = None
+    name_first:        Optional[str] = None
+    name_middle:       Optional[str] = None
+    represented_by:    Optional[str] = None
+    pr_classification: Optional[str] = None
+
+
+class _IngestCase(_PydBase):
+    case_number:  str
+    parties:      list[_IngestParty] = []  # empty = no parties found
+
+
+class _IngestPayload(_PydBase):
+    cases:        list[_IngestCase]
+    source_type:  str = "kc_superior_court"
+
+
+@router.post("/ingest-parties")
+def harvest_ingest_parties(
+    payload: _IngestPayload,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Accept pre-scraped participants data from an external scraper and
+    upsert it into case_parties_v3. Used when Railway's IP is rate-
+    limited by the KC portal.
+
+    Each case:
+      - If parties list is empty, writes a sentinel (prevents re-fetching)
+      - Otherwise upserts all party rows
+
+    Idempotent via the composite unique key
+    (case_number, source_type, role, name_raw).
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    inserted = 0
+    sentinels = 0
+    errors: list = []
+
+    for case in payload.cases:
+        try:
+            if not case.parties:
+                (supa.table('case_parties_v3')
+                 .upsert({
+                    'case_number':    case.case_number,
+                    'source_type':    payload.source_type,
+                    'role':           'other',
+                    'raw_role':       '(no participants found)',
+                    'name_raw':       '(empty)',
+                 }, on_conflict='case_number,source_type,role,name_raw')
+                 .execute())
+                sentinels += 1
+                continue
+
+            rows = [
+                {
+                    'case_number':       case.case_number,
+                    'source_type':       payload.source_type,
+                    'role':              p.role,
+                    'raw_role':          p.raw_role,
+                    'name_raw':          p.name_raw,
+                    'name_last':         p.name_last,
+                    'name_first':        p.name_first,
+                    'name_middle':       p.name_middle,
+                    'represented_by':    p.represented_by,
+                    'pr_classification': p.pr_classification,
+                }
+                for p in case.parties
+            ]
+            (supa.table('case_parties_v3')
+             .upsert(rows, on_conflict='case_number,source_type,role,name_raw')
+             .execute())
+            inserted += len(rows)
+        except Exception as e:
+            errors.append({'case_number': case.case_number, 'error': str(e)[:200]})
+
+    return {
+        'cases_processed':  len(payload.cases),
+        'parties_inserted': inserted,
+        'sentinels_added':  sentinels,
+        'errors':           errors,
+    }
+
+
 @router.post("/clear-sentinel-parties")
 def harvest_clear_sentinels(
     x_admin_key: Optional[str] = Header(None),
