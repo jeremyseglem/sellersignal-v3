@@ -1025,6 +1025,63 @@ def harvest_clear_sentinels(
     }
 
 
+@router.get("/autofill-status")
+def autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Returns the current state of the background autofill loop that runs
+    backfill-parties on a timer (default every 3 min).
+
+    Fields worth watching:
+      enabled           — master on/off switch (toggle via pause/resume)
+      total_ticks       — how many batches have run since boot
+      total_processed   — cases processed since boot
+      total_inserted    — party rows inserted since boot
+      current_offset    — where the sweep is currently scanning
+      consecutive_empty — ticks in a row returning 0 processed (= we
+                          exhausted signals at the current offset)
+      last_tick_at      — ISO timestamp of the most recent tick
+      last_tick_result  — counts from the most recent batch
+      backoff_until     — if set, we're waiting out an error backoff
+      last_health_verdict — 'healthy' | 'degraded' | error string
+      full_sweeps_done  — full DB passes completed (offset wrapped to 0)
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.autofill import state
+    return dict(state)
+
+
+@router.post("/autofill-pause")
+def autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Stop the autofill loop from running new ticks (safe, can resume)."""
+    _require_admin(x_admin_key)
+    from backend.tasks.autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Autofill paused. In-flight tick will complete, no new ticks will start."}
+
+
+@router.post("/autofill-resume")
+def autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume the autofill loop. Clears any error backoff."""
+    _require_admin(x_admin_key)
+    from backend.tasks.autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "Autofill resumed."}
+
+
+@router.post("/autofill-reset-offset")
+def autofill_reset_offset(x_admin_key: Optional[str] = Header(None)):
+    """Rewind the autofill sweep to offset 0. Use if you want it to
+    re-scan from the start (e.g. after adding new signals or fixing
+    a case that previously failed)."""
+    _require_admin(x_admin_key)
+    from backend.tasks.autofill import state
+    state["current_offset"]     = 0
+    state["consecutive_empty"]  = 0
+    return {"current_offset": 0, "message": "Autofill will resume from offset 0."}
+
+
 @router.post("/reclassify-parties")
 def harvest_reclassify_parties(
     x_admin_key: Optional[str] = Header(None),

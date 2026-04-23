@@ -34,8 +34,22 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f'Missing required env vars in production: {missing}')
     elif missing:
         print(f'[warn] Missing env vars (dev mode, may still work): {missing}')
+
+    # Start the autofill background task. It runs until the app shuts down.
+    # Disabled automatically if ADMIN_KEY env var is not set.
+    # Can be paused/resumed at runtime via /api/harvest/autofill-{pause,resume}.
+    import asyncio
+    from backend.tasks.autofill import autofill_loop
+    autofill_task = asyncio.create_task(autofill_loop())
+
     yield
-    # Shutdown hooks would go here (connection cleanup, etc.)
+
+    # Shutdown: cancel background task cleanly
+    autofill_task.cancel()
+    try:
+        await autofill_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
