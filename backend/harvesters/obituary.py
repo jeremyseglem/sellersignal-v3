@@ -576,9 +576,20 @@ class ObituaryHarvester(BaseHarvester):
 
     @staticmethod
     def _record_to_signal(rec: ObituaryRecord) -> RawSignal:
-        # Parse the decedent name into structured components
+        # Clean the decedent name before structured parsing. Obituary
+        # sources commonly format names like:
+        #   'Landrum "Lanny" Thomas Head (Lanny)'
+        #   'William Michael Taylor (Bill)'
+        # Both a quoted nickname and a trailing parenthetical need to
+        # come off before _split_name, which otherwise returns
+        # last="(Lanny)" — garbage that then gets propagated as the
+        # inferred surname to every first-name-only survivor.
         from .kc_superior_court import _split_name
-        decedent_parsed = _split_name(rec.decedent_name)
+        clean_name = re.sub(r"\([^)]*\)", "", rec.decedent_name or "")  # drop (nickname)
+        clean_name = re.sub(r'"[^"]*"', "", clean_name)                  # drop "nickname"
+        clean_name = re.sub(r"\s+", " ", clean_name).strip()
+
+        decedent_parsed = _split_name(clean_name)
         parties = [Party(
             raw=rec.decedent_name,
             role="decedent",
@@ -596,9 +607,15 @@ class ObituaryHarvester(BaseHarvester):
         survivor_names = _extract_survivor_names(
             excerpt, decedent_surname=decedent_surname,
         )
+        # Filter out survivor candidates that are junk tokens rather than
+        # real first names. Common offenders: 'Jr', 'Sr', 'II', 'III', 'IV'.
+        # These come from a regex that captured a suffix as if it were a name.
+        _JUNK_FIRST = {"Jr", "Sr", "Ii", "Iii", "Iv", "V", "The", "A", "An"}
         for s in survivor_names:
             parts = s["name"].split()
             first = parts[0] if parts else None
+            if first in _JUNK_FIRST:
+                continue  # skip bogus entry
             last = parts[-1] if len(parts) > 1 else None
             parties.append(Party(
                 raw=s["name"],
