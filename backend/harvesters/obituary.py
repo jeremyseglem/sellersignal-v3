@@ -233,7 +233,7 @@ class SeattleTimesObituariesSource(ObituarySource):
             death_date=death_date,
             age_at_death=age,
             city=city,
-            obit_text_excerpt=full_text[:800] if full_text else None,
+            obit_text_excerpt=full_text[:3000] if full_text else None,
         )
 
 
@@ -461,9 +461,23 @@ _KC_CITIES = {
 
 
 def _extract_city(text: str) -> Optional[str]:
-    """Look for 'of <City>, Washington' or 'of <City>, WA'."""
+    """Look for city mentions in obit text. Returns the first KC city
+    found in any of several common obit patterns."""
     low = text.lower()
+    # Patterns ordered by specificity (most specific first)
     for city in _KC_CITIES:
-        if f"of {city}, washington" in low or f"of {city}, wa" in low:
-            return city.title()
+        for pattern in (
+            f"of {city}, washington",
+            f"of {city}, wa",
+            f"in {city}, washington",
+            f"in {city}, wa",
+            f"at home in {city}",
+            f"resident of {city}",
+            f"from {city}, wa",
+            f"{city}, wa passed away",
+            f"passed away in {city}",
+            f"died in {city}",
+        ):
+            if pattern in low:
+                return city.title()
     return None
