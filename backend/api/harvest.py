@@ -1082,6 +1082,58 @@ def autofill_reset_offset(x_admin_key: Optional[str] = Header(None)):
     return {"current_offset": 0, "message": "Autofill will resume from offset 0."}
 
 
+# ─── Obituary autofill endpoints ──────────────────────────────────────
+
+@router.get("/obit-autofill-status")
+def obit_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Current state of the obit autofill background task. Includes total
+    ticks, last tick result (harvested + matched counts), error state,
+    and configuration.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.obit_autofill import state
+    return dict(state)
+
+
+@router.post("/obit-autofill-pause")
+def obit_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause obit autofill — loop keeps running but skips ticks until resumed."""
+    _require_admin(x_admin_key)
+    from backend.tasks.obit_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Obit autofill paused."}
+
+
+@router.post("/obit-autofill-resume")
+def obit_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume obit autofill and clear any active backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.obit_autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "Obit autofill resumed."}
+
+
+@router.post("/obit-autofill-trigger")
+def obit_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
+    """
+    Reset the backoff window and mark the task as ready to run now.
+    Useful after a deploy if you want a fresh harvest immediately
+    (otherwise it waits TICK_INTERVAL after startup-delay).
+
+    Note: this only clears backoff state. The tick interval still
+    applies between ticks — to force a tick RIGHT NOW, you can instead
+    call POST /api/harvest/run directly with source=obituary.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.obit_autofill import state
+    state["backoff_until"]      = None
+    state["consecutive_errors"] = 0
+    return {"message": "Backoff cleared. Task will tick on its normal schedule."}
+
+
 @router.post("/reclassify-parties")
 def harvest_reclassify_parties(
     x_admin_key: Optional[str] = Header(None),

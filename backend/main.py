@@ -42,12 +42,22 @@ async def lifespan(app: FastAPI):
     from backend.tasks.autofill import autofill_loop
     autofill_task = asyncio.create_task(autofill_loop())
 
+    # Also start the obit harvester on its own cadence (default 12h). New
+    # obits auto-appear in /matches without manual /harvest/run calls.
+    from backend.tasks.obit_autofill import obit_autofill_loop
+    obit_autofill_task = asyncio.create_task(obit_autofill_loop())
+
     yield
 
-    # Shutdown: cancel background task cleanly
+    # Shutdown: cancel background tasks cleanly
     autofill_task.cancel()
+    obit_autofill_task.cancel()
     try:
         await autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await obit_autofill_task
     except asyncio.CancelledError:
         pass
 
