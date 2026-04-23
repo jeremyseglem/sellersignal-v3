@@ -1538,6 +1538,59 @@ def harvest_backfill_parties(
     }
 
 
+@router.get("/diag/obituary-sources")
+def diag_obituary_sources(
+    x_admin_key: Optional[str] = Header(None),
+    since_days_ago: int = 30,
+):
+    """
+    Run each ObituarySource adapter independently and report counts +
+    sample records. Used to diagnose why /harvest/run?source=obituary
+    returns lower counts than expected (e.g. Cloudflare blocking one
+    source silently).
+
+    Read-only. No DB writes.
+    """
+    _require_admin(x_admin_key)
+    from datetime import date, timedelta
+    from backend.harvesters.obituary import (
+        SeattleTimesObituariesSource, LegacyBellevueObituariesSource,
+    )
+
+    since = date.today() - timedelta(days=since_days_ago)
+    until = date.today()
+
+    sources = [
+        ("seattle_times", SeattleTimesObituariesSource()),
+        ("legacy_bellevue", LegacyBellevueObituariesSource()),
+    ]
+    per_source: dict = {}
+    for name, src in sources:
+        info: dict = {"count": 0, "error": None, "samples": []}
+        try:
+            records = list(src.fetch(since, until))
+            info["count"] = len(records)
+            for r in records[:5]:
+                info["samples"].append({
+                    "name":        getattr(r, "decedent_name", None),
+                    "death_date":  (r.death_date.isoformat()
+                                    if getattr(r, "death_date", None) else None),
+                    "city":        getattr(r, "city", None),
+                    "age":         getattr(r, "age", None),
+                    "url":         getattr(r, "obit_url", None),
+                    "excerpt":     (getattr(r, "excerpt", None) or "")[:150],
+                })
+        except Exception as e:
+            info["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        per_source[name] = info
+
+    return {
+        "since":      since.isoformat(),
+        "until":      until.isoformat(),
+        "per_source": per_source,
+    }
+
+
 @router.get("/diag/portal-health")
 def diag_portal_health(
     x_admin_key: Optional[str] = Header(None),
