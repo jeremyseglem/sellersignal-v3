@@ -116,6 +116,83 @@ async def get_briefing(
             if pin not in inv_by_pin or row['mode'] == 'deep':
                 inv_by_pin[pin] = row
 
+        # ── Load harvester matches for all parcels in this ZIP ──
+        # This is the bridge from the harvester pipeline (raw_signals_v3 /
+        # raw_signal_matches_v3, populated by kc_superior_court / obituary /
+        # kc_treasury) into the briefing. Previously harvester matches only
+        # surfaced via /api/harvest/matches/{zip} and never affected the
+        # playbook — a probate match on a Band-2 parcel stayed in build_now.
+        # With this bridge, a strict harvester match promotes the parcel
+        # via the existing _investigation_promotes_to_call_now mechanism.
+        pins = [p['pin'] for p in parcels]
+        matches_by_pin: dict = {}
+        signals_by_id:  dict = {}
+        CHUNK = 200
+        for i in range(0, len(pins), CHUNK):
+            chunk = pins[i:i + CHUNK]
+            m_res = (supa.table('raw_signal_matches_v3')
+                     .select('raw_signal_id, pin, match_strength, '
+                             'match_method, matched_at')
+                     .in_('pin', chunk)
+                     .limit(5000)
+                     .execute())
+            for m in (m_res.data or []):
+                matches_by_pin.setdefault(m['pin'], []).append(m)
+
+        if matches_by_pin:
+            # Collect signal ids we need the detail rows for
+            signal_ids = list({
+                m['raw_signal_id']
+                for rows in matches_by_pin.values()
+                for m in rows
+            })
+            CHUNK_S = 300
+            for i in range(0, len(signal_ids), CHUNK_S):
+                chunk = signal_ids[i:i + CHUNK_S]
+                s_res = (supa.table('raw_signals_v3')
+                         .select('id, source_type, signal_type, '
+                                 'trust_level, party_names, event_date, '
+                                 'document_ref')
+                         .in_('id', chunk)
+                         .execute())
+                for r in (s_res.data or []):
+                    signals_by_id[r['id']] = r
+
+        # Build per-pin harvester overlay (investigation-shaped)
+        from backend.selection.harvester_overlay import (
+            build_investigation_overlay, merge_with_existing,
+        )
+        overlay_by_pin: dict = {}
+        for pin, m_rows in matches_by_pin.items():
+            overlay = build_investigation_overlay(pin, m_rows, signals_by_id)
+            if overlay is not None:
+                overlay_by_pin[pin] = overlay
+
+        # Merge with any existing SerpAPI-era investigation for the same pin
+        for pin, overlay in overlay_by_pin.items():
+            existing = None
+            raw = inv_by_pin.get(pin)
+            if raw:
+                # Shape the raw investigations_v3 row to the same dict
+                # structure the overlay uses, so merge rules work
+                rec = None
+                if raw.get('action_category'):
+                    rec = {
+                        'category':  raw.get('action_category'),
+                        'tone':      raw.get('action_tone'),
+                        'pressure':  raw.get('action_pressure'),
+                        'reason':    raw.get('action_reason'),
+                        'next_step': raw.get('action_next_step'),
+                    }
+                existing = {
+                    'mode':              raw.get('mode'),
+                    'has_blocker':       raw.get('has_blocker', False),
+                    'has_life_event':    raw.get('has_life_event', False),
+                    'has_financial':     raw.get('has_financial', False),
+                    'recommended_action': rec,
+                }
+            overlay_by_pin[pin] = merge_with_existing(existing, overlay)
+
         # ── Shape leads for the real weekly_selector ──
         # The selector expects dicts with: pin, band, signal_family,
         # sub_signal, address, owner, value, zip, rank_score (or
@@ -199,6 +276,16 @@ async def get_briefing(
                     'has_financial':     inv.get('has_financial', False),
                     'recommended_action': rec,
                 }
+
+            # Harvester overlay wins if present (it's already merged with
+            # the SerpAPI-era investigation, so no information is lost).
+            # A strict probate/obit/divorce/tax_foreclosure match on this
+            # pin creates a pressure=3 recommended_action, which promotes
+            # the lead to CALL NOW via _investigation_promotes_to_call_now
+            # in weekly_selector.
+            ovr = overlay_by_pin.get(p['pin'])
+            if ovr is not None:
+                lead['investigation'] = ovr
             return lead
 
         leads = [_shape_lead(p, inv_by_pin.get(p['pin'])) for p in parcels]
@@ -228,7 +315,8 @@ async def get_briefing(
             L['_copy'] = _ws.resolve_copy(L, section=L['_section'])
 
         def _shape_pick(L):
-            rec = (L.get('investigation') or {}).get('recommended_action')
+            inv = L.get('investigation') or {}
+            rec = inv.get('recommended_action')
             return {
                 'pin':           L['pin'],
                 'address':       L.get('address'),
@@ -246,6 +334,12 @@ async def get_briefing(
                     'action':    L['_copy'].get('action'),
                 },
                 'recommended_action': rec,
+                # Pass the raw harvester match sidecar through so the UI
+                # can render per-signal cards ("Obituary: Tina Jean Fee
+                # Han, filed 2026-03-31 via Seattle Times").
+                'harvester_matches':   inv.get('harvester_matches') or [],
+                'convergence':         inv.get('convergence') or False,
+                'strict_match_count':  inv.get('strict_match_count') or 0,
             }
 
         call_now_picks  = [_shape_pick(L) for L in call_now_leads]
