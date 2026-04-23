@@ -2465,3 +2465,186 @@ def diag_probe_url(
         "survivor_from_raw": survivor_from_raw,
         "body_preview":     body[:400] if body else None,
     }
+
+
+@router.get("/diag/landmark-probe")
+def diag_landmark_probe(
+    x_admin_key: Optional[str] = Header(None),
+    submit: bool = False,
+    doc_type: str = "NOTICE OF TRUSTEE SALE",
+    days: int = 7,
+):
+    """
+    One-shot probe of the KC Recorder Landmark portal.
+
+    Step 1 (always): GET /LandmarkWeb/search/index and inspect —
+      - HTTP status + size
+      - TLS reachability from Railway (vs sandbox which TLS-fails)
+      - Session cookie names issued
+      - Any anti-forgery token in the form HTML
+      - Presence of the Accept/No disclaimer click-through
+
+    Step 2 (only if submit=true): POST a single search for the given
+    doc_type over the last N days, observe:
+      - HTTP status, body shape (HTML table vs JSON vs redirect)
+      - Any rate-limit / 403 / "denied" signal
+      - First ~400 chars of response
+
+    Read-only. Writes nothing. Hits Landmark at most TWICE per call.
+    Deliberately minimal — this is a research probe, not a scraper.
+    """
+    _require_admin(x_admin_key)
+    import requests, re as _re
+    from datetime import datetime, timedelta
+
+    result: dict = {
+        "step1_get":  None,
+        "step2_post": None,
+        "notes":      [],
+    }
+
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+
+    # STEP 1 — GET the search form
+    try:
+        # Warm at root first (Catalis may set session cookie on root)
+        try:
+            r_root = s.get(
+                "https://recordsearch.kingcounty.gov/LandmarkWeb/",
+                timeout=20,
+            )
+            result["notes"].append(
+                f"root GET: {r_root.status_code}, "
+                f"cookies after: {list(s.cookies.keys())}"
+            )
+        except Exception as e:
+            result["notes"].append(f"root GET failed: {type(e).__name__}: {e}")
+
+        r = s.get(
+            "https://recordsearch.kingcounty.gov/LandmarkWeb/search/index",
+            timeout=25,
+        )
+        body = r.text or ""
+        low = body.lower()
+
+        # Look for common ASP.NET / Catalis markers
+        has_antiforgery = '__requestverificationtoken' in low
+        has_viewstate   = '__viewstate' in low
+        has_disclaimer  = 'accept' in low and 'terms and conditions' in low
+        has_doc_type    = 'notice of trustee sale' in low
+        # Find form action URL if present
+        form_action = None
+        m = _re.search(r'<form[^>]+action=["\']([^"\']+)["\']', body, _re.IGNORECASE)
+        if m:
+            form_action = m.group(1)
+
+        result["step1_get"] = {
+            "status":            r.status_code,
+            "length":            len(body),
+            "content_type":      r.headers.get("content-type"),
+            "set_cookie_headers": r.headers.get("set-cookie"),
+            "session_cookies":    list(s.cookies.keys()),
+            "has_antiforgery":   has_antiforgery,
+            "has_viewstate":     has_viewstate,
+            "has_disclaimer":    has_disclaimer,
+            "has_doc_type_list": has_doc_type,
+            "form_action":       form_action,
+            "preview":           body[:500],
+        }
+
+    except Exception as e:
+        result["step1_get"] = {
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+        }
+        result["notes"].append(
+            "step 1 GET failed — possibly TLS-blocked. If error mentions "
+            "SSL/TLS handshake, Railway IP reputation may be the cause."
+        )
+        return result
+
+    # STEP 2 — POST submit (opt-in only, one attempt)
+    if submit:
+        try:
+            end_date   = datetime.now()
+            begin_date = end_date - timedelta(days=days)
+
+            # Best guess at Catalis Landmark search submit endpoint. If this
+            # doesn't work we'll see the status + body and iterate. We do
+            # NOT retry a different shape automatically — user controls.
+            payload = {
+                "PartyType":      "",
+                "LastName":       "",
+                "FirstName":      "",
+                "DocumentType":   doc_type,
+                "BeginDate":      begin_date.strftime("%m/%d/%Y"),
+                "EndDate":        end_date.strftime("%m/%d/%Y"),
+                "search":         "DocumentType",
+            }
+
+            post_url = (
+                "https://recordsearch.kingcounty.gov/LandmarkWeb/"
+                "search/DocumentTypeSearch"
+            )
+
+            r2 = s.post(
+                post_url,
+                data=payload,
+                timeout=40,
+                headers={
+                    "Referer": (
+                        "https://recordsearch.kingcounty.gov/LandmarkWeb/"
+                        "search/index"
+                    ),
+                    "Origin":  "https://recordsearch.kingcounty.gov",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                allow_redirects=False,
+            )
+
+            body2 = r2.text or ""
+            low2 = body2.lower()
+
+            result["step2_post"] = {
+                "url":               post_url,
+                "payload":           payload,
+                "status":            r2.status_code,
+                "length":            len(body2),
+                "content_type":      r2.headers.get("content-type"),
+                "location_header":   r2.headers.get("location"),
+                "rate_limit_headers": {
+                    k: v for k, v in r2.headers.items()
+                    if "limit" in k.lower() or "retry" in k.lower()
+                },
+                "looks_like_denial": any(
+                    kw in low2 for kw in (
+                        "denied", "forbidden", "excessive", "data mining",
+                        "too many requests",
+                    )
+                ),
+                "looks_like_results": any(
+                    kw in low2 for kw in (
+                        "<table", "search results", "total records",
+                        "recording number", "instrument",
+                    )
+                ),
+                "preview_head":      body2[:800],
+                "preview_mid":       body2[len(body2)//2:len(body2)//2 + 400] if body2 else None,
+            }
+        except Exception as e:
+            result["step2_post"] = {
+                "error": f"{type(e).__name__}: {str(e)[:200]}",
+            }
+
+    return result
+
