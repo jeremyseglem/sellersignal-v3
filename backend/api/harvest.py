@@ -1621,6 +1621,46 @@ def diag_obituary_excerpts(
     return {"count": len(out), "records": out}
 
 
+@router.get("/diag/recent-obits")
+def diag_recent_obits(
+    x_admin_key: Optional[str] = Header(None),
+    limit: int = 5,
+):
+    """
+    Show the 5 most recent obit signals with full raw_data and
+    party_names. Used to verify what data we actually captured vs
+    what we expected.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    res = (supa.table('raw_signals_v3')
+           .select('id, document_ref, event_date, party_names, raw_data')
+           .eq('source_type', 'obituary_rss')
+           .order('event_date', desc=True)
+           .limit(limit)
+           .execute())
+    rows = []
+    for r in (res.data or []):
+        raw = r.get('raw_data') or {}
+        excerpt = (raw.get('obit_text_excerpt') or '')[:600]
+        rows.append({
+            "id":            r['id'],
+            "event_date":    r['event_date'],
+            "document_ref":  r['document_ref'],
+            "party_names":   r.get('party_names'),
+            "source_name":   raw.get('source_name'),
+            "obit_url":      raw.get('obit_url'),
+            "age_at_death":  raw.get('age_at_death'),
+            "city":          raw.get('city'),
+            "excerpt_len":   len(raw.get('obit_text_excerpt') or ''),
+            "excerpt":       excerpt,
+        })
+    return {"obits": rows}
+
+
 @router.get("/diag/obituary-sources")
 def diag_obituary_sources(
     x_admin_key: Optional[str] = Header(None),
