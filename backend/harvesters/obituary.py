@@ -821,6 +821,8 @@ def _extract_survivors_text(text: str) -> Optional[str]:
 
 
 # Relationship marker words. Each maps to a Party role.
+# Includes both singular ("son") and plural ("sons") forms so the regex
+# alternation built from this dict matches both.
 _RELATIONSHIP_MARKERS = {
     # Spouse
     "wife":            "survivor_spouse",
@@ -829,105 +831,273 @@ _RELATIONSHIP_MARKERS = {
     "partner":         "survivor_spouse",
     # Children
     "son":             "survivor_child",
+    "sons":            "survivor_child",
     "daughter":        "survivor_child",
+    "daughters":       "survivor_child",
     "child":           "survivor_child",
     "children":        "survivor_child",
     "stepson":         "survivor_child",
+    "stepsons":        "survivor_child",
     "stepdaughter":    "survivor_child",
+    "stepdaughters":   "survivor_child",
     # Siblings
     "brother":         "survivor_sibling",
+    "brothers":        "survivor_sibling",
     "sister":          "survivor_sibling",
+    "sisters":         "survivor_sibling",
     # Parents
     "father":          "survivor_parent",
     "mother":          "survivor_parent",
+    "parent":          "survivor_parent",
+    "parents":         "survivor_parent",
     # Grandchildren
     "grandson":        "survivor_grandchild",
+    "grandsons":       "survivor_grandchild",
     "granddaughter":   "survivor_grandchild",
+    "granddaughters":  "survivor_grandchild",
     "grandchild":      "survivor_grandchild",
     "grandchildren":   "survivor_grandchild",
+    # Grandparents (rare but appears in some obits)
+    "grandfather":     "survivor_grandparent",
+    "grandmother":     "survivor_grandparent",
+    "grandparent":     "survivor_grandparent",
+    "grandparents":    "survivor_grandparent",
     # Other
     "niece":           "survivor_other",
+    "nieces":          "survivor_other",
     "nephew":          "survivor_other",
+    "nephews":         "survivor_other",
     "cousin":          "survivor_other",
+    "cousins":         "survivor_other",
     "friend":          "survivor_other",
+    "friends":         "survivor_other",
 }
 
-# Match: optional "loving"/"beloved"/etc + relationship word + optional
-# modifier (e.g. "of 50 years") + name (2-4 capitalized words).
-_SURVIVOR_NAME_RE = re.compile(
-    r"(?:loving\s+|beloved\s+|devoted\s+|dear\s+|cherished\s+)?"
-    r"(?:\d+\s+|two\s+|three\s+|four\s+|five\s+|six\s+|seven\s+)?"
-    r"(?P<rel>wife|husband|spouse|partner|son|sons|daughter|daughters|"
-    r"child(?:ren)?|stepson|stepdaughter|brother|brothers|sister|sisters|"
-    r"father|mother|grandson|granddaughter|grandchild(?:ren)?|"
-    r"niece|nephew|cousin|friend)"
-    r"(?:\s+of\s+\d+\s+years)?"
-    r"\s*,?\s+"
-    r"(?P<n>[A-Z][a-z]+(?:[-\'][A-Z][a-z]+)?"
-    r"(?:\s+[A-Z][a-z]+(?:[-\'][A-Z][a-z]+)?){0,3})",
+# Build the "rel" alternation for the intro regex. Order matters — match
+# longer words first (e.g. "grandmother" before "mother") so the regex
+# doesn\'t short-circuit to a shorter prefix.
+_REL_WORDS_BY_LENGTH = sorted(
+    _RELATIONSHIP_MARKERS.keys(),
+    key=lambda w: -len(w),
+)
+_REL_ALT = "|".join(re.escape(w) for w in _REL_WORDS_BY_LENGTH)
+
+
+# Intro phrase matcher. Captures just "<modifier?> <rel_word>" and the
+# optional connector ("to", "of N years", "in life", ",") that introduces
+# the name list. The list itself is parsed separately from the text
+# that lies between one intro and the next.
+#
+# The `connector` group captures "to" or "of" so extraction code can
+# invert the role for patterns like "Father to X" (X is a child, not a
+# parent) or "Grandmother to Y" (Y is a grandchild).
+_REL_INTRO_RE = re.compile(
+    r"(?:(?:loving|beloved|devoted|dear|cherished|surviving)\s+)?"
+    # Number words before plural: "three sons", "39 year partner"
+    r"(?:(?:\d+\s+year\s+|\d+\s+|two\s+|three\s+|four\s+|five\s+|"
+    r"six\s+|seven\s+|many\s+))?"
+    r"\b(?P<rel>" + _REL_ALT + r")\b"
+    # Phrases that can attach between rel and name list:
+    r"(?:\s+of\s+(?:\d+\s+years?|his\s+life|her\s+life))?"
+    r"(?:\s+in\s+life)?"
+    # Connector: optional "to"/"of" or comma/colon. Word boundary after
+    # connector prevents matching "To" at start of "Tom".
+    r"\s*[,:]?\s*(?P<connector>to|of)?\b\s*",
+    re.IGNORECASE,
+)
+
+# A single name token: 1-4 capitalized words. Handles middle initials
+# ("James I. Doughty"), internal apostrophes ("O\'Brien"), hyphens
+# ("Mary-Kate"), and Jr/Sr/II/III/IV suffixes. Minimum 2 chars per
+# name-part rules out bare "I" as a standalone word.
+_NAME_PART = r"[A-Z][a-zA-Z\'\u2019\-]*[a-zA-Z]"
+_NAME_RE = re.compile(
+    _NAME_PART                                       # first word
+    + r"(?:\s+(?:" + _NAME_PART + r"|[A-Z]\.))*"   # more words or X. initials
+    + r"(?:\s+(?:Jr\.?|Sr\.?|II|III|IV))?"        # optional suffix
+)
+
+# Stop markers inside a name list. When we see these, the list is over.
+_LIST_STOP_RE = re.compile(
+    r"\s+(?:and\s+(?:his|her|their|by\s+his|by\s+her)|"
+    r"as\s+well\s+as|along\s+with|plus|including)\b",
+    re.IGNORECASE,
 )
 
 
+def _parse_name_list(
+    segment: str,
+    decedent_surname: Optional[str] = None,
+) -> list[str]:
+    """
+    Given a text segment between a relationship intro and the next stop
+    point, extract a list of names.
+
+    Handles:
+      - comma-separated: "Paul, John, James"
+      - Oxford "and" variants: "Paul, John, and James"
+      - "X and Y" pairs: "Albert and Jean Anderson"
+      - Surname propagation: single-token names get the LAST name\'s
+        surname if available, else the decedent\'s surname.
+    """
+    if not segment:
+        return []
+
+    # Terminate at the first stop marker.
+    stop = _LIST_STOP_RE.search(segment)
+    if stop:
+        segment = segment[: stop.start()]
+    # Also terminate at sentence-ending punctuation if present.
+    segment = re.split(r"[.;:!?]", segment, maxsplit=1)[0]
+
+    # Split on: ", [and ]" (comma with optional "and" after) OR bare " and ".
+    # Handles "Tom, Jane, and Sarah" (Oxford) and "Tom and Jane" (non-Oxford).
+    raw_parts = re.split(r",\s*(?:and\s+)?|\s+and\s+", segment)
+
+    names: list[str] = []
+    for part in raw_parts:
+        part = part.strip().strip("()").strip()
+        if not part:
+            continue
+        m = _NAME_RE.match(part)
+        if not m:
+            continue
+        name = m.group(0).strip()
+        if name and len(name) >= 2:
+            names.append(name)
+
+    if not names:
+        return []
+
+    # Surname propagation within the list: if the LAST name has 2+ tokens
+    # and earlier names are single-token, append the last name\'s surname
+    # to them. Handles "Albert and Jean Anderson" → both Anderson.
+    last_tokens = names[-1].split()
+    if len(last_tokens) >= 2:
+        shared_surname = last_tokens[-1]
+        # Don\'t propagate if the shared_surname is actually a suffix
+        if shared_surname.rstrip(".").lower() not in (
+            "jr", "sr", "ii", "iii", "iv",
+        ):
+            names = [
+                n if len(n.split()) >= 2 else f"{n} {shared_surname}"
+                for n in names
+            ]
+
+    # Fallback: any remaining single-token names get the decedent\'s surname.
+    if decedent_surname:
+        names = [
+            n if len(n.split()) >= 2 else f"{n} {decedent_surname}"
+            for n in names
+        ]
+
+    return names
+
+
+def _classify_context(clause: str) -> str:
+    """Return \'survived\', \'preceded\', or \'skip\' for a sentence clause."""
+    low = clause.lower()
+    if re.search(r"preceded\s+in\s+death\s+by|predeceased\s+by", low):
+        return "preceded"
+    if re.search(
+        r"survived\s+by|leaves\s+(?:his|her|behind)|"
+        r"is\s+the\s+(?:father|mother|grandfather|grandmother)\s+of|"
+        r"(?:father|mother|grandfather|grandmother)\s+to",
+        low,
+    ):
+        return "survived"
+    return "skip"
+
+
 def _extract_survivor_names(
-    text: str, decedent_surname: Optional[str] = None
+    text: str, decedent_surname: Optional[str] = None,
 ) -> list[dict]:
     """
     Extract structured (name, role) pairs from survivor text.
 
     Returns list of dicts: [{"name": "Jane Smith", "role": "survivor_spouse"}, ...]
 
-    decedent_surname, if provided, is appended to first-name-only mentions
-    ("his son Paul" → "Paul <surname>") since children commonly share
-    the decedent's surname.
+    Two-pass approach:
+      1. Split text into sentence clauses; classify each as "survived",
+         "preceded", or "skip" based on context markers.
+      2. Within each non-skipped clause, find all relationship intros
+         (wife, sons, parents, grandfather, etc.). The name list for
+         each intro is the text from that intro\'s end to the next
+         intro\'s start (or end of clause).
+
+    Role inversion: "Father to Andrew" means Andrew is a child, not a
+    parent; same for Grandfather/Grandmother to. Detected via the "to"
+    connector captured on the intro match.
+
+    Surname propagation: within a list like "Albert and Jean Anderson",
+    the trailing surname is shared. Remaining single-token names fall
+    back to the decedent\'s surname if provided.
     """
     if not text:
         return []
     results: list[dict] = []
-    seen_names: set = set()
+    seen: set = set()
 
-    # Split text into clauses separated by ". " so we can tag each clause
-    # as either "survived by" context or "preceded in death by" context.
-    # Names in a preceded clause are NOT heirs — they're already deceased.
     clauses = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
 
     for clause in clauses:
-        low = clause.lower()
-        # Determine context
-        if re.search(r"preceded\s+in\s+death\s+by|predeceased\s+by", low):
-            context = "preceded"
-        elif re.search(
-            r"survived\s+by|leaves\s+(?:his|her|behind)|"
-            r"is\s+the\s+(?:father|mother)\s+of|father\s+to|mother\s+to",
-            low,
-        ):
-            context = "survived"
-        else:
-            # Ambiguous clause — skip (e.g. biographical narrative)
+        context = _classify_context(clause)
+        if context == "skip":
             continue
 
-        for m in _SURVIVOR_NAME_RE.finditer(clause):
-            rel_word = m.group("rel").lower().rstrip("s")
-            base_role = _RELATIONSHIP_MARKERS.get(
-                rel_word,
-                _RELATIONSHIP_MARKERS.get(m.group("rel").lower(), "survivor_other"),
-            )
-            # Prefix role for preceded-in-death to keep predeceased folks
-            # visible but distinguishable
+        intros = list(_REL_INTRO_RE.finditer(clause))
+        for i, m in enumerate(intros):
+            rel_word = m.group("rel").lower()
+            connector = (m.group("connector") or "").lower()
+
+            if rel_word in _RELATIONSHIP_MARKERS:
+                base_role = _RELATIONSHIP_MARKERS[rel_word]
+            else:
+                base_role = _RELATIONSHIP_MARKERS.get(
+                    rel_word.rstrip("s"), "survivor_other",
+                )
+
+            # ROLE INVERSION: "Father/Mother to X" → X is a child;
+            # "Grandfather/Grandmother to X" → X is a grandchild.
+            if connector == "to":
+                if rel_word in ("father", "mother"):
+                    base_role = "survivor_child"
+                elif rel_word in ("grandfather", "grandmother"):
+                    base_role = "survivor_grandchild"
+
             role = (
                 base_role.replace("survivor_", "predeceased_")
                 if context == "preceded"
                 else base_role
             )
-            name = m.group("n").strip()
-            tokens = name.split()
-            if len(tokens) == 1 and decedent_surname and base_role in (
-                "survivor_child", "survivor_sibling", "survivor_spouse",
-            ):
-                name = f"{tokens[0]} {decedent_surname}"
-            key = name.lower()
-            if key in seen_names:
-                continue
-            seen_names.add(key)
-            results.append({"name": name, "role": role})
+
+            # Segment = text between this intro\'s end and next intro\'s
+            # start, or end of clause if last intro.
+            seg_start = m.end()
+            seg_end = (
+                intros[i + 1].start()
+                if i + 1 < len(intros)
+                else len(clause)
+            )
+            segment = clause[seg_start:seg_end]
+
+            # Propagate decedent surname only for roles that likely share
+            # it. Grandchildren often have different surnames (through a
+            # married daughter), so skip propagation for them.
+            use_decedent_surname = (
+                decedent_surname
+                if base_role in (
+                    "survivor_spouse", "survivor_child",
+                    "survivor_sibling", "survivor_parent",
+                )
+                else None
+            )
+
+            for name in _parse_name_list(segment, use_decedent_surname):
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append({"name": name, "role": role})
 
     return results
