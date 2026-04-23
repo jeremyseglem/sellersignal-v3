@@ -576,15 +576,22 @@ class ObituaryHarvester(BaseHarvester):
 
 _DATE_PATTERNS = [
     # "passed away on March 25, 2026" / "died January 14, 2026"
-    re.compile(r"\b(?:passed away|died|death)\s+(?:on|peacefully on)?\s+"
+    re.compile(r"\b(?:passed away|died|death|laid to rest|entered eternal rest|"
+               r"went to be with|was called home|departed this life)"
+               r"\s+(?:on|peacefully on|suddenly on|unexpectedly on)?\s*"
                r"(January|February|March|April|May|June|July|August|"
                r"September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})",
                re.IGNORECASE),
-    # "March 25, 2026"  (standalone when context makes it clear)
-    re.compile(r"\b(January|February|March|April|May|June|July|August|"
-               r"September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})\b",
-               re.IGNORECASE),
 ]
+
+# Generic Month-Day-Year pattern used as fallback. Captures ALL occurrences
+# and the extractor picks the latest plausible date — the birth date always
+# precedes the death date chronologically, so max() gives death.
+_ANY_DATE_PATTERN = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|"
+    r"September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})\b",
+    re.IGNORECASE,
+)
 
 _MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
@@ -594,7 +601,20 @@ _MONTHS = {
 
 
 def _extract_death_date(text: str) -> Optional[date]:
-    """Best-effort death date extraction from unstructured obit text."""
+    """
+    Best-effort death date extraction. Two strategies:
+
+    1) Look for an explicit death-verb phrase (passed away, died, etc.)
+       immediately followed by a date. Most reliable when the obit is
+       well-structured prose.
+
+    2) Fallback: find every 'Month Day, Year' in the text and take the
+       LATEST one. Obituaries always mention birth before death
+       chronologically, so the max date is the death date.
+    """
+    from datetime import date as _date_cls
+
+    # Strategy 1: explicit death-verb match
     for pat in _DATE_PATTERNS:
         m = pat.search(text)
         if m:
@@ -602,9 +622,24 @@ def _extract_death_date(text: str) -> Optional[date]:
                 month = _MONTHS[m.group(1).lower()]
                 day = int(m.group(2))
                 year = int(m.group(3))
-                return date(year, month, day)
+                return _date_cls(year, month, day)
             except (KeyError, ValueError):
                 continue
+
+    # Strategy 2: take the latest plausible date from all mentions
+    dates_found = []
+    for m in _ANY_DATE_PATTERN.finditer(text):
+        try:
+            month = _MONTHS[m.group(1).lower()]
+            day = int(m.group(2))
+            year = int(m.group(3))
+            if 1900 <= year <= 2100:
+                dates_found.append(_date_cls(year, month, day))
+        except (KeyError, ValueError):
+            continue
+    if dates_found:
+        return max(dates_found)
+
     return None
 
 
