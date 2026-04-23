@@ -2432,6 +2432,7 @@ def diag_probe_url(
     # Quick text-extraction preview: strip scripts/styles/nav and pull
     # the region around "survived by" if found. Helps decide selectors.
     survivor_passage = None
+    survivor_from_raw = None
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(body, "html.parser")
@@ -2443,6 +2444,13 @@ def diag_probe_url(
             idx = plaintext.lower().find("preceded in death")
         if idx >= 0:
             survivor_passage = plaintext[max(0, idx - 40):idx + 1200]
+
+        # Also check the raw body (before stripping) in case the survivor
+        # text is embedded inside a JSON blob in a <script> tag, which
+        # many SPA frameworks (Next.js, Nuxt) do for SEO.
+        raw_idx = body.lower().find("survived by")
+        if raw_idx >= 0:
+            survivor_from_raw = body[max(0, raw_idx - 100):raw_idx + 800]
     except Exception as e:
         survivor_passage = f"parse_error: {type(e).__name__}: {e}"
 
@@ -2454,5 +2462,6 @@ def diag_probe_url(
         "content_type":     r.headers.get("content-type"),
         "indicators":       indicators,
         "survivor_passage": survivor_passage,
+        "survivor_from_raw": survivor_from_raw,
         "body_preview":     body[:400] if body else None,
     }
