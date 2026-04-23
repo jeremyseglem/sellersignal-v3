@@ -379,8 +379,24 @@ def _dispatch_divorce(row, owners_db, use_codes):
 
 def _dispatch_probate(row, owners_db, use_codes):
     """
-    Probate matching: single-party (decedent) vs all parcel owners.
-    Reuses name_match from legacy code.
+    Probate / obituary matching.
+
+    Two match layers:
+
+    1) DECEDENT vs all parcel owners — the primary signal. Finds the
+       parcel the decedent owned. Labeled signal_family="probate_pending".
+       Match strength: strict (full name match).
+
+    2) SURVIVORS vs all parcel owners — secondary. Heirs who already
+       own property in the target zip are high-signal contacts even
+       before the estate is settled. E.g. a decedent's son who already
+       owns a Bellevue condo is the likeliest ultimate seller of both
+       the inherited home and potentially his own.
+
+       Labeled signal_family="probate_heir". Match strength is
+       explicitly weak — surname-inferred survivor names are noisier
+       than full-name decedent matches. Downstream filters can decide
+       whether to surface these.
     """
     from backend.ingest.legal_filings import name_match
 
@@ -393,6 +409,8 @@ def _dispatch_probate(row, owners_db, use_codes):
         return []
 
     candidates = []
+
+    # Layer 1: decedent match
     for pin, info in owners_db.items():
         if use_codes.get(pin, {}).get('prop_type', '') != 'R':
             continue
@@ -411,6 +429,55 @@ def _dispatch_probate(row, owners_db, use_codes):
                     "match_strength": "strict",
                 },
             })
+
+    # Layer 2: survivor matches
+    # Only applies when survivors were extracted (obituary signals — probate
+    # court signals rarely have survivor_* roles since we don't harvest them).
+    #
+    # Dedupe note: the matches table is unique on (raw_signal_id, pin). If a
+    # decedent AND a survivor both match the same pin, upsert would overwrite
+    # the stronger decedent match with the weaker survivor match. So we skip
+    # survivor candidates for any pin the decedent already matched — the
+    # useful case is survivors matching OTHER pins.
+    decedent_matched_pins = {c["parcel_id"] for c in candidates}
+
+    survivor_parties = [
+        p for p in parties
+        if (p.get('role') or '').startswith('survivor_')
+    ]
+    for sp in survivor_parties:
+        survivor_raw = sp.get('raw', '')
+        if not survivor_raw:
+            continue
+        # Skip single-token names. If _extract_survivor_names couldn't infer
+        # a surname for this party, it's too ambiguous to match (e.g. "Liz"
+        # alone would collide with every Elizabeth in King County).
+        if len(survivor_raw.split()) < 2:
+            continue
+
+        for pin, info in owners_db.items():
+            if pin in decedent_matched_pins:
+                continue  # decedent already owns this — don't shadow
+            if use_codes.get(pin, {}).get('prop_type', '') != 'R':
+                continue
+            owner_name = info.get('owner_name', '')
+            if not owner_name:
+                continue
+            if name_match(survivor_raw, owner_name):
+                candidates.append({
+                    "parcel_id":     pin,
+                    "signal_family": "probate_heir",
+                    "trigger_hint": {
+                        "case_number":    row.get('document_ref'),
+                        "filing_date":    (row.get('event_date') or ''),
+                        "decedent":       decedent_raw,
+                        "survivor":       survivor_raw,
+                        "survivor_role":  sp.get('role'),
+                        # Heir-on-parcel matches are surname-inferred → weak.
+                        # Elevate only when the name tokens are unusually rare.
+                        "match_strength": "weak",
+                    },
+                })
 
     return candidates
 
