@@ -47,17 +47,28 @@ async def lifespan(app: FastAPI):
     from backend.tasks.obit_autofill import obit_autofill_loop
     obit_autofill_task = asyncio.create_task(obit_autofill_loop())
 
+    # KC Treasury tax-foreclosure harvester on a daily cadence. The feed
+    # is a snapshot (not a time-series), so once/day is the right cadence
+    # — parcels enter/exit foreclosure as tax debts are filed or paid.
+    from backend.tasks.treasury_autofill import treasury_autofill_loop
+    treasury_autofill_task = asyncio.create_task(treasury_autofill_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
     autofill_task.cancel()
     obit_autofill_task.cancel()
+    treasury_autofill_task.cancel()
     try:
         await autofill_task
     except asyncio.CancelledError:
         pass
     try:
         await obit_autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await treasury_autofill_task
     except asyncio.CancelledError:
         pass
 

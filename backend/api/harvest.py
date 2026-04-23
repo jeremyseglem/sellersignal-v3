@@ -1134,6 +1134,56 @@ def obit_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
     return {"message": "Backoff cleared. Task will tick on its normal schedule."}
 
 
+# ─── KC Treasury autofill background task admin ───────────────────────
+
+@router.get("/treasury-autofill-status")
+def treasury_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Current state of the Treasury autofill background task. Includes
+    total ticks, last tick result (harvested + matched counts), error
+    state, and configuration. Task ticks every 24h by default and
+    harvests the full 167-parcel KC tax-foreclosure feed each tick
+    (idempotent — re-runs upsert to self).
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.treasury_autofill import state
+    return dict(state)
+
+
+@router.post("/treasury-autofill-pause")
+def treasury_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause Treasury autofill — loop keeps running but skips ticks until resumed."""
+    _require_admin(x_admin_key)
+    from backend.tasks.treasury_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Treasury autofill paused."}
+
+
+@router.post("/treasury-autofill-resume")
+def treasury_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume Treasury autofill and clear any active backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.treasury_autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "Treasury autofill resumed."}
+
+
+@router.post("/treasury-autofill-trigger")
+def treasury_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
+    """
+    Reset the backoff window and mark the Treasury task as ready to run
+    now. To force an immediate harvest regardless of the tick schedule,
+    call POST /api/harvest/run directly with source=kc_treasury.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.treasury_autofill import state
+    state["backoff_until"]      = None
+    state["consecutive_errors"] = 0
+    return {"message": "Backoff cleared. Task will tick on its normal schedule."}
+
+
 @router.post("/reclassify-parties")
 def harvest_reclassify_parties(
     x_admin_key: Optional[str] = Header(None),
