@@ -32,8 +32,9 @@ log = logging.getLogger(__name__)
 
 # ── Configuration (tunable via env) ───────────────────────────────────────
 TICK_INTERVAL     = int(os.environ.get("AUTOFILL_TICK_SECONDS", "180"))
-BATCH_SIZE        = int(os.environ.get("AUTOFILL_BATCH_SIZE",   "25"))
+BATCH_SIZE        = int(os.environ.get("AUTOFILL_BATCH_SIZE",   "10"))
 OFFSET_STEP       = int(os.environ.get("AUTOFILL_OFFSET_STEP",  "500"))
+BACKFILL_TIMEOUT  = int(os.environ.get("AUTOFILL_BACKFILL_TIMEOUT", "420"))
 MAX_BACKOFF_SECS  = 1800
 STARTUP_DELAY     = 45  # wait after boot before first tick
 
@@ -58,6 +59,8 @@ state: dict = {
     "full_sweeps_done":     0,
     "last_health_check":    None,
     "last_health_verdict":  None,
+    "last_error":           None,       # str — most recent exception message
+    "last_error_at":        None,       # ISO timestamp
     "config": {
         "tick_interval":  TICK_INTERVAL,
         "batch_size":     BATCH_SIZE,
@@ -96,7 +99,7 @@ async def _run_one_tick(client: httpx.AsyncClient, admin_key: str) -> dict:
             "offset":  offset,
         },
         headers={"X-Admin-Key": admin_key},
-        timeout=240,
+        timeout=BACKFILL_TIMEOUT,
     )
     # 200 with JSON body is the happy path. HTTP errors become exceptions.
     r.raise_for_status()
@@ -204,6 +207,8 @@ async def autofill_loop() -> None:
             except Exception as e:
                 state["consecutive_errors"] += 1
                 state["total_errors"]       += 1
+                state["last_error"]          = f"{type(e).__name__}: {str(e)[:300]}"
+                state["last_error_at"]       = datetime.now(timezone.utc).isoformat()
                 log.error(
                     f"autofill tick failed "
                     f"(consecutive_errors={state['consecutive_errors']}): {e}"
