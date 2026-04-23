@@ -2429,12 +2429,30 @@ def diag_probe_url(
         "has_cloudflare_msg": "cloudflare" in low and ("checking" in low or "attention" in low),
     }
 
+    # Quick text-extraction preview: strip scripts/styles/nav and pull
+    # the region around "survived by" if found. Helps decide selectors.
+    survivor_passage = None
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(body, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer"]):
+            tag.decompose()
+        plaintext = soup.get_text(" ", strip=True)
+        idx = plaintext.lower().find("survived by")
+        if idx == -1:
+            idx = plaintext.lower().find("preceded in death")
+        if idx >= 0:
+            survivor_passage = plaintext[max(0, idx - 40):idx + 1200]
+    except Exception as e:
+        survivor_passage = f"parse_error: {type(e).__name__}: {e}"
+
     return {
-        "url":            url,
-        "warm_status":    warm_status,
-        "status":         r.status_code,
-        "length":         len(body),
-        "content_type":   r.headers.get("content-type"),
-        "indicators":     indicators,
-        "body_preview":   body[:400] if body else None,
+        "url":              url,
+        "warm_status":      warm_status,
+        "status":           r.status_code,
+        "length":           len(body),
+        "content_type":     r.headers.get("content-type"),
+        "indicators":       indicators,
+        "survivor_passage": survivor_passage,
+        "body_preview":     body[:400] if body else None,
     }
