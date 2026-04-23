@@ -1579,6 +1579,48 @@ def harvest_backfill_parties(
     }
 
 
+@router.get("/diag/obituary-excerpts")
+def diag_obituary_excerpts(
+    x_admin_key: Optional[str] = Header(None),
+    limit: int = 25,
+):
+    """
+    Return recent obituary signals with their raw_data.obit_text_excerpt.
+    Used to understand the shape of excerpt text so we can design a
+    survivors/preceded-by parser without guessing.
+
+    Read-only.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    res = (supa.table('raw_signals_v3')
+           .select('id, party_names, event_date, document_ref, raw_data')
+           .eq('source_type', 'obituary_rss')
+           .order('event_date', desc=True)
+           .limit(limit)
+           .execute())
+    out = []
+    for r in (res.data or []):
+        rd = r.get('raw_data') or {}
+        parties = r.get('party_names') or []
+        out.append({
+            "id":           r.get('id'),
+            "decedent":     parties[0].get('raw') if parties else None,
+            "death_date":   r.get('event_date'),
+            "document_ref": r.get('document_ref'),
+            "source":       rd.get('source_name'),
+            "age":          rd.get('age_at_death'),
+            "city":         rd.get('city'),
+            "obit_url":     rd.get('obit_url'),
+            "excerpt_len":  len(rd.get('obit_text_excerpt') or ''),
+            "excerpt":      rd.get('obit_text_excerpt') or '',
+        })
+    return {"count": len(out), "records": out}
+
+
 @router.get("/diag/obituary-sources")
 def diag_obituary_sources(
     x_admin_key: Optional[str] = Header(None),
