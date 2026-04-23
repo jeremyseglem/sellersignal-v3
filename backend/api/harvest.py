@@ -2698,3 +2698,132 @@ def diag_landmark_probe(
 
     return result
 
+
+# ─── Briefing-impact diagnostic ────────────────────────────────────────
+
+@router.get("/diag/briefing-impact/{zip_code}")
+def diag_briefing_impact(
+    zip_code: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Show the harvester-signal impact on the live briefing for this ZIP.
+
+    Computes what the briefing would return (by calling the same core
+    logic, not via HTTP) and breaks down each section by:
+      - total leads
+      - leads with at least one harvester match
+      - leads with convergence (2+ strict matches)
+      - signal-type distribution
+
+    Use after a harvest tick to verify new signals are surfacing.
+    Example flow:
+      1. POST /api/harvest/run with source=obituary  (creates new signals)
+      2. GET  /api/harvest/diag/briefing-impact/98004  (confirms they promoted)
+
+    No caching exists on the briefing, so new matches surface immediately
+    on the next /api/briefings/{zip} request. This endpoint is for
+    operator visibility — agents don't see it.
+    """
+    _require_admin(x_admin_key)
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+
+    # ── Fetch parcels + investigations + harvester matches (same flow
+    #    as the briefing endpoint, minus the copy-rendering pass) ──
+    def _fetch_all(table, zip_col_val, page_size=1000):
+        out = []
+        offset = 0
+        while True:
+            res = (supa.table(table).select('*')
+                   .eq('zip_code', zip_col_val)
+                   .range(offset, offset + page_size - 1)
+                   .execute())
+            batch = res.data or []
+            out.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+            if offset > 100000:
+                break
+        return out
+
+    parcels = _fetch_all('parcels_v3', zip_code)
+    if not parcels:
+        return {"zip_code": zip_code, "error": "no parcels in zip"}
+
+    pins = [p['pin'] for p in parcels]
+    matches_by_pin: dict = {}
+    signals_by_id:  dict = {}
+    CHUNK = 200
+    for i in range(0, len(pins), CHUNK):
+        chunk = pins[i:i + CHUNK]
+        m_res = (supa.table('raw_signal_matches_v3')
+                 .select('raw_signal_id, pin, match_strength, matched_at')
+                 .in_('pin', chunk)
+                 .limit(5000)
+                 .execute())
+        for m in (m_res.data or []):
+            matches_by_pin.setdefault(m['pin'], []).append(m)
+
+    if matches_by_pin:
+        sig_ids = list({
+            m['raw_signal_id']
+            for rows in matches_by_pin.values()
+            for m in rows
+        })
+        for i in range(0, len(sig_ids), 300):
+            chunk = sig_ids[i:i + 300]
+            s_res = (supa.table('raw_signals_v3')
+                     .select('id, source_type, signal_type, '
+                             'party_names, event_date, document_ref')
+                     .in_('id', chunk)
+                     .execute())
+            for r in (s_res.data or []):
+                signals_by_id[r['id']] = r
+
+    from backend.selection.harvester_overlay import build_investigation_overlay
+    from collections import Counter
+
+    # Build per-pin overlay; count signals per-pin × strength
+    overlays_per_pin: dict = {}
+    converged_pins: set = set()
+    for pin, m_rows in matches_by_pin.items():
+        overlay = build_investigation_overlay(pin, m_rows, signals_by_id)
+        if overlay is None:
+            continue
+        overlays_per_pin[pin] = overlay
+        if overlay.get('convergence'):
+            converged_pins.add(pin)
+
+    # Signal-type × strength distribution across all matched parcels
+    sig_type_counter: Counter = Counter()
+    strength_counter: Counter = Counter()
+    family_counter:   Counter = Counter()
+    for overlay in overlays_per_pin.values():
+        rec = overlay.get('recommended_action') or {}
+        family_counter[rec.get('category') or 'none'] += 1
+        for m in overlay.get('harvester_matches', []):
+            sig_type_counter[m.get('signal_type') or 'unknown'] += 1
+            strength_counter[m.get('match_strength') or 'unknown'] += 1
+
+    # Pressure-category summary: how many pins each overlay promotes
+    pressure_counter: Counter = Counter()
+    for overlay in overlays_per_pin.values():
+        rec = overlay.get('recommended_action') or {}
+        pressure_counter[rec.get('pressure') or 0] += 1
+
+    return {
+        "zip_code":              zip_code,
+        "parcels_in_zip":        len(parcels),
+        "pins_with_matches":     len(matches_by_pin),
+        "pins_with_overlay":     len(overlays_per_pin),
+        "convergence_pins":      len(converged_pins),
+        "signal_type_counts":    dict(sig_type_counter),
+        "strength_counts":       dict(strength_counter),
+        "promotion_category":    dict(family_counter),
+        "promotion_pressure":    dict(pressure_counter),
+        "converged_pin_sample":  list(converged_pins)[:10],
+    }
