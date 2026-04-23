@@ -73,26 +73,96 @@ async def get_parcel(pin: str):
                           .execute())
             investigation = inv_screen.data if inv_screen else None
 
+        # Harvester overlay: pull raw_signal_matches_v3 for this pin and
+        # translate to the investigation-shape dict so the dossier can show
+        # "obituary (strict): Tina Jean Fee Han, 2026-03-31" style reasons
+        # and an itemized list of signals. Same bridge used by the briefing
+        # endpoint — see backend/selection/harvester_overlay.py.
+        harvester_match_rows = (
+            supa.table('raw_signal_matches_v3')
+            .select('raw_signal_id, pin, match_strength, '
+                    'match_method, matched_at')
+            .eq('pin', pin)
+            .limit(50)
+            .execute()
+        ).data or []
+
+        harvester_signals_by_id: dict = {}
+        if harvester_match_rows:
+            sig_ids = list({m['raw_signal_id'] for m in harvester_match_rows})
+            sigs_res = (
+                supa.table('raw_signals_v3')
+                .select('id, source_type, signal_type, trust_level, '
+                        'party_names, event_date, document_ref')
+                .in_('id', sig_ids)
+                .execute()
+            )
+            for r in (sigs_res.data or []):
+                harvester_signals_by_id[r['id']] = r
+
+        from backend.selection.harvester_overlay import (
+            build_investigation_overlay, merge_with_existing,
+        )
+        overlay = build_investigation_overlay(
+            pin, harvester_match_rows, harvester_signals_by_id
+        )
+
+        # Shape the SerpAPI row (if any) to match the overlay structure
+        # so merge_with_existing can compare them apples-to-apples.
+        existing_shaped = None
+        if investigation:
+            rec_existing = None
+            if investigation.get('action_category'):
+                rec_existing = {
+                    'category':  investigation['action_category'],
+                    'tone':      investigation.get('action_tone'),
+                    'pressure':  investigation.get('action_pressure'),
+                    'reason':    investigation.get('action_reason'),
+                    'next_step': investigation.get('action_next_step'),
+                }
+            existing_shaped = {
+                'mode':               investigation.get('mode'),
+                'has_blocker':        investigation.get('has_blocker', False),
+                'has_life_event':     investigation.get('has_life_event', False),
+                'has_financial':      investigation.get('has_financial', False),
+                'recommended_action': rec_existing,
+            }
+        merged = merge_with_existing(existing_shaped, overlay)
+
         response = {
             'pin':          pin,
             'parcel':       parcel,
             'investigation': investigation,
             'recommended_action': None,
             'why_not_selling':    None,
+            # Harvester sidecar fields — always present (empty list if no
+            # matches) so UI code can render unconditionally.
+            'harvester_matches':   [],
+            'convergence':         False,
+            'strict_match_count':  0,
         }
 
-        if investigation and investigation.get('action_category'):
-            response['recommended_action'] = {
-                'category':  investigation['action_category'],
-                'tone':      investigation.get('action_tone'),
-                'pressure':  investigation.get('action_pressure'),
-                'reason':    investigation.get('action_reason'),
-                'next_step': investigation.get('action_next_step'),
-            }
+        # The merged recommended_action reflects the highest-pressure of
+        # (SerpAPI-era action, harvester overlay). This is what the
+        # dossier's "Recommended Action" block renders.
+        if merged and merged.get('recommended_action'):
+            response['recommended_action'] = merged['recommended_action']
 
-        # If no actionable investigation, include why-not-selling read
-        if (not investigation or
-            investigation.get('action_category') in (None, 'hold')):
+        if merged:
+            response['harvester_matches']  = merged.get('harvester_matches') or []
+            response['convergence']        = bool(merged.get('convergence'))
+            response['strict_match_count'] = int(merged.get('strict_match_count') or 0)
+
+        # If there's no actionable signal (no investigation AND no
+        # harvester match promoting this parcel), include the why-not-selling
+        # structural read. With a strict harvester match, the agent already
+        # has a clear "why call now" story; why_not_selling would just
+        # muddy the card.
+        has_actionable_recommendation = bool(
+            response['recommended_action']
+            and (response['recommended_action'].get('category') or '') != 'hold'
+        )
+        if not has_actionable_recommendation:
             response['why_not_selling'] = generate_why_not_selling(parcel)
 
         return response

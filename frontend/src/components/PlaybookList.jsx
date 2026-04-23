@@ -13,6 +13,55 @@ function formatValue(v) {
   return `$${v}`;
 }
 
+// Map backend signal_type strings to short, readable badge labels.
+// Keep these short (<= 10 chars) so multiple badges fit on a lead card.
+function signalTypeLabel(t) {
+  const map = {
+    probate:          'PROBATE',
+    obituary:         'OBITUARY',
+    divorce:          'DIVORCE',
+    tax_foreclosure:  'TAX LIEN',
+  };
+  return map[t] || t.toUpperCase();
+}
+
+// Inline badge used on lead cards to surface active harvester signals.
+// `prominent` swaps the rendering to a filled pill — used for the
+// convergence badge where we want extra visual weight.
+function SignalBadge({ label, color, prominent = false }) {
+  const base = {
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    padding: '2px 6px',
+    borderRadius: 3,
+    lineHeight: 1.3,
+    whiteSpace: 'nowrap',
+    fontFamily: 'var(--font-sans)',
+  };
+  if (prominent) {
+    return (
+      <span style={{
+        ...base,
+        background: color,
+        color: 'white',
+      }}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <span style={{
+      ...base,
+      background: 'transparent',
+      color: color,
+      border: `1px solid ${color}`,
+    }}>
+      {label}
+    </span>
+  );
+}
+
 export default function PlaybookList({ playbook, selectedPin, onPickLead }) {
   return (
     <div>
@@ -104,6 +153,15 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
     ? lead.signal_family.replace(/_/g, ' ')
     : null;
 
+  // Harvester match tags — one badge per distinct signal_type that fired.
+  // These make the "why call_now" visible at a glance on the card, without
+  // requiring the user to open the dossier.
+  const harvesterMatches = lead.harvester_matches || [];
+  const uniqueSignalTypes = Array.from(new Set(
+    harvesterMatches.map((m) => m.signal_type).filter(Boolean)
+  ));
+  const hasConvergence = Boolean(lead.convergence);
+
   return (
     <li
       onClick={onClick}
@@ -170,6 +228,29 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
               marginTop: 6,
             }}>
               {signalLabel}
+            </div>
+          )}
+          {/* Harvester signal tags — render one badge per distinct
+              signal_type, plus a convergence badge if 2+ strict signals
+              fired on the same pin. These make the lead's actionable
+              signal visible without opening the dossier. */}
+          {uniqueSignalTypes.length > 0 && (
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 4,
+              marginTop: 6,
+            }}>
+              {hasConvergence && (
+                <SignalBadge
+                  label="CONVERGED"
+                  color={accent}
+                  prominent
+                />
+              )}
+              {uniqueSignalTypes.map((t) => (
+                <SignalBadge key={t} label={signalTypeLabel(t)} color={accent} />
+              ))}
             </div>
           )}
         </div>

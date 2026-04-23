@@ -63,6 +63,11 @@ export default function ParcelDossier({ dossier, onClose }) {
   const inv = dossier.investigation || {};
   const rec = dossier.recommended_action;
   const why = dossier.why_not_selling;
+  // Harvester sidecar: per-signal match list (obituary, probate, divorce,
+  // tax_foreclosure) from raw_signal_matches_v3. Always an array; empty
+  // when the parcel has no harvester matches.
+  const harvesterMatches = dossier.harvester_matches || [];
+  const hasConvergence   = Boolean(dossier.convergence);
 
   const ownerTag = ownerTypeLabel(p.owner_type);
   const signalLabel = p.signal_family ? p.signal_family.replace(/_/g, ' ') : null;
@@ -237,6 +242,17 @@ export default function ParcelDossier({ dossier, onClose }) {
         {/* Recommended action — if investigated */}
         {rec && rec.category && rec.category !== 'hold' && (
           <RecommendedActionBlock rec={rec} />
+        )}
+
+        {/* Harvester matches — itemized list of obit / probate / divorce /
+            tax_foreclosure signals that fired on this pin. Shown when ANY
+            match exists; the block also surfaces a "converged" indicator
+            at the top when 2+ strict signals hit the same pin. */}
+        {harvesterMatches.length > 0 && (
+          <HarvesterMatchesBlock
+            matches={harvesterMatches}
+            convergence={hasConvergence}
+          />
         )}
 
         {/* Action buttons — Deep Signal + Six Letters */}
@@ -702,6 +718,157 @@ function WhyNotSellingBlock({ why }) {
     </div>
   );
 }
+
+function HarvesterMatchesBlock({ matches, convergence }) {
+  // Map backend signal types to readable labels + soft color cues.
+  // Keep all four variants here (probate, obituary, divorce, tax_foreclosure).
+  const signalMeta = {
+    probate:          { label: 'Probate filing',    family: 'death_inheritance' },
+    obituary:         { label: 'Obituary match',    family: 'death_inheritance' },
+    divorce:          { label: 'Divorce filing',    family: 'divorce_unwinding' },
+    tax_foreclosure:  { label: 'Tax foreclosure',   family: 'financial_stress' },
+  };
+
+  // Format the primary matched party from the signal's party_names array.
+  // Role priority: decedent > petitioner > party > parcel_only > first entry.
+  const renderParty = (parties) => {
+    if (!Array.isArray(parties) || parties.length === 0) return null;
+    const byRolePreference = ['decedent', 'petitioner', 'party', 'parcel_only'];
+    for (const role of byRolePreference) {
+      const hit = parties.find((p) => p && (p.role || '').toLowerCase() === role);
+      if (hit && hit.raw) return hit.raw;
+    }
+    return parties[0]?.raw || null;
+  };
+
+  const formatEventDate = (iso) => {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      if (isNaN(d)) return iso;
+      return d.toLocaleDateString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+      });
+    } catch { return iso; }
+  };
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      padding: 'var(--space-md)',
+      background: 'var(--bg)',
+      borderLeft: `3px solid ${convergence ? 'var(--call-now)' : 'var(--accent)'}`,
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 'var(--space-sm)',
+        marginBottom: 'var(--space-sm)',
+      }}>
+        <div style={{
+          fontSize: 11,
+          color: 'var(--text-tertiary)',
+          fontWeight: 700,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+        }}>
+          Active signals ({matches.length})
+        </div>
+        {convergence && (
+          <span style={{
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            padding: '2px 6px',
+            borderRadius: 3,
+            background: 'var(--call-now)',
+            color: 'white',
+            fontFamily: 'var(--font-sans)',
+          }}>
+            CONVERGED
+          </span>
+        )}
+      </div>
+      <ul style={{ listStyle: 'none' }}>
+        {matches.map((m, i) => {
+          const meta  = signalMeta[m.signal_type] || { label: m.signal_type, family: null };
+          const party = renderParty(m.party_names);
+          const when  = formatEventDate(m.event_date);
+          const strong = m.match_strength === 'strict';
+          return (
+            <li
+              key={`${m.signal_type}-${m.document_ref || i}`}
+              style={{
+                padding: 'var(--space-sm) 0',
+                borderBottom: i < matches.length - 1 ? '1px solid var(--border)' : 'none',
+                fontSize: 12,
+              }}
+            >
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                gap: 'var(--space-sm)',
+              }}>
+                <span style={{ fontWeight: 500, color: 'var(--text)' }}>
+                  {meta.label}
+                </span>
+                <span style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  padding: '1px 5px',
+                  borderRadius: 3,
+                  background: strong ? 'var(--accent)' : 'transparent',
+                  color:       strong ? 'white'        : 'var(--text-tertiary)',
+                  border:      strong ? 'none'         : '1px solid var(--text-tertiary)',
+                  fontFamily: 'var(--font-sans)',
+                }}>
+                  {strong ? 'STRICT' : 'WEAK'}
+                </span>
+              </div>
+              {party && (
+                <div style={{
+                  color: 'var(--text-secondary)',
+                  marginTop: 2,
+                  fontFamily: 'var(--font-serif)',
+                  fontStyle: 'italic',
+                }}>
+                  {party}
+                </div>
+              )}
+              <div style={{
+                display: 'flex',
+                gap: 'var(--space-md)',
+                marginTop: 2,
+                fontSize: 11,
+                color: 'var(--text-tertiary)',
+              }}>
+                {when && <span>{when}</span>}
+                {m.source_type && <span>{m.source_type.replace(/_/g, ' ')}</span>}
+              </div>
+              {m.document_ref && (
+                <div style={{
+                  marginTop: 2,
+                  fontSize: 10,
+                  color: 'var(--text-tertiary)',
+                  fontFamily: 'monospace',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {m.document_ref}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 
 function SignalsBlock({ signals }) {
   const trustColor = { high: 'var(--hold)', medium: 'var(--accent)', low: 'var(--text-tertiary)' };
