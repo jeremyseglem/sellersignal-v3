@@ -108,77 +108,84 @@ class SeattleTimesObituariesSource(ObituarySource):
     """
     Seattle Times paid obituaries at obituaries.seattletimes.com.
 
-    The site has a search endpoint with filter_date and sort options.
-    Each result has its own detail page with full obituary text.
+    URL pattern for individual obituaries:
+      /obituary/<slug>-<10+digit ID>
+
+    The listing pages contain anchor tags with href matching the above
+    pattern. Each anchor wraps a card with the decedent's name, birth/
+    death years, and excerpt.
 
     URL pattern for listings:
-      /obituaries/obituaries/search/?filter_date=pastweek
-      &filter_date=today / pastweek / pastmonth / past3months
+      /obituaries/obituaries/search/?filter_date=past30days&sort_by=date&order=desc
     """
 
     name = "seattle_times"
     BASE = "https://obituaries.seattletimes.com"
-    SEARCH_PATH = "/obituaries/obituaries/search/"
-
-    # How far back to window per query (Seattle Times only exposes these presets)
-    FILTERS = {
-        7:   "pastweek",
-        30:  "pastmonth",
-        90:  "past3months",
-    }
+    # Homepage shows "Latest Obituaries" inline AND "This Month" / "This Year"
+    # buttons linking to date-filtered searches. We hit BOTH to maximize yield.
+    LISTING_URLS = [
+        # Homepage — has featured + latest obits server-rendered
+        "/",
+        # "This Month" — search filtered to past 30 days
+        "/obituaries/obituaries/search/?filter_date=past30days&sort_by=date&order=desc",
+        # "This Week" — past 7 days (overlaps with month but may surface more)
+        "/obituaries/obituaries/search/?filter_date=pastweek&sort_by=date&order=desc",
+    ]
+    # Matches /obituary/<slug>-<digits> where digits are 10+ chars (obit IDs
+    # are long numeric ids like 1093736573). Prevents matching nav links.
+    OBIT_URL_RE = re.compile(r"^/obituary/([a-z0-9-]+?)-(\d{10,})/?$")
 
     def fetch(self, since: date, until: date) -> Iterator[ObituaryRecord]:
         session = self._session()
-        days_back = (until - since).days
+        seen_ids: set = set()
 
-        # Pick the smallest preset that covers our window
-        filter_date = "past3months"
-        for days, label in self.FILTERS.items():
-            if days_back <= days:
-                filter_date = label
-                break
-
-        url = f"{self.BASE}{self.SEARCH_PATH}?filter_date={filter_date}&sort_by=obitspubdate_meta&order=desc"
-        log.info(f"[{self.name}] fetching {url}")
-
-        try:
-            r = session.get(url, timeout=30)
-            r.raise_for_status()
-        except requests.HTTPError as e:
-            log.warning(f"[{self.name}] failed: {e}")
-            return
-
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # Parse the result cards. ST typically uses .obit-card or similar;
-        # we look for any anchor tags linking to individual obit detail pages.
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "/obituaries/" not in href or href.endswith("/search/"):
+        for listing_path in self.LISTING_URLS:
+            url = self.BASE + listing_path
+            log.info(f"[{self.name}] fetching listing {url}")
+            try:
+                r = session.get(url, timeout=30)
+                r.raise_for_status()
+            except requests.HTTPError as e:
+                log.warning(f"[{self.name}] listing failed {url}: {e}")
                 continue
 
-            name = a.get_text(" ", strip=True)
-            if not name or len(name) < 3 or len(name) > 120:
-                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+            # Collect (id, slug, card_text) triples from this listing
+            candidates = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                # Normalize: strip host if absolute
+                if href.startswith("http"):
+                    if not href.startswith(self.BASE):
+                        continue
+                    href = href[len(self.BASE):]
+                m = self.OBIT_URL_RE.match(href)
+                if not m:
+                    continue
+                slug, obit_id = m.group(1), m.group(2)
+                if obit_id in seen_ids:
+                    continue
+                seen_ids.add(obit_id)
+                card_text = a.get_text(" ", strip=True)
+                candidates.append((obit_id, slug, card_text, href))
 
-            # Filter: names should have at least two tokens and look like names
-            if not re.match(r"^[A-Z][A-Za-z].*\s+[A-Z][A-Za-z]", name):
-                continue
+            log.info(f"[{self.name}]  found {len(candidates)} obit links on {listing_path}")
 
-            abs_url = href if href.startswith("http") else self.BASE + href
-
-            # Only fetch detail pages for names that look like full names.
-            # Detail pages have publish date, age, death date, obit text.
-            record = self._fetch_detail(session, abs_url, name, since, until)
-            if record:
-                yield record
-            time.sleep(0.5)
+            for obit_id, slug, card_text, href in candidates:
+                abs_url = self.BASE + href
+                record = self._fetch_detail(
+                    session, abs_url, slug, card_text, since, until,
+                )
+                if record:
+                    yield record
+                time.sleep(0.4)
 
     def _fetch_detail(
         self,
         session: requests.Session,
         url: str,
-        name: str,
+        slug: str,
+        card_text: str,
         since: date,
         until: date,
     ) -> Optional[ObituaryRecord]:
@@ -191,11 +198,29 @@ class SeattleTimesObituariesSource(ObituarySource):
 
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Try to extract: publish date, age, death date, city
+        # 1) Name: prefer <h1> (detail page title). Fallback: title-case slug.
+        name = None
+        h1 = soup.find("h1")
+        if h1:
+            h1_text = h1.get_text(" ", strip=True)
+            # Strip "Obituary of " prefix sometimes added
+            h1_text = re.sub(r"^(Obituary of|In Memory of)\s+", "",
+                             h1_text, flags=re.I)
+            if 2 <= len(h1_text.split()) <= 8:
+                name = h1_text
+        if not name:
+            # Derive from slug: "katherine-tate" -> "Katherine Tate"
+            # Last component is the ID — strip it from consideration.
+            parts = slug.replace("-", " ").split()
+            # Filter out suffixes like "jr", "iii"
+            name = " ".join(p.title() for p in parts)
+
+        # 2) Body text for date/age/city extraction
         full_text = soup.get_text(" ", strip=True)
 
         death_date = _extract_death_date(full_text)
         if death_date and not (since <= death_date <= until):
+            # Obit is outside requested window
             return None
 
         age = _extract_age(full_text)
@@ -224,6 +249,10 @@ class LegacyBellevueObituariesSource(ObituarySource):
     name = "legacy_bellevue"
     BASE = "https://www.legacy.com"
     LIST_PATH = "/us/obituaries/local/washington/bellevue"
+    # Legacy obituary URLs follow:
+    #   /us/obituaries/name/first-last-obituary?pid=<digits>
+    # Require the ?pid= param to skip CTA / nav links.
+    OBIT_URL_RE = re.compile(r"^/us/obituaries/name/[^/?]+\?pid=\d+")
 
     def fetch(self, since: date, until: date) -> Iterator[ObituaryRecord]:
         session = self._session()
@@ -239,38 +268,44 @@ class LegacyBellevueObituariesSource(ObituarySource):
 
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Legacy cards have data-component="ObituaryCard" or similar markers.
-        # We look for h3/h4 elements with name text inside obituary cards.
-        # This parser is best-effort — Legacy's markup has changed before.
-        cards = soup.find_all(attrs={"data-component": re.compile("Obituary", re.I)})
-        if not cards:
-            # Fallback: any <a href> containing /us/obituaries/name/...
-            cards = [a for a in soup.find_all("a", href=True)
-                     if "/us/obituaries/name/" in a["href"]]
-
-        for card in cards:
-            # Extract name and URL
-            if hasattr(card, 'find'):
-                link = card.find("a", href=True)
-                href = link["href"] if link else None
-                name_el = card.find(["h3", "h4", "p"])
-                name = name_el.get_text(" ", strip=True) if name_el else None
-            else:
-                # Fallback <a> element
-                href = card.get("href")
-                name = card.get_text(" ", strip=True)
-
-            if not name or not href:
+        seen_pids: set = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("http"):
+                if not href.startswith(self.BASE):
+                    continue
+                href = href[len(self.BASE):]
+            if not self.OBIT_URL_RE.match(href):
                 continue
+            # Dedup by pid
+            pid_match = re.search(r"pid=(\d+)", href)
+            if not pid_match:
+                continue
+            pid = pid_match.group(1)
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
 
-            abs_url = href if href.startswith("http") else self.BASE + href
-            record = ObituaryRecord(
-                decedent_name=name,
+            # Name: text inside the anchor, or fallback to slug
+            card_text = a.get_text(" ", strip=True)
+            if not card_text or len(card_text) < 3:
+                # Derive from slug
+                slug_match = re.match(r"^/us/obituaries/name/([^/?]+)", href)
+                if slug_match:
+                    slug = slug_match.group(1).replace("-obituary", "")
+                    card_text = " ".join(p.title() for p in slug.split("-"))
+                else:
+                    continue
+            # Strip trailing "Obituary" word that anchor text often includes
+            card_text = re.sub(r"\s*obituary\s*$", "", card_text, flags=re.I).strip()
+
+            abs_url = self.BASE + href
+            yield ObituaryRecord(
+                decedent_name=card_text,
                 source_name=self.name,
                 obit_url=abs_url,
-                city="Bellevue",   # Implicit from the listing
+                city="Bellevue",   # Implicit from the /bellevue listing
             )
-            yield record
 
 
 # ─── Top-level harvester ───────────────────────────────────────────────

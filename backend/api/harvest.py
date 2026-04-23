@@ -1143,6 +1143,47 @@ def harvest_reclassify_parties(
     }
 
 
+@router.post("/clear-obituary-signals")
+def harvest_clear_obituary_signals(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+):
+    """
+    Delete ALL obituary signals (source_type='obituary_rss') from
+    raw_signals_v3. Use after fixing the obituary scraper parser to
+    purge garbage records (e.g. nav links that were incorrectly
+    written as obits).
+
+    Probate/divorce signals from kc_superior_court are NOT touched.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(400, "Pass ?confirm=true to proceed.")
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Delete in chunks (Supabase .delete returns first batch only)
+    total_deleted = 0
+    while True:
+        res = (supa.table('raw_signals_v3')
+               .delete()
+               .eq('source_type', 'obituary_rss')
+               .execute())
+        batch_n = len(res.data or [])
+        if batch_n == 0:
+            break
+        total_deleted += batch_n
+        if total_deleted > 10000:
+            break  # safety
+
+    return {
+        "deleted_signals": total_deleted,
+        "message":         "Cleared obituary signals. Safe to re-harvest.",
+    }
+
+
 @router.post("/backfill-parties")
 def harvest_backfill_parties(
     x_admin_key: Optional[str] = Header(None),
