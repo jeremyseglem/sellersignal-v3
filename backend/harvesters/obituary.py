@@ -612,16 +612,22 @@ class ObituaryHarvester(BaseHarvester):
         # These come from a regex that captured a suffix as if it were a name.
         _JUNK_FIRST = {"Jr", "Sr", "Ii", "Iii", "Iv", "V", "The", "A", "An"}
         for s in survivor_names:
-            parts = s["name"].split()
+            raw_name = s["name"]
+            # Strip parenthetical nicknames before parsing, e.g.
+            # 'Joshua (Haley) Sloan' → 'Joshua Sloan'.
+            clean = re.sub(r"\([^)]*\)", "", raw_name)
+            clean = re.sub(r"\s+", " ", clean).strip()
+            parts = clean.split()
             first = parts[0] if parts else None
             if first in _JUNK_FIRST:
                 continue  # skip bogus entry
-            last = parts[-1] if len(parts) > 1 else None
+            # Use _split_name so suffixes like 'Jr'/'Sr' don't leak into
+            # `last` (else 'Philip Neilson Jr' → last='Jr').
+            parsed = _split_name(clean)
             parties.append(Party(
-                raw=s["name"],
+                raw=raw_name,
                 role=s["role"],
-                first=first,
-                last=last,
+                **parsed,
             ))
 
         # document_ref = dedup key so re-runs are idempotent
