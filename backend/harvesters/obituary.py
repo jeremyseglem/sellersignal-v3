@@ -233,16 +233,45 @@ class SeattleTimesObituariesSource(ObituarySource):
             # Filter out suffixes like "jr", "iii"
             name = " ".join(p.title() for p in parts)
 
-        # 2) Body text for date/age/city extraction
-        full_text = soup.get_text(" ", strip=True)
+        # 2) Extract obit body specifically, not whole page chrome.
+        # Seattle Times renders: <h2>... Obituary</h2> then paragraphs.
+        # We find the h2 whose text ends with "Obituary" and collect
+        # sibling paragraphs until we hit "Read more", "Published on",
+        # "Events", or "Guestbook" markers.
+        obit_body = None
+        for h2 in soup.find_all(["h2", "h3"]):
+            h2_text = h2.get_text(" ", strip=True)
+            if h2_text.lower().endswith("obituary"):
+                # Collect text from siblings until stop marker
+                parts = []
+                for sib in h2.find_all_next(["p", "div", "h2", "h3"], limit=40):
+                    sib_text = sib.get_text(" ", strip=True)
+                    low = sib_text.lower()
+                    if not sib_text:
+                        continue
+                    if (low.startswith(("events", "guestbook",
+                                         "funeral arrangements"))
+                            or low.startswith("published on")
+                            or "read more" in low):
+                        break
+                    parts.append(sib_text)
+                if parts:
+                    obit_body = " ".join(parts)
+                    break
 
-        death_date = _extract_death_date(full_text)
+        # Fallback: whole-page text minus nav chrome (if we couldn't
+        # isolate the body). Strip common nav fragments.
+        full_text = soup.get_text(" ", strip=True)
+        if not obit_body:
+            obit_body = full_text
+
+        death_date = _extract_death_date(obit_body) or _extract_death_date(full_text)
         if death_date and not (since <= death_date <= until):
-            # Obit is outside requested window
             return None
 
-        age = _extract_age(full_text)
-        city = _extract_city(full_text)
+        age = _extract_age(obit_body)
+        city = _extract_city(obit_body)
+        survivors_text = _extract_survivors_text(obit_body)
 
         return ObituaryRecord(
             decedent_name=name,
@@ -251,7 +280,8 @@ class SeattleTimesObituariesSource(ObituarySource):
             death_date=death_date,
             age_at_death=age,
             city=city,
-            obit_text_excerpt=full_text[:3000] if full_text else None,
+            survivors_raw=survivors_text,
+            obit_text_excerpt=obit_body[:3000] if obit_body else None,
         )
 
 
@@ -548,11 +578,34 @@ class ObituaryHarvester(BaseHarvester):
     def _record_to_signal(rec: ObituaryRecord) -> RawSignal:
         # Parse the decedent name into structured components
         from .kc_superior_court import _split_name
+        decedent_parsed = _split_name(rec.decedent_name)
         parties = [Party(
             raw=rec.decedent_name,
             role="decedent",
-            **_split_name(rec.decedent_name),
+            **decedent_parsed,
         )]
+
+        # Extract survivors from the obit body if we have one.
+        # Survivors are valuable because they're the heirs/PRs — exactly
+        # who the agent wants to contact. We emit them as additional Party
+        # objects with survivor_* roles, which the matcher can also try
+        # to match to parcel owners (catches cases where a child inherits
+        # and moves in).
+        decedent_surname = decedent_parsed.get("last") or None
+        excerpt = rec.obit_text_excerpt or rec.survivors_raw or ""
+        survivor_names = _extract_survivor_names(
+            excerpt, decedent_surname=decedent_surname,
+        )
+        for s in survivor_names:
+            parts = s["name"].split()
+            first = parts[0] if parts else None
+            last = parts[-1] if len(parts) > 1 else None
+            parties.append(Party(
+                raw=s["name"],
+                role=s["role"],
+                first=first,
+                last=last,
+            ))
 
         # document_ref = dedup key so re-runs are idempotent
         doc_ref = f"obit::{ObituaryHarvester._dedup_key(rec)}::{rec.source_name}"
@@ -572,6 +625,7 @@ class ObituaryHarvester(BaseHarvester):
                 "city":              rec.city,
                 "funeral_home":      rec.funeral_home,
                 "survivors_raw":     rec.survivors_raw,
+                "survivors_parsed":  survivor_names,
                 "obit_text_excerpt": rec.obit_text_excerpt,
             },
         )
@@ -694,3 +748,169 @@ def _extract_city(text: str) -> Optional[str]:
             if pattern in low:
                 return city.title()
     return None
+
+
+# ─── Survivors extraction ──────────────────────────────────────────────
+
+# Match sentences that introduce survivor lists. We capture the sentence
+# body so downstream code can parse individual names.
+_SURVIVOR_INTRO_RE = re.compile(
+    r"(?:(?:he|she)\s+(?:is\s+)?(?:leaves|survived\s+by|leaves\s+behind)|"
+    r"survived\s+by|leaves\s+behind|leaves\s+his|leaves\s+her|"
+    r"(?:he|she)\s+is\s+the\s+(?:father|mother)\s+of|"
+    r"father\s+to|mother\s+to|"
+    r"preceded\s+in\s+death\s+by|predeceased\s+by)",
+    re.IGNORECASE,
+)
+
+# Capture the family segment immediately following a survivor intro.
+# Usually runs until the next sentence (ends with ". " followed by capital)
+# or until we hit a section break.
+_SURVIVOR_SEGMENT_RE = re.compile(
+    r"(?P<intro>"
+    r"(?:(?:he|she|they)\s+(?:is\s+)?(?:leaves|survived\s+by|leaves\s+behind)|"
+    r"survived\s+by|leaves\s+behind|leaves\s+his|leaves\s+her|"
+    r"preceded\s+in\s+death\s+by|predeceased\s+by|"
+    r"father\s+to|mother\s+to)"
+    r")"
+    r"(?P<segment>[^.]{5,400}?)(?:\.\s+[A-Z]|\.\s*$|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_survivors_text(text: str) -> Optional[str]:
+    """
+    Extract a human-readable multi-sentence block describing family/
+    survivors. Concatenates all sentences matching survivor intros.
+    Returns None if nothing found.
+
+    This is the fallback agents can read directly — structured name
+    extraction happens separately via _extract_survivor_names.
+    """
+    if not text:
+        return None
+    matches = list(_SURVIVOR_SEGMENT_RE.finditer(text))
+    if not matches:
+        return None
+    # Reassemble each match as a full phrase
+    phrases = []
+    for m in matches:
+        full = (m.group("intro") + m.group("segment")).strip()
+        # Collapse internal whitespace
+        full = re.sub(r"\s+", " ", full)
+        if full and full not in phrases:
+            phrases.append(full)
+    return ". ".join(phrases)[:2000] if phrases else None
+
+
+# Relationship marker words. Each maps to a Party role.
+_RELATIONSHIP_MARKERS = {
+    # Spouse
+    "wife":            "survivor_spouse",
+    "husband":         "survivor_spouse",
+    "spouse":          "survivor_spouse",
+    "partner":         "survivor_spouse",
+    # Children
+    "son":             "survivor_child",
+    "daughter":        "survivor_child",
+    "child":           "survivor_child",
+    "children":        "survivor_child",
+    "stepson":         "survivor_child",
+    "stepdaughter":    "survivor_child",
+    # Siblings
+    "brother":         "survivor_sibling",
+    "sister":          "survivor_sibling",
+    # Parents
+    "father":          "survivor_parent",
+    "mother":          "survivor_parent",
+    # Grandchildren
+    "grandson":        "survivor_grandchild",
+    "granddaughter":   "survivor_grandchild",
+    "grandchild":      "survivor_grandchild",
+    "grandchildren":   "survivor_grandchild",
+    # Other
+    "niece":           "survivor_other",
+    "nephew":          "survivor_other",
+    "cousin":          "survivor_other",
+    "friend":          "survivor_other",
+}
+
+# Match: optional "loving"/"beloved"/etc + relationship word + optional
+# modifier (e.g. "of 50 years") + name (2-4 capitalized words).
+_SURVIVOR_NAME_RE = re.compile(
+    r"(?:loving\s+|beloved\s+|devoted\s+|dear\s+|cherished\s+)?"
+    r"(?:\d+\s+|two\s+|three\s+|four\s+|five\s+|six\s+|seven\s+)?"
+    r"(?P<rel>wife|husband|spouse|partner|son|sons|daughter|daughters|"
+    r"child(?:ren)?|stepson|stepdaughter|brother|brothers|sister|sisters|"
+    r"father|mother|grandson|granddaughter|grandchild(?:ren)?|"
+    r"niece|nephew|cousin|friend)"
+    r"(?:\s+of\s+\d+\s+years)?"
+    r"\s*,?\s+"
+    r"(?P<n>[A-Z][a-z]+(?:[-\'][A-Z][a-z]+)?"
+    r"(?:\s+[A-Z][a-z]+(?:[-\'][A-Z][a-z]+)?){0,3})",
+)
+
+
+def _extract_survivor_names(
+    text: str, decedent_surname: Optional[str] = None
+) -> list[dict]:
+    """
+    Extract structured (name, role) pairs from survivor text.
+
+    Returns list of dicts: [{"name": "Jane Smith", "role": "survivor_spouse"}, ...]
+
+    decedent_surname, if provided, is appended to first-name-only mentions
+    ("his son Paul" → "Paul <surname>") since children commonly share
+    the decedent's surname.
+    """
+    if not text:
+        return []
+    results: list[dict] = []
+    seen_names: set = set()
+
+    # Split text into clauses separated by ". " so we can tag each clause
+    # as either "survived by" context or "preceded in death by" context.
+    # Names in a preceded clause are NOT heirs — they're already deceased.
+    clauses = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
+
+    for clause in clauses:
+        low = clause.lower()
+        # Determine context
+        if re.search(r"preceded\s+in\s+death\s+by|predeceased\s+by", low):
+            context = "preceded"
+        elif re.search(
+            r"survived\s+by|leaves\s+(?:his|her|behind)|"
+            r"is\s+the\s+(?:father|mother)\s+of|father\s+to|mother\s+to",
+            low,
+        ):
+            context = "survived"
+        else:
+            # Ambiguous clause — skip (e.g. biographical narrative)
+            continue
+
+        for m in _SURVIVOR_NAME_RE.finditer(clause):
+            rel_word = m.group("rel").lower().rstrip("s")
+            base_role = _RELATIONSHIP_MARKERS.get(
+                rel_word,
+                _RELATIONSHIP_MARKERS.get(m.group("rel").lower(), "survivor_other"),
+            )
+            # Prefix role for preceded-in-death to keep predeceased folks
+            # visible but distinguishable
+            role = (
+                base_role.replace("survivor_", "predeceased_")
+                if context == "preceded"
+                else base_role
+            )
+            name = m.group("n").strip()
+            tokens = name.split()
+            if len(tokens) == 1 and decedent_surname and base_role in (
+                "survivor_child", "survivor_sibling", "survivor_spouse",
+            ):
+                name = f"{tokens[0]} {decedent_surname}"
+            key = name.lower()
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            results.append({"name": name, "role": role})
+
+    return results

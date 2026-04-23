@@ -289,7 +289,15 @@ def _process_one(
     # bool. Common-surname-only matches with no distinctive token overlap
     # get downgraded to "weak" so they survive for agent review via
     # include_weak=true but don't pollute the default strict list.
-    parties = row.get('party_names') or []
+    #
+    # Exclude parties marked as predeceased (from obituary "preceded in
+    # death by X" sentences). They're already dead — surname-matching them
+    # to a living parcel owner would create noise, not leads.
+    parties = [
+        p for p in (row.get('party_names') or [])
+        if not (isinstance(p, dict)
+                and str(p.get('role', '')).startswith('predeceased_'))
+    ]
     gate_strengths: dict = {}
     filtered_candidates = []
     for c in candidates:
