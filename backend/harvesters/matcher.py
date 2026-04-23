@@ -298,14 +298,24 @@ def _process_one(
         if not (isinstance(p, dict)
                 and str(p.get('role', '')).startswith('predeceased_'))
     ]
-    gate_strengths: dict = {}
-    filtered_candidates = []
-    for c in candidates:
-        strength = _surname_gate(c["parcel_id"], owners_db, parties)
-        if strength is None:
-            continue
-        gate_strengths[c["parcel_id"]] = strength
-        filtered_candidates.append(c)
+    # Surname gate BYPASS for property-based signals. Tax foreclosure is
+    # matched by parcel identity (the Treasury feed tells us exactly
+    # which parcel), not by name. The sentinel party has no surname to
+    # gate on. Without this bypass, the gate rejects every tax_foreclosure
+    # match as "no surname overlap" and the feature silently produces
+    # zero results.
+    if signal_type == "tax_foreclosure":
+        gate_strengths: dict = {c["parcel_id"]: "strict" for c in candidates}
+        filtered_candidates = candidates
+    else:
+        gate_strengths = {}
+        filtered_candidates = []
+        for c in candidates:
+            strength = _surname_gate(c["parcel_id"], owners_db, parties)
+            if strength is None:
+                continue
+            gate_strengths[c["parcel_id"]] = strength
+            filtered_candidates.append(c)
     candidates = filtered_candidates
 
     if not candidates:
@@ -482,6 +492,60 @@ def _dispatch_probate(row, owners_db, use_codes):
     return candidates
 
 
+def _dispatch_tax_foreclosure(row, owners_db, use_codes):
+    """
+    KC Treasury tax-foreclosure matching.
+
+    This is the first signal type in the system that matches by PROPERTY
+    rather than by PARTY. The parcel is already known (KC Treasury tells
+    us the exact parcel in tax-foreclosure status) — we just need to
+    decide whether that parcel is in the agent's coverage area.
+
+    Matching logic:
+      - Pull parcel_id out of the RawSignal's property_hint
+      - If it's present in owners_db (scoped to agent's zip), emit a
+        match candidate. If not, no match (parcel is in a different ZIP).
+
+    Why strict? The Treasury feed IS the authoritative record of
+    tax-foreclosure status. There's no name-matching to get wrong — if
+    KC Treasury says parcel X is in foreclosure, parcel X is in
+    foreclosure. No inference.
+
+    The surname gate is bypassed for this signal type in _process_one —
+    the sentinel "(Tax Foreclosure — parcel match)" party has no surname
+    to gate on, and gating would reject all tax_foreclosure matches.
+    """
+    hint = row.get('property_hint') or {}
+    pin = (hint.get('parcel_id') or '').strip()
+    if not pin:
+        return []
+
+    # Only match if the parcel is in the scoped owners_db. owners_db is
+    # already zip-filtered in _load_owners_db, so this check is both the
+    # zip scoping AND the existence check.
+    if pin not in owners_db:
+        return []
+
+    # Residential filter: tax foreclosure on commercial parcels is not a
+    # useful seller lead for a residential-focused agent. If prop_type is
+    # not 'R', skip.
+    if use_codes.get(pin, {}).get('prop_type', '') != 'R':
+        return []
+
+    return [{
+        "parcel_id":     pin,
+        "signal_family": "tax_foreclosure",
+        "trigger_hint": {
+            "case_number":    row.get('document_ref'),
+            "filing_date":    (row.get('event_date') or ''),
+            "parcel_id":      pin,
+            "source":         "kc_treasury_soda",
+            # Authoritative feed → strict by default
+            "match_strength": "strict",
+        },
+    }]
+
+
 _DISPATCH = {
     "divorce":      _dispatch_divorce,
     "probate":      _dispatch_probate,
@@ -491,6 +555,12 @@ _DISPATCH = {
     # source_type tagging in raw_signals_v3 (signal_source="obituary_rss"
     # vs "kc_superior_court") — scoring can weight them differently.
     "obituary":     _dispatch_probate,
+    # KC Treasury tax-foreclosure: parcel-only signal. The dispatcher
+    # returns the parcel directly as a candidate. The surname gate is
+    # BYPASSED because there's no name to gate on — the parcel identity
+    # IS the match. This is the first signal type in the system that
+    # matches by property rather than by party.
+    "tax_foreclosure": _dispatch_tax_foreclosure,
     # Future: nod, lis_pendens, trustee_sale (via match_recorder_to_parcels),
     # llc_officer_change
 }

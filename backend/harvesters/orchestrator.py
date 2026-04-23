@@ -30,6 +30,7 @@ from typing import Optional
 from . import matcher
 from .base import RawSignal
 from .kc_superior_court import KCSuperiorCourtHarvester
+from .kc_treasury import KCTreasuryForeclosureHarvester
 from .obituary import ObituaryHarvester
 from backend.api.db import get_supabase_client
 
@@ -41,7 +42,12 @@ log = logging.getLogger(__name__)
 HARVESTERS = {
     "kc_superior_court": lambda case_types: KCSuperiorCourtHarvester(case_types),
     "obituary":          lambda _unused:    ObituaryHarvester(),
-    # Future: "kc_recorder", "wa_sos", "zillow_sitemap"
+    # KC Treasury tax-foreclosure: property-based signal, not party-based.
+    # Accepts the case_types arg for interface compatibility but ignores it
+    # (the Treasury feed has no sub-types).
+    "kc_treasury":       lambda _unused:    KCTreasuryForeclosureHarvester(),
+    # Future: "kc_recorder" (captcha-blocked — see kc_treasury.py comments),
+    # "wa_sos", "zillow_sitemap"
 }
 
 
