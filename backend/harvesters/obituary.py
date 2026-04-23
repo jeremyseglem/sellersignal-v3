@@ -279,7 +279,7 @@ class DignityMemorialObituariesSource(ObituarySource):
 
     name = "dignity_memorial"
     BASE = "https://www.dignitymemorial.com"
-    LISTING_PATHS = [
+    LISTING_URLS = [
         "/obituaries/bellevue-wa",  # Eastside KC
         "/obituaries/seattle-wa",   # Seattle + west-side KC
     ]
@@ -299,7 +299,7 @@ class DignityMemorialObituariesSource(ObituarySource):
         session = self._session()
         seen_ids: set = set()
 
-        for listing_path in self.LISTING_PATHS:
+        for listing_path in self.LISTING_URLS:
             url = self.BASE + listing_path
             log.info(f"[{self.name}] fetching {url}")
             try:
