@@ -145,8 +145,13 @@ class SeattleTimesObituariesSource(ObituarySource):
         try:
             r = session.get(sitemap_url, timeout=30)
             r.raise_for_status()
-        except requests.HTTPError as e:
+        except (requests.HTTPError, requests.RequestException) as e:
             log.warning(f"[{self.name}] sitemap fetch failed: {e}")
+            return
+        except Exception as e:
+            # Catch any unexpected exception so one bad URL doesn't kill
+            # the whole harvest. Log with exception type for debugging.
+            log.warning(f"[{self.name}] sitemap unexpected error: {type(e).__name__}: {e}")
             return
 
         # 2) Extract all obit URLs from <loc> tags
