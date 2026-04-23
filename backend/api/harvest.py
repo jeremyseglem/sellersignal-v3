@@ -2359,3 +2359,82 @@ def harvest_matches(
         "returned":       min(limit, len(matches_out)),
         "matches":        matches_out[:limit],
     }
+
+
+@router.get("/diag/probe-url")
+def diag_probe_url(
+    url: str,
+    x_admin_key: Optional[str] = Header(None),
+    warm: bool = False,
+):
+    """
+    Fetch a URL from the Railway server and return status + length +
+    survivor-text indicators. Used to verify whether Railway's IP can
+    reach obituary detail pages that the Claude sandbox gets blocked on.
+
+    When warm=true, first hits the root of the same domain to establish
+    a session/cookies before the probe — some CDNs treat a session with
+    prior navigation as less bot-like.
+
+    Read-only. Does NOT write to DB. Caps at one response body read.
+    """
+    _require_admin(x_admin_key)
+    import requests
+    from urllib.parse import urlparse
+
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest":    "document",
+        "Sec-Fetch-Mode":    "navigate",
+        "Sec-Fetch-Site":    "none",
+        "Sec-Fetch-User":    "?1",
+    })
+
+    warm_status = None
+    if warm:
+        try:
+            parsed = urlparse(url)
+            root = f"{parsed.scheme}://{parsed.netloc}/"
+            r0 = s.get(root, timeout=15)
+            warm_status = r0.status_code
+        except Exception as e:
+            warm_status = f"error: {type(e).__name__}: {e}"
+
+    try:
+        r = s.get(url, timeout=30)
+        body = r.text or ""
+    except Exception as e:
+        return {
+            "url":           url,
+            "warm_status":   warm_status,
+            "error":         f"{type(e).__name__}: {str(e)[:200]}",
+        }
+
+    low = body.lower()
+    indicators = {
+        "has_survived_by":    "survived by" in low,
+        "has_preceded":       "preceded in death" in low,
+        "has_obituary_h1":    "<h1" in low and "obituary" in low,
+        "has_cloudflare_msg": "cloudflare" in low and ("checking" in low or "attention" in low),
+    }
+
+    return {
+        "url":            url,
+        "warm_status":    warm_status,
+        "status":         r.status_code,
+        "length":         len(body),
+        "content_type":   r.headers.get("content-type"),
+        "indicators":     indicators,
+        "body_preview":   body[:400] if body else None,
+    }
