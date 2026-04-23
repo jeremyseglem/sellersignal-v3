@@ -1583,6 +1583,7 @@ def harvest_backfill_parties(
 def diag_obituary_sources(
     x_admin_key: Optional[str] = Header(None),
     since_days_ago: int = 30,
+    listing_only: bool = False,
 ):
     """
     Run each ObituarySource adapter independently and report counts +
@@ -1590,10 +1591,18 @@ def diag_obituary_sources(
     returns lower counts than expected (e.g. Cloudflare blocking one
     source silently).
 
+    When listing_only=true, does NOT fetch detail pages. Just pulls
+    the listing pages, runs the URL regex, and reports candidate count
+    + first 10 slugs. This distinguishes listing-fetch failure (zero
+    candidates) from detail-fetch failure (candidates found but details
+    lost).
+
     Read-only. No DB writes.
     """
     _require_admin(x_admin_key)
     from datetime import date, timedelta
+    import requests
+    from bs4 import BeautifulSoup
     from backend.harvesters.obituary import (
         SeattleTimesObituariesSource, LegacyBellevueObituariesSource,
     )
@@ -1608,21 +1617,59 @@ def diag_obituary_sources(
     per_source: dict = {}
     for name, src in sources:
         info: dict = {"count": 0, "error": None, "samples": []}
-        try:
-            records = list(src.fetch(since, until))
-            info["count"] = len(records)
-            for r in records[:5]:
-                info["samples"].append({
-                    "name":        getattr(r, "decedent_name", None),
-                    "death_date":  (r.death_date.isoformat()
-                                    if getattr(r, "death_date", None) else None),
-                    "city":        getattr(r, "city", None),
-                    "age":         getattr(r, "age", None),
-                    "url":         getattr(r, "obit_url", None),
-                    "excerpt":     (getattr(r, "excerpt", None) or "")[:150],
-                })
-        except Exception as e:
-            info["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+
+        if listing_only:
+            # Just fetch listing pages and count regex matches — don't
+            # follow to detail pages. Lets us see if listings are reachable.
+            try:
+                sess = src._session()
+                page_info = []
+                for listing_path in (
+                    src.LISTING_URLS if hasattr(src, "LISTING_URLS")
+                    else [src.LIST_PATH]
+                ):
+                    url = src.BASE + listing_path
+                    r = sess.get(url, timeout=30)
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    matches = []
+                    for a in soup.find_all("a", href=True):
+                        href = a["href"]
+                        if href.startswith("http"):
+                            if not href.startswith(src.BASE):
+                                continue
+                            href = href[len(src.BASE):]
+                        if src.OBIT_URL_RE.match(href):
+                            matches.append((
+                                href,
+                                a.get_text(" ", strip=True)[:60],
+                            ))
+                    page_info.append({
+                        "url":         url,
+                        "status":      r.status_code,
+                        "html_len":    len(r.text),
+                        "match_count": len(matches),
+                        "samples":     matches[:5],
+                    })
+                info["listing_pages"] = page_info
+                info["count"] = sum(p["match_count"] for p in page_info)
+            except Exception as e:
+                info["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        else:
+            try:
+                records = list(src.fetch(since, until))
+                info["count"] = len(records)
+                for r in records[:5]:
+                    info["samples"].append({
+                        "name":        getattr(r, "decedent_name", None),
+                        "death_date":  (r.death_date.isoformat()
+                                        if getattr(r, "death_date", None) else None),
+                        "city":        getattr(r, "city", None),
+                        "age":         getattr(r, "age_at_death", None),
+                        "url":         getattr(r, "obit_url", None),
+                        "excerpt":     (getattr(r, "obit_text_excerpt", None) or "")[:150],
+                    })
+            except Exception as e:
+                info["error"] = f"{type(e).__name__}: {str(e)[:200]}"
         per_source[name] = info
 
     return {
