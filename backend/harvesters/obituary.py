@@ -111,74 +111,87 @@ class SeattleTimesObituariesSource(ObituarySource):
     URL pattern for individual obituaries:
       /obituary/<slug>-<10+digit ID>
 
-    The listing pages contain anchor tags with href matching the above
-    pattern. Each anchor wraps a card with the decedent's name, birth/
-    death years, and excerpt.
+    Strategy: use the public sitemap index rather than the search listing
+    pages. The search listings server-render only 25 results per URL and
+    ?page=N pagination is JS-only (doesn't work for raw HTTP clients).
 
-    URL pattern for listings:
-      /obituaries/obituaries/search/?filter_date=past30days&sort_by=date&order=desc
+    The sitemap at /sitemap.xml is an index pointing to 48+ child
+    sitemaps, each holding 500 obit URLs. Child sitemap '0-500' is
+    updated every time a new obit is published, so it always contains
+    the ~500 most recent obits (covers roughly the last 2-3 weeks at
+    typical publication rate of ~30-50/day in King County).
+
+    We fetch that newest-first child sitemap, extract obit URLs, then
+    fetch detail pages and filter by extracted death_date.
     """
 
     name = "seattle_times"
     BASE = "https://obituaries.seattletimes.com"
-    # Homepage shows "Latest Obituaries" inline AND "This Month" / "This Year"
-    # buttons linking to date-filtered searches. We hit BOTH to maximize yield.
-    LISTING_URLS = [
-        # Homepage — has featured + latest obits server-rendered
-        "/",
-        # "This Month" — search filtered to past 30 days
-        "/obituaries/obituaries/search/?filter_date=past30days&sort_by=date&order=desc",
-        # "This Week" — past 7 days (overlaps with month but may surface more)
-        "/obituaries/obituaries/search/?filter_date=pastweek&sort_by=date&order=desc",
-    ]
-    # Matches /obituary/<slug>-<digits> where digits are 10+ chars (obit IDs
-    # are long numeric ids like 1093736573). Prevents matching nav links.
-    OBIT_URL_RE = re.compile(r"^/obituary/([a-z0-9-]+?)-(\d{10,})/?$")
+    # Primary sitemap entry — sorted newest-first, ~500 most recent obits
+    RECENT_SITEMAP = "/sitemap/obituaries/obituaries/sitemap-15192521-0-500.xml"
+    # Regex to validate obit URLs from the sitemap
+    OBIT_URL_RE = re.compile(
+        r"^https://obituaries\.seattletimes\.com/obituary/"
+        r"([a-z0-9-]+?)-(\d{10,})/?$"
+    )
 
     def fetch(self, since: date, until: date) -> Iterator[ObituaryRecord]:
         session = self._session()
         seen_ids: set = set()
 
-        for listing_path in self.LISTING_URLS:
-            url = self.BASE + listing_path
-            log.info(f"[{self.name}] fetching listing {url}")
-            try:
-                r = session.get(url, timeout=30)
-                r.raise_for_status()
-            except requests.HTTPError as e:
-                log.warning(f"[{self.name}] listing failed {url}: {e}")
+        # 1) Pull the most-recent child sitemap
+        sitemap_url = self.BASE + self.RECENT_SITEMAP
+        log.info(f"[{self.name}] fetching sitemap {sitemap_url}")
+        try:
+            r = session.get(sitemap_url, timeout=30)
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            log.warning(f"[{self.name}] sitemap fetch failed: {e}")
+            return
+
+        # 2) Extract all obit URLs from <loc> tags
+        #    Regex is faster and more tolerant than an XML parser here.
+        candidates = []
+        for match in re.finditer(r"<loc>([^<]+)</loc>", r.text):
+            url = match.group(1).strip()
+            m = self.OBIT_URL_RE.match(url)
+            if not m:
                 continue
+            slug, obit_id = m.group(1), m.group(2)
+            if obit_id in seen_ids:
+                continue
+            seen_ids.add(obit_id)
+            candidates.append((obit_id, slug, url))
 
-            soup = BeautifulSoup(r.text, "html.parser")
-            # Collect (id, slug, card_text) triples from this listing
-            candidates = []
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                # Normalize: strip host if absolute
-                if href.startswith("http"):
-                    if not href.startswith(self.BASE):
-                        continue
-                    href = href[len(self.BASE):]
-                m = self.OBIT_URL_RE.match(href)
-                if not m:
-                    continue
-                slug, obit_id = m.group(1), m.group(2)
-                if obit_id in seen_ids:
-                    continue
-                seen_ids.add(obit_id)
-                card_text = a.get_text(" ", strip=True)
-                candidates.append((obit_id, slug, card_text, href))
+        log.info(f"[{self.name}] sitemap has {len(candidates)} obit URLs")
 
-            log.info(f"[{self.name}]  found {len(candidates)} obit links on {listing_path}")
+        # 3) Fetch detail pages and filter by death_date window
+        #    Obits in the sitemap are ordered newest-first, so we can stop
+        #    early once we've seen several obits older than `since`.
+        past_window_count = 0
+        PAST_WINDOW_STOP = 50  # after 50 consecutive obits older than since
 
-            for obit_id, slug, card_text, href in candidates:
-                abs_url = self.BASE + href
-                record = self._fetch_detail(
-                    session, abs_url, slug, card_text, since, until,
-                )
-                if record:
-                    yield record
-                time.sleep(0.4)
+        for obit_id, slug, abs_url in candidates:
+            record = self._fetch_detail(
+                session, abs_url, slug, card_text="",
+                since=since, until=until,
+            )
+            if record is None:
+                # detail fetch failed OR obit was OUTSIDE our window
+                # We don't know which without extra state; _fetch_detail
+                # returns None for both. Increment the counter; if we hit
+                # 50 in a row, assume we've passed the since date.
+                past_window_count += 1
+                if past_window_count >= PAST_WINDOW_STOP:
+                    log.info(
+                        f"[{self.name}] stopping early — "
+                        f"{PAST_WINDOW_STOP} consecutive misses"
+                    )
+                    break
+            else:
+                past_window_count = 0   # reset on every hit
+                yield record
+            time.sleep(0.35)
 
     def _fetch_detail(
         self,
@@ -237,7 +250,166 @@ class SeattleTimesObituariesSource(ObituarySource):
         )
 
 
-# ─── Source: Legacy.com Bellevue ───────────────────────────────────────
+# ─── Source: Dignity Memorial (replaces Cloudflare-blocked Legacy.com) ──
+
+class DignityMemorialObituariesSource(ObituarySource):
+    """
+    Dignity Memorial regional obituary listings.
+
+    Unlike Legacy.com (Cloudflare-blocked from Railway IPs), Dignity
+    Memorial serves public HTML pages with obituary data fully rendered
+    server-side — no JS, no bot challenge.
+
+    Pages hit:
+      /obituaries/bellevue-wa  — Eastside KC (Bellevue, Mercer Island,
+                                  Kirkland, Medina, Redmond, etc.)
+      /obituaries/seattle-wa   — Seattle + nearby
+
+    Listing format: 50 obits per page, each rendered as:
+      <h3>FIRST MIDDLE LAST</h3>
+      MM/DD/YYYY - MM/DD/YYYY   (birth - death)
+      <p>Excerpt text mentioning residence city...</p>
+      <a href="/obituaries/<city>-wa/first-last-<digits>">...</a>
+
+    We parse everything from the listing HTML — no detail fetches needed
+    for the data we care about (name, death_date, city, excerpt).
+
+    URL format: /obituaries/bellevue-wa/<slug>-<6+digit-id>
+    """
+
+    name = "dignity_memorial"
+    BASE = "https://www.dignitymemorial.com"
+    LISTING_PATHS = [
+        "/obituaries/bellevue-wa",  # Eastside KC
+        "/obituaries/seattle-wa",   # Seattle + west-side KC
+    ]
+    # Match obit detail URLs: /obituaries/<city>-wa/<slug>-<digits>
+    OBIT_URL_RE = re.compile(
+        r"^/obituaries/[a-z-]+-wa/([a-z0-9-]+?)-(\d{5,})/?$"
+    )
+    # Date range pattern in listings: "03/13/1927 - 04/18/2026"
+    DATE_RANGE_RE = re.compile(
+        r"(\d{1,2}/\d{1,2}/\d{4})\s*[-–—]\s*(\d{1,2}/\d{1,2}/\d{4})"
+    )
+
+    # For single-date obits: "Passed away MM/DD/YYYY"
+    SINGLE_DATE_RE = re.compile(r"(\d{1,2}/\d{1,2}/\d{4})")
+
+    def fetch(self, since: date, until: date) -> Iterator[ObituaryRecord]:
+        session = self._session()
+        seen_ids: set = set()
+
+        for listing_path in self.LISTING_PATHS:
+            url = self.BASE + listing_path
+            log.info(f"[{self.name}] fetching {url}")
+            try:
+                r = session.get(url, timeout=30)
+                r.raise_for_status()
+            except requests.HTTPError as e:
+                log.warning(f"[{self.name}] failed {url}: {e}")
+                continue
+
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            # The listing is structured as repeating card blocks. Each card
+            # has an <h3> with the name, a date range, an excerpt, and an
+            # <a> link to the detail page. We anchor off the <a> link since
+            # that's the most reliable marker.
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if href.startswith("http"):
+                    if not href.startswith(self.BASE):
+                        continue
+                    href = href[len(self.BASE):]
+                m = self.OBIT_URL_RE.match(href)
+                if not m:
+                    continue
+                slug, obit_id = m.group(1), m.group(2)
+                if obit_id in seen_ids:
+                    continue
+                seen_ids.add(obit_id)
+
+                # Extract name from the card. Dignity renders it inside
+                # an <h3> directly preceding the <a>. Walk up to find.
+                name_text = None
+                date_range_text = None
+                excerpt_text = None
+
+                # Strategy: find the closest ancestor containing both an
+                # <h3> (name) and the date text. Common container classes:
+                # .obit-card, .card, article, etc.
+                container = a
+                for _ in range(6):  # walk up at most 6 parents
+                    parent = container.parent
+                    if parent is None:
+                        break
+                    container = parent
+                    h3 = container.find("h3")
+                    if h3:
+                        name_text = h3.get_text(" ", strip=True)
+                        # Search the container for date range
+                        container_text = container.get_text(" ", strip=True)
+                        dm = self.DATE_RANGE_RE.search(container_text)
+                        if dm:
+                            date_range_text = (dm.group(1), dm.group(2))
+                        # Excerpt: grab first <p> inside container
+                        p = container.find("p")
+                        if p:
+                            excerpt_text = p.get_text(" ", strip=True)
+                        break
+
+                # Fallback to slug-derived name if no h3 found
+                if not name_text:
+                    name_text = " ".join(w.title() for w in slug.split("-"))
+
+                # Parse dates
+                birth_date = None
+                death_date = None
+                if date_range_text:
+                    try:
+                        birth_date = datetime.strptime(
+                            date_range_text[0], "%m/%d/%Y",
+                        ).date()
+                        death_date = datetime.strptime(
+                            date_range_text[1], "%m/%d/%Y",
+                        ).date()
+                    except ValueError:
+                        pass
+
+                # Filter by death date window (if we parsed one)
+                if death_date and not (since <= death_date <= until):
+                    continue
+
+                # Compute age if we have both dates
+                age = None
+                if birth_date and death_date:
+                    age = (death_date - birth_date).days // 365
+
+                # Extract city from excerpt
+                city = None
+                if excerpt_text:
+                    city = _extract_city(excerpt_text)
+                # If no city in excerpt, assume Bellevue-listing context
+                if not city and "bellevue-wa" in href:
+                    city = "Bellevue"
+
+                abs_url = self.BASE + href
+                yield ObituaryRecord(
+                    decedent_name=name_text,
+                    source_name=self.name,
+                    obit_url=abs_url,
+                    death_date=death_date,
+                    age_at_death=age,
+                    city=city,
+                    obit_text_excerpt=excerpt_text[:3000] if excerpt_text else None,
+                )
+
+                # Polite delay between same-listing obits (no detail fetch
+                # needed, so this is small)
+                time.sleep(0.05)
+
+
+# ─── Source: Legacy.com Bellevue (DEPRECATED — Cloudflare blocks Railway) ─
 
 class LegacyBellevueObituariesSource(ObituarySource):
     """
@@ -322,7 +494,8 @@ class ObituaryHarvester(BaseHarvester):
     def __init__(self, sources: Optional[list[ObituarySource]] = None):
         self.sources = sources or [
             SeattleTimesObituariesSource(),
-            LegacyBellevueObituariesSource(),
+            DignityMemorialObituariesSource(),
+            # LegacyBellevueObituariesSource() — deprecated, Cloudflare blocks Railway
         ]
 
     def harvest(

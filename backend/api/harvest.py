@@ -1604,7 +1604,9 @@ def diag_obituary_sources(
     import requests
     from bs4 import BeautifulSoup
     from backend.harvesters.obituary import (
-        SeattleTimesObituariesSource, LegacyBellevueObituariesSource,
+        SeattleTimesObituariesSource,
+        DignityMemorialObituariesSource,
+        LegacyBellevueObituariesSource,
     )
 
     since = date.today() - timedelta(days=since_days_ago)
@@ -1612,6 +1614,7 @@ def diag_obituary_sources(
 
     sources = [
         ("seattle_times", SeattleTimesObituariesSource()),
+        ("dignity_memorial", DignityMemorialObituariesSource()),
         ("legacy_bellevue", LegacyBellevueObituariesSource()),
     ]
     per_source: dict = {}
