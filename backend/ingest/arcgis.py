@@ -205,6 +205,43 @@ def _derive_owner_type(owner_name: str) -> str:
     ):
         return 'estate'
 
+    # Nonprofit — BEFORE llc so "FIRST BAPTIST CHURCH INC" correctly
+    # routes to nonprofit rather than matching INC first.
+    #
+    # Unambiguous keywords (SYNAGOGUE, MOSQUE, YMCA, etc.) match
+    # anywhere in the name. A few keywords (CHURCH, TEMPLE, PARISH,
+    # CHAPEL) can also be surnames — in assessor format "LASTNAME
+    # FIRST", surnames appear first. For those, we require either
+    # a preceding word ("FIRST PRESBYTERIAN CHURCH") OR the keyword
+    # followed by OF / IN ("CHURCH OF LATTER DAY SAINTS"). This
+    # avoids mis-classifying "CHURCH JOHN" / "TEMPLE JOHN" as
+    # organizations.
+    if re.search(
+        r'\bSYNAGOGUE\b|\bMOSQUE\b|'
+        r'\bCATHEDRAL\b|'
+        r'\bARCHDIOCESE\b|\bDIOCESE\b|'
+        r'\bYMCA\b|\bYWCA\b|\bYMHA\b|'
+        r'\bNONPROFIT\b|\bNON-PROFIT\b|\bNOT\s+FOR\s+PROFIT\b|'
+        r'\bCHARITY\b|\bCHARITABLE\b|'
+        r'\bMINISTRY\b|\bMINISTRIES\b|'
+        r'\bCONGREGATION\b|\bFELLOWSHIP\b',
+        on_norm,
+    ):
+        return 'nonprofit'
+    # Position-sensitive: require a preceding word OR keyword+OF/IN.
+    # KC assessor format is surname-first ("TEMPLE JOHN"), so
+    # organizations never appear as "JOHN TEMPLE" in production.
+    # Also match "TEMPLE + 2+ words" for Jewish congregation naming
+    # ("TEMPLE BETH AM", "TEMPLE DE HIRSCH SINAI") where TEMPLE leads
+    # the name.
+    if re.search(
+        r'\S+\s+(?:CHURCH|TEMPLE|PARISH|CHAPEL)\b|'
+        r'\b(?:CHURCH|TEMPLE|PARISH|CHAPEL)\s+(?:OF|IN)\b|'
+        r'\bTEMPLE\s+\S+\s+\S+',
+        on_norm,
+    ):
+        return 'nonprofit'
+
     if re.search(
         r'\b(?:LLC|LLP|LP|INC|CORP|LTD|'
         r'PARTNERSHIP|PARTNERS|'
