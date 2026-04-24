@@ -2517,6 +2517,53 @@ def diag_probe_url(
     }
 
 
+@router.get("/diag/fetch-text")
+def diag_fetch_text(
+    url: str,
+    x_admin_key: Optional[str] = Header(None),
+    max_chars: int = 80_000,
+):
+    """
+    Fetch a URL from Railway and return body text up to max_chars. For
+    inspecting HTML pages (e.g. KC eReal Property portal) whose full
+    content can't be seen through probe-url (400 char preview) or
+    fetch-json (JSON-only). Default 80KB; hard cap 500KB.
+    """
+    _require_admin(x_admin_key)
+    import requests
+
+    max_chars = min(max(max_chars, 1000), 500_000)
+
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    })
+
+    try:
+        r = s.get(url, timeout=60)
+    except Exception as e:
+        return {
+            "url":   url,
+            "error": f"{type(e).__name__}: {str(e)[:300]}",
+        }
+
+    body = r.text or ""
+    return {
+        "url":          url,
+        "status":       r.status_code,
+        "length":       len(body),
+        "content_type": r.headers.get("content-type"),
+        "body":         body[:max_chars],
+        "truncated":    len(body) > max_chars,
+    }
+
+
 @router.get("/diag/fetch-json")
 def diag_fetch_json(
     url: str,
