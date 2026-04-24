@@ -78,10 +78,22 @@ export default function ParcelDossier({ dossier, onClose }) {
   const ownerTag = ownerTypeLabel(p.owner_type);
   const signalLabel = p.signal_family ? p.signal_family.replace(/_/g, ' ') : null;
 
-  // Deep Signal is only available for investigated parcels (those with signals).
-  // The endpoint returns 409 for uninvestigated parcels — hide the button rather
-  // than letting the user click into an error.
-  const canGenerateDeepSignal = Boolean(inv?.signals?.length);
+  // Deep Signal availability:
+  //   - Legacy path: inv.signals populated by the SerpAPI investigator
+  //   - New path: harvester_matches populated by the raw_signal_matches
+  //     pipeline (obituary / probate / divorce / tax_foreclosure)
+  //   Either qualifies. If neither fires but the backend has an
+  //   investigations_v3 row from some other path, Deep Signal will still
+  //   try and succeed. If it genuinely has no investigation, we get
+  //   409 and surface it as deepSignalError.
+  const canGenerateDeepSignal =
+    Boolean(inv?.signals?.length) || harvesterMatches.length > 0;
+
+  // Six Letters availability — purely client-side generator, so we show
+  // it broadly for anything that's a plausible seller target. Gov and
+  // nonprofit owners hide the button (direct mail to fire stations /
+  // churches is inappropriate). See isSellerTargetType in lib/ownerType.
+  const canGenerateSixLetters = isSellerTargetType(p.owner_type);
 
   const handleGenerateDeepSignal = async () => {
     if (!dossier?.pin) return;
@@ -317,17 +329,23 @@ export default function ParcelDossier({ dossier, onClose }) {
           <ParcelStateTagsBlock tags={parcelStateTags} />
         )}
 
-        {/* Action buttons — Deep Signal + Six Letters.
-            Six Letters is hidden for gov / nonprofit owner types
-            since direct-mail seller cultivation is inappropriate for
-            them (see isSellerTargetType in lib/ownerType). */}
-        {canGenerateDeepSignal && (
+        {/* Action buttons — Deep Signal + Six Letters are each
+            independently shown or hidden. The ActionButtons container
+            renders when at least one applies; the individual buttons
+            inside are gated by showDeepSignal / showSixLetters props.
+            See isSellerTargetType in lib/ownerType for the Six Letters
+            guard (gov / nonprofit hidden). Deep Signal is shown
+            whenever the parcel has investigation signals OR harvester
+            matches (the latter is the modern pipeline — without this,
+            harvester-only parcels silently hid both buttons). */}
+        {(canGenerateDeepSignal || canGenerateSixLetters) && (
           <ActionButtons
             hasDeepSignal={Boolean(deepSignal)}
             deepSignalLoading={deepSignalLoading}
             onGenerateDeepSignal={handleGenerateDeepSignal}
             onOpenSixLetters={() => setSixLettersOpen(true)}
-            showSixLetters={isSellerTargetType(p.owner_type)}
+            showDeepSignal={canGenerateDeepSignal}
+            showSixLetters={canGenerateSixLetters}
           />
         )}
 
@@ -409,9 +427,10 @@ function ActionButtons({
   deepSignalLoading,
   onGenerateDeepSignal,
   onOpenSixLetters,
-  // showSixLetters defaults to true — callers only pass false to hide
-  // the button for gov / nonprofit owners where direct-mail seller
-  // cultivation is inappropriate.
+  // Each button is independently shown or hidden. Defaults to true
+  // preserve backward compatibility if a caller only passes the
+  // click handlers.
+  showDeepSignal = true,
   showSixLetters = true,
 }) {
   return (
@@ -420,30 +439,32 @@ function ActionButtons({
       display: 'flex',
       gap: 'var(--space-sm)',
     }}>
-      <button
-        onClick={onGenerateDeepSignal}
-        disabled={deepSignalLoading}
-        style={{
-          flex: 1,
-          padding: '10px 12px',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 12,
-          fontWeight: 600,
-          letterSpacing: '0.03em',
-          border: 'none',
-          borderRadius: 'var(--radius-md)',
-          background: 'var(--text)',
-          color: 'var(--bg-card)',
-          cursor: deepSignalLoading ? 'wait' : 'pointer',
-          opacity: deepSignalLoading ? 0.6 : 1,
-        }}
-      >
-        {deepSignalLoading
-          ? 'Generating…'
-          : hasDeepSignal
-            ? 'Refresh Deep Signal'
-            : 'Deep Signal'}
-      </button>
+      {showDeepSignal && (
+        <button
+          onClick={onGenerateDeepSignal}
+          disabled={deepSignalLoading}
+          style={{
+            flex: 1,
+            padding: '10px 12px',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: '0.03em',
+            border: 'none',
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--text)',
+            color: 'var(--bg-card)',
+            cursor: deepSignalLoading ? 'wait' : 'pointer',
+            opacity: deepSignalLoading ? 0.6 : 1,
+          }}
+        >
+          {deepSignalLoading
+            ? 'Generating…'
+            : hasDeepSignal
+              ? 'Refresh Deep Signal'
+              : 'Deep Signal'}
+        </button>
+      )}
       {showSixLetters && (
         <button
           onClick={onOpenSixLetters}
