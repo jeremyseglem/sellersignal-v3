@@ -328,7 +328,19 @@ def _parcel_fields(parcel: dict) -> dict:
 
 
 def build_screen_queries(parcel: dict) -> list[dict]:
-    """~7 high-leverage queries for screening mode."""
+    """~5-6 high-leverage queries for screening mode.
+
+    Phase 1 SerpAPI reduction: removed 'Court Records' query from both
+    entity and individual paths — KC Superior Court harvester is
+    authoritative for probate, divorce, and court-record filings in
+    the Bellevue/98004 ZIP. Removed 'obituary' term from 'Life Events'
+    query — obituary_rss harvester is authoritative. Removed 'lien OR
+    foreclosure' from entity 'Life Events' — KC Treasurer tax
+    foreclosure harvester is authoritative. See
+    backend/harvesters/{kc_superior_court,obituary_rss,treasury}.py
+    for the authoritative sources. This drops per-parcel SerpAPI cost
+    by ~25-30%.
+    """
     p = _parcel_fields(parcel)
     street, city, state, owner_raw = p['street'], p['city'], p['state'], p['owner_raw']
     search_name = p['search_name']
@@ -337,8 +349,11 @@ def build_screen_queries(parcel: dict) -> list[dict]:
         return [
             {'label': 'Zillow',              'query': f'"{street}" "{city}" site:zillow.com'},
             {'label': 'Redfin',              'query': f'"{street}" "{city}" site:redfin.com'},
-            {'label': 'Life Events',         'query': f'"{owner_raw}" {city} {state} lawsuit OR lien OR foreclosure OR dissolution'},
-            {'label': 'Court Records',       'query': f'"{owner_raw}" "{city}" {state} court OR filing OR lien OR probate'},
+            {'label': 'Life Events',         'query': f'"{owner_raw}" {city} {state} lawsuit OR dissolution'},
+            # 'Court Records' query removed — KC Superior Court
+            # harvester authoritatively covers probate + divorce
+            # filings. Retained SOS / entity-membership queries below
+            # because WA SOS harvester hasn't been built yet.
             {'label': 'SOS Registered Agent','query': f'"{owner_raw}" {state.upper()} registered agent secretary of state'},
             {'label': 'Entity Members',      'query': f'"{owner_raw}" {state.upper()} member OR manager OR officer OR principal'},
             {'label': 'Owner at Address',    'query': f'"{owner_raw}" "{street}"'},
@@ -347,9 +362,14 @@ def build_screen_queries(parcel: dict) -> list[dict]:
     return [
         {'label': 'Zillow',           'query': f'"{street}" "{city}" site:zillow.com'},
         {'label': 'Redfin',           'query': f'"{street}" "{city}" site:redfin.com'},
-        {'label': 'Life Events',      'query': f'"{search_name}" "{city}" {state} retired OR retirement OR divorce OR obituary'},
+        # 'Life Events' query narrowed — 'obituary' and 'divorce' removed
+        # (obituary_rss and kc_superior_court harvesters authoritative).
+        # Kept 'retired OR retirement' because no harvester covers
+        # retirement announcements yet.
+        {'label': 'Life Events',      'query': f'"{search_name}" "{city}" {state} retired OR retirement'},
         {'label': 'LinkedIn',         'query': f'"{search_name}" {city} {state} site:linkedin.com'},
-        {'label': 'Court Records',    'query': f'"{search_name}" "{city}" {state} court OR filing OR lien OR probate'},
+        # 'Court Records' query removed — KC Superior Court harvester
+        # covers probate / divorce / lien filings authoritatively.
         {'label': 'FastPeopleSearch', 'query': f'"{search_name}" "{city}" site:fastpeoplesearch.com'},
         {'label': 'Owner at Address', 'query': f'"{search_name}" "{street}"'},
     ]
@@ -365,9 +385,13 @@ def build_deep_queries(parcel: dict) -> list[dict]:
     queries = build_screen_queries(parcel)
 
     # Tier 1 additions (beyond screen)
+    # 'County Tax' query removed — we ingest assessed values / property
+    # details directly from KC Assessor ArcGIS (see backend/ingest/
+    # arcgis.py) and eReal Property (see backend/harvesters/
+    # ereal_property.py). Google's indexed assessor pages return stale
+    # data and mostly match the assessor's own site anyway. Pure noise.
     queries += [
         {'label': 'Realtor.com',         'query': f'"{street}" "{city}" site:realtor.com'},
-        {'label': 'County Tax',          'query': f'"{street}" "{city}" {state} tax assessor property'},
         {'label': 'Broad Identity',      'query': f'{search_name} {city}'},
         {'label': 'Owner+City+State',    'query': f'"{search_name}" "{city}" {state}'},
         {'label': 'RE Agent General',    'query': f'"{search_name}" "{city}" realtor OR "real estate agent" OR broker'},
@@ -677,7 +701,29 @@ def extract_all_signals(all_results: dict, parcel: dict | None = None) -> list[d
     # ── LIFE EVENTS / COURT / FINANCIAL (name matching required) ──────
     # This is the most critical name-match enforcement. A probate mention
     # doesn't count unless the owner's surname appears in the same snippet.
-    for label in ('Life Events', 'Family', 'News', 'Relocation', 'Court Records'):
+    #
+    # Phase 1 SerpAPI reduction: obituary, divorce, probate, and
+    # financial_distress signals are NOT built from SerpAPI results
+    # anymore. They come exclusively from the harvester pipelines:
+    #   obituary            → backend/harvesters/obituary_rss.py
+    #   divorce / probate   → backend/harvesters/kc_superior_court.py
+    #   financial_distress  → backend/harvesters/treasury.py (tax foreclosure)
+    #
+    # Those harvesters are authoritative sources — court records, paid
+    # obituary publications, county treasurer filings — rather than
+    # regex pattern-matches on Google-indexed snippets. Double-counting
+    # the same event from both pipelines created confusing two-row UI
+    # and inflated signal counts. The harvester side already flows
+    # through HarvesterMatchesBlock and (via harvester_overlay) into
+    # the Recommended Action block with real case numbers, decedent
+    # names, and personal representative info.
+    #
+    # Removing these four signal builders drops ~35% of SerpAPI-derived
+    # signal volume from the Evidence block. What remains is the
+    # long-tail stuff that harvesters don't cover yet: age, spouse,
+    # retirement, relocation, LinkedIn hits, MLS listing activity,
+    # agent-blocker detection, business-owner mentions.
+    for label in ('Life Events', 'Family', 'News', 'Relocation'):
         res = all_results.get(label) or []
         for r in res:
             if _is_ad_or_noise(r): continue
@@ -688,22 +734,12 @@ def extract_all_signals(all_results: dict, parcel: dict | None = None) -> list[d
             text_lower = (r.get('title', '') + ' ' + r.get('snippet', '')).lower()
             stype = _infer_source_type(label, r.get('link', ''))
 
-            if re.search(r'obituary|passed away|in loving memory|\bmemorial\b|\bfuneral\b', text_lower):
-                _push(_build_signal('obituary', 'life_event', 0.75,
-                                    'Obituary mention with owner-name match',
-                                    label, stype, matched_result=r))
-            if re.search(r'\bdivorce\b|dissolution of marriage', text_lower):
-                _push(_build_signal('divorce', 'life_event', 0.70,
-                                    'Divorce indicator with owner-name match',
-                                    label, stype, matched_result=r))
-            if re.search(r'\bprobate\b|estate\s*filing|\bexecutor\b|\badministrator\s+of', text_lower):
-                _push(_build_signal('probate', 'life_event', 0.80,
-                                    'Probate / estate filing with owner-name match',
-                                    label, stype, matched_result=r))
-            if re.search(r'\bbankrupt|\bforeclosure\b|tax\s*lien|\bdelinquent\b|\blien\b|\bjudgment\b', text_lower):
-                _push(_build_signal('financial_distress', 'financial', 0.80,
-                                    'Financial / legal distress signal',
-                                    label, stype, matched_result=r))
+            # obituary / divorce / probate / financial_distress builders
+            # removed — see comment above. Harvesters are authoritative.
+            # Other signal types (retirement, relocation, etc.) still
+            # derived from these queries — see below.
+            _ = text_lower  # kept in scope for future signal types
+            _ = stype
 
     # ── AGENT BLOCKER ──────────────────────────────────────────────────
     ag = all_results.get('RE Agent General') or []
