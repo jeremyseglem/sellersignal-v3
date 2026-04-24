@@ -306,9 +306,19 @@ export default function ParcelDossier({ dossier, onClose }) {
         {/* Property detail grid — shown for all parcels */}
         <PropertyGrid parcel={p} signalLabel={signalLabel} />
 
-        {/* Transfer history — if we have it */}
-        {(p.last_transfer_date || p.last_transfer_price) && (
-          <TransferHistoryBlock parcel={p} />
+        {/* Transfer history — if we have it. Arms-length fields
+            (from sales_history_v3 via the view) are passed separately
+            because they live at the dossier top-level, not inside
+            the parcels_v3 row. */}
+        {(p.last_transfer_date || p.last_transfer_price
+          || dossier.last_arms_length_price) && (
+          <TransferHistoryBlock
+            parcel={p}
+            armsLengthPrice={dossier.last_arms_length_price}
+            armsLengthDate={dossier.last_arms_length_date}
+            armsLengthBuyer={dossier.last_arms_length_buyer}
+            armsLengthSeller={dossier.last_arms_length_seller}
+          />
         )}
 
         {/* Why not selling — auto-generated read for non-actionable parcels */}
@@ -543,12 +553,46 @@ function DeepSignalBlock({ ds }) {
 }
 
 function PropertyGrid({ parcel, signalLabel }) {
-  const rows = [
-    { label: 'Cohort',          value: signalLabel || '—' },
-    { label: 'County assessed', value: parcel.total_value ? formatValue(parcel.total_value) : '—' },
-    { label: 'Tenure',          value: formatYears(parcel.tenure_years) },
-    { label: 'Property type',   value: parcel.prop_type || 'Residential' },
+  // Only include fields that have a value — blanks dilute the grid.
+  // Format the "prop_type" single-letter codes into something a user
+  // can read.
+  //
+  // KC Assessor PROPTYPE codes:
+  //   R = Residential, C = Commercial, K = Condo / Apartment,
+  //   A = Agricultural, I = Industrial
+  const propTypeLabel = (code) => {
+    if (!code) return null;
+    const c = String(code).toUpperCase();
+    return {
+      R: 'Residential',
+      C: 'Commercial',
+      K: 'Condo / Apt',
+      A: 'Agricultural',
+      I: 'Industrial',
+    }[c] || code;
+  };
+  const sqftFmt = (n) =>
+    n ? `${Number(n).toLocaleString()} sq ft` : null;
+  const acresFmt = (n) => {
+    if (n == null) return null;
+    return Number(n) < 0.1
+      ? `${Number(n).toFixed(2)} acre`
+      : `${Number(n).toFixed(2)} acres`;
+  };
+
+  const rowsRaw = [
+    { label: 'Cohort',         value: signalLabel || null },
+    { label: 'County assessed',value: parcel.total_value ? formatValue(parcel.total_value) : null },
+    { label: 'Land',           value: parcel.land_value ? formatValue(parcel.land_value) : null },
+    { label: 'Improvements',   value: parcel.building_value ? formatValue(parcel.building_value) : null },
+    { label: 'Tenure',         value: parcel.tenure_years != null ? formatYears(parcel.tenure_years) : null },
+    { label: 'Property type',  value: propTypeLabel(parcel.prop_type) },
+    { label: 'Sq ft',          value: sqftFmt(parcel.sqft) },
+    { label: 'Year built',     value: parcel.year_built ? String(parcel.year_built) : null },
+    { label: 'Lot size',       value: acresFmt(parcel.acres) },
   ];
+  const rows = rowsRaw.filter((r) => r.value != null && r.value !== '');
+
   return (
     <div style={{
       marginTop: 'var(--space-lg)',
@@ -582,8 +626,52 @@ function PropertyGrid({ parcel, signalLabel }) {
   );
 }
 
-function TransferHistoryBlock({ parcel }) {
-  const ago = parcel.tenure_years != null ? ` (${formatYears(parcel.tenure_years)} ago)` : '';
+function TransferHistoryBlock({
+  parcel,
+  armsLengthPrice,
+  armsLengthDate,
+  armsLengthBuyer,
+  armsLengthSeller,
+}) {
+  // Decide what the "primary" transfer line should show.
+  //
+  // If the recorded last_transfer has a real price, display it — that's
+  // what happened. If it's 0 (typical for trust transfers and quit-
+  // claims) BUT we have arms-length data, promote that to the primary
+  // line instead. Otherwise fall back to the recorded transfer with
+  // just a date.
+  //
+  // This mirrors the backend's HIGH EQUITY logic (see
+  // parcel_state_tags.derive_tags), so the agent sees the same cost
+  // basis the scoring uses.
+  const recordedPrice = parcel.last_transfer_price;
+  const hasRecordedPrice = recordedPrice && recordedPrice > 0;
+  const hasArmsLength = armsLengthPrice && armsLengthPrice > 0;
+
+  let primaryLabel, primaryDate, primaryPrice, subline;
+  if (hasArmsLength && !hasRecordedPrice) {
+    primaryLabel = 'Last arms-length sale';
+    primaryDate = armsLengthDate;
+    primaryPrice = armsLengthPrice;
+    // Note the recorded transfer as a subline so the agent understands
+    // why this differs from what shows on assessor sites
+    if (parcel.last_transfer_date) {
+      subline = `Most recent recorded transfer ${formatDate(parcel.last_transfer_date)} — no sale price (trust, quit-claim, or family transfer).`;
+    }
+  } else {
+    primaryLabel = 'Last sale';
+    primaryDate = parcel.last_transfer_date;
+    primaryPrice = hasRecordedPrice ? recordedPrice : null;
+    // If we ALSO have arms-length data from a different date, note it
+    if (hasArmsLength && armsLengthDate !== parcel.last_transfer_date) {
+      subline = `Last arms-length sale ${formatDate(armsLengthDate)} · ${formatValue(armsLengthPrice)}.`;
+    }
+  }
+
+  const ago = parcel.tenure_years != null
+    ? ` (${formatYears(parcel.tenure_years)} ago)`
+    : '';
+
   return (
     <div style={{
       marginTop: 'var(--space-lg)',
@@ -606,14 +694,38 @@ function TransferHistoryBlock({ parcel }) {
         marginTop: 'var(--space-xs)',
         fontFamily: 'var(--font-serif)',
       }}>
-        Last sale: {formatDate(parcel.last_transfer_date)}{ago}
-        {parcel.last_transfer_price && (
+        {primaryLabel}: {formatDate(primaryDate)}{ago}
+        {primaryPrice && (
           <span style={{ color: 'var(--text-secondary)' }}>
             {' · '}
-            {formatValue(parcel.last_transfer_price)}
+            {formatValue(primaryPrice)}
           </span>
         )}
       </div>
+      {subline && (
+        <div style={{
+          marginTop: 6,
+          fontSize: 12,
+          color: 'var(--text-tertiary)',
+          fontFamily: 'var(--font-sans)',
+          lineHeight: 1.4,
+        }}>
+          {subline}
+        </div>
+      )}
+      {hasArmsLength && (armsLengthBuyer || armsLengthSeller) && (
+        <div style={{
+          marginTop: 6,
+          fontSize: 12,
+          color: 'var(--text-tertiary)',
+          fontFamily: 'var(--font-sans)',
+          lineHeight: 1.4,
+        }}>
+          {armsLengthSeller && `Sold by ${armsLengthSeller}`}
+          {armsLengthSeller && armsLengthBuyer && ' → '}
+          {armsLengthBuyer && `bought by ${armsLengthBuyer}`}
+        </div>
+      )}
     </div>
   );
 }
