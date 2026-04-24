@@ -321,6 +321,16 @@ export default function ParcelDossier({ dossier, onClose }) {
           />
         )}
 
+        {/* Full sales history — the itemized list of every recorded
+            transfer the eReal Property harvester parsed for this
+            parcel. Surfaces divorces (Property Settlement reason),
+            estate distributions, trust moves, and arms-length
+            purchases. Collapsed by default when there are more than
+            3 rows to keep the dossier scan-able. */}
+        {(dossier.sales_history || []).length > 0 && (
+          <SalesHistoryBlock sales={dossier.sales_history} />
+        )}
+
         {/* Why not selling — auto-generated read for non-actionable parcels */}
         {why && (
           <WhyNotSellingBlock why={why} />
@@ -725,6 +735,185 @@ function TransferHistoryBlock({
           {armsLengthSeller && armsLengthBuyer && ' → '}
           {armsLengthBuyer && `bought by ${armsLengthBuyer}`}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Full sales history — every recorded transfer from the eReal Property
+// harvester, ordered most-recent-first. Each row shows date, price (or
+// "—" when $0), seller → buyer, and tags for non-arms-length reasons
+// (Property Settlement = divorce, Estate, Trust, Gift).
+//
+// The block is informational; no action buttons. It's read-only
+// narrative context for the agent ("this home changed hands in a
+// divorce") rather than a signal queue.
+//
+// Collapsed to the first 3 rows when there are more than 3; an
+// "Show all N transfers" toggle reveals the rest.
+// ──────────────────────────────────────────────────────────────────────
+function SalesHistoryBlock({ sales }) {
+  const [expanded, setExpanded] = useState(false);
+  const rows = Array.isArray(sales) ? sales : [];
+  if (rows.length === 0) return null;
+
+  const shown = expanded ? rows : rows.slice(0, 3);
+  const hiddenCount = rows.length - shown.length;
+
+  // Flag interesting reasons with a short uppercase badge. These are
+  // the non-arms-length reasons the parser records in sale_reason.
+  // Property Settlement = divorce, Estate Settlement = death transfer,
+  // Gift = family transfer, Trust = trust move.
+  const reasonBadge = (reason) => {
+    if (!reason) return null;
+    const r = String(reason).toUpperCase();
+    if (r.includes('PROPERTY SETTLEMENT')) return { text: 'DIVORCE',   color: 'var(--tone-sensitive)' };
+    if (r.includes('ESTATE'))              return { text: 'ESTATE',    color: 'var(--tone-sensitive)' };
+    if (r === 'GIFT')                      return { text: 'GIFT',      color: 'var(--text-tertiary)' };
+    if (r === 'TRUST')                     return { text: 'TRUST',     color: 'var(--text-tertiary)' };
+    if (r === 'NONE' || r === 'N/A')       return null;
+    return { text: r.slice(0, 20), color: 'var(--text-tertiary)' };
+  };
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      padding: 'var(--space-md)',
+      background: 'var(--bg)',
+      borderRadius: 'var(--radius-md)',
+    }}>
+      <div style={{
+        fontSize: 11,
+        color: 'var(--text-tertiary)',
+        fontWeight: 600,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        marginBottom: 'var(--space-sm)',
+      }}>
+        Sales history ({rows.length})
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {shown.map((s) => {
+          const badge = reasonBadge(s.sale_reason);
+          const hasPrice = s.sale_price && s.sale_price > 0;
+          return (
+            <div key={s.recording_number || `${s.sale_date}-${s.buyer_name}`}
+                 style={{
+                   fontSize: 12,
+                   fontFamily: 'var(--font-sans)',
+                   borderLeft: `2px solid ${s.is_arms_length ? 'var(--accent)' : 'var(--border)'}`,
+                   paddingLeft: 'var(--space-sm)',
+                 }}>
+              {/* Top line: date + price + badges */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}>
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                  {formatDate(s.sale_date)}
+                </span>
+                <span style={{
+                  color: hasPrice ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                  fontFamily: 'var(--font-display)',
+                }}>
+                  {hasPrice ? formatValue(s.sale_price) : '—'}
+                </span>
+                {badge && (
+                  <span style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: '0.08em',
+                    padding: '2px 6px',
+                    borderRadius: 3,
+                    background: badge.color,
+                    color: '#fff',
+                  }}>
+                    {badge.text}
+                  </span>
+                )}
+                {s.is_arms_length && hasPrice && (
+                  <span style={{
+                    fontSize: 9,
+                    fontWeight: 600,
+                    letterSpacing: '0.06em',
+                    color: 'var(--accent)',
+                    textTransform: 'uppercase',
+                  }}>
+                    Arms-length
+                  </span>
+                )}
+              </div>
+              {/* Second line: seller → buyer */}
+              {(s.seller_name || s.buyer_name) && (
+                <div style={{
+                  color: 'var(--text-tertiary)',
+                  marginTop: 2,
+                  lineHeight: 1.4,
+                }}>
+                  {s.seller_name && s.seller_name}
+                  {s.seller_name && s.buyer_name && ' → '}
+                  {s.buyer_name && s.buyer_name}
+                </div>
+              )}
+              {/* Third line (tertiary): instrument */}
+              {s.instrument && (
+                <div style={{
+                  color: 'var(--text-tertiary)',
+                  fontSize: 11,
+                  marginTop: 1,
+                  fontStyle: 'italic',
+                }}>
+                  {s.instrument}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {hiddenCount > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          style={{
+            marginTop: 'var(--space-sm)',
+            padding: '6px 10px',
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: '0.04em',
+            textTransform: 'uppercase',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+          }}
+        >
+          Show all {rows.length} transfers
+        </button>
+      )}
+      {expanded && rows.length > 3 && (
+        <button
+          onClick={() => setExpanded(false)}
+          style={{
+            marginTop: 'var(--space-sm)',
+            padding: '6px 10px',
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: '0.04em',
+            textTransform: 'uppercase',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+          }}
+        >
+          Collapse
+        </button>
       )}
     </div>
   );

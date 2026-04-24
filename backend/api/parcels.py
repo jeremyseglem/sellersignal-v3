@@ -151,6 +151,28 @@ async def get_parcel(pin: str):
         except Exception:
             al_row = {}
 
+        # Full sales history — all transfers the eReal Property harvester
+        # parsed for this parcel, ordered most-recent-first. Includes
+        # is_arms_length flag set at parse time. Parcels not yet
+        # harvested return []. The UI renders a "Sales history" block
+        # when this list is non-empty; it surfaces divorces (Property
+        # Settlement reason), estate distributions, trust moves, and
+        # genuine arms-length purchases for narrative context.
+        sales_history: list = []
+        try:
+            sales_res = (supa.table('sales_history_v3')
+                         .select('recording_number, excise_number, '
+                                 'sale_date, sale_price, seller_name, '
+                                 'buyer_name, instrument, sale_reason, '
+                                 'is_arms_length')
+                         .eq('pin', pin)
+                         .order('sale_date', desc=True)
+                         .limit(20)
+                         .execute())
+            sales_history = sales_res.data or []
+        except Exception:
+            sales_history = []
+
         response = {
             'pin':          pin,
             'parcel':       parcel,
@@ -173,6 +195,8 @@ async def get_parcel(pin: str):
             'last_arms_length_date':   al_row.get('last_arms_length_date'),
             'last_arms_length_buyer':  al_row.get('last_arms_length_buyer'),
             'last_arms_length_seller': al_row.get('last_arms_length_seller'),
+            # Full sales history — empty list if parcel not harvested yet.
+            'sales_history':       sales_history,
         }
 
         # The merged recommended_action reflects the highest-pressure of
