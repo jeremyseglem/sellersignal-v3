@@ -186,12 +186,11 @@ def _derive_owner_type(owner_name: str) -> str:
     ):
         return 'gov'
 
-    if re.search(
-        r'\bESTATE\b|\bHEIRS\b|\bDECEASED\b|\bSURVIVOR\b',
-        on_norm,
-    ):
-        return 'estate'
-
+    # Trust BEFORE estate because many estate-like tokens ("SURVIVOR")
+    # appear inside explicit trust names ("SURVIVORS TRUST"). If both
+    # TRUST and SURVIVOR show up, the structure is a trust, not an
+    # informal estate. Also covers -TTEE / LT+TTEE / REV LVG TR
+    # abbreviations the assessor uses.
     if re.search(
         r'\bTRUST\b|\bTRSTEE\b|\bTRUSTEE\b|\bTTEE\b|\bTTEES\b|'
         r'\bLIVING\s*TR\b|\bFAMILY\s*TR\b|\bLT\s*\+\s*TTEE\b|'
@@ -199,6 +198,12 @@ def _derive_owner_type(owner_name: str) -> str:
         on_norm,
     ):
         return 'trust'
+
+    if re.search(
+        r'\bESTATE\b|\bHEIRS\b|\bDECEASED\b|\bSURVIVOR\b',
+        on_norm,
+    ):
+        return 'estate'
 
     if re.search(
         r'\b(?:LLC|LLP|LP|INC|CORP|LTD|'

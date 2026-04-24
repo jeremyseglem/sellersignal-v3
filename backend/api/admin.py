@@ -563,18 +563,45 @@ async def reclassify_owner_type(
         if offset > 100_000:
             break  # safety
 
+    # Never-downgrade guardrail. Some rows have owner_type set to a
+    # high-specificity category (llc / trust / estate / gov) via a
+    # previous hand-curation or a different loader that this function
+    # doesn't know about. The current classifier may not reproduce
+    # those classifications (e.g. 'BUCHAN BROS INVESTMENT PROPERTIES'
+    # has no LLC suffix but was marked llc at some point; churches
+    # were bucketed as 'gov' historically). We only apply changes that
+    # are strict upgrades:
+    #   - None -> anything                          (initial fill)
+    #   - 'individual' -> anything stronger         (upgrade)
+    #   - 'unknown' -> anything stronger            (upgrade)
+    # and block:
+    #   - any high-specificity -> 'individual'      (downgrade)
+    #   - any high-specificity -> 'unknown'         (downgrade)
+    #   - 'gov' -> anything except upgrades to 'nonprofit' (not yet implemented)
+    # Trust<->estate cross is allowed because the TRUST vs SURVIVORS-TRUST
+    # ordering fix correctly re-reads the data.
+    HIGHER_SPECIFICITY = {'llc', 'trust', 'estate', 'gov', 'nonprofit'}
     changes: list[dict] = []
+    skipped_downgrades = 0
     for r in all_rows:
         name = r.get('owner_name_raw') or r.get('owner_name') or ''
         new_type = _derive_owner_type(name)
         old_type = r.get('owner_type')
-        if new_type != old_type:
-            changes.append({
-                'pin':      r['pin'],
-                'name':     name,
-                'old_type': old_type,
-                'new_type': new_type,
-            })
+        if new_type == old_type:
+            continue
+
+        # Guardrail: skip downgrades
+        if (old_type in HIGHER_SPECIFICITY
+                and new_type in ('individual', 'unknown')):
+            skipped_downgrades += 1
+            continue
+
+        changes.append({
+            'pin':      r['pin'],
+            'name':     name,
+            'old_type': old_type,
+            'new_type': new_type,
+        })
 
     # Summarize the transitions (e.g. {'individual->llc': 150,
     # 'gov->llc': 5, 'trust->individual': 0, ...}) so operators can
@@ -587,12 +614,13 @@ async def reclassify_owner_type(
 
     if dry_run:
         return {
-            'zip_code':      zip_code,
-            'examined':      len(all_rows),
-            'would_change':  len(changes),
-            'transitions':   dict(transitions.most_common()),
-            'sample':        changes[:30],
-            'dry_run':       True,
+            'zip_code':           zip_code,
+            'examined':           len(all_rows),
+            'would_change':       len(changes),
+            'skipped_downgrades': skipped_downgrades,
+            'transitions':        dict(transitions.most_common()),
+            'sample':             changes[:30],
+            'dry_run':            True,
         }
 
     # Apply in batches of 200 — many small updates, one per row
@@ -610,10 +638,12 @@ async def reclassify_owner_type(
                 print(f"[reclassify] {ch['pin']}: {e}")
 
     return {
-        'zip_code':   zip_code,
-        'examined':   len(all_rows),
-        'changed':    applied,
-        'errors':     errors,
-        'sample':     changes[:10],
-        'dry_run':    False,
+        'zip_code':           zip_code,
+        'examined':           len(all_rows),
+        'changed':            applied,
+        'skipped_downgrades': skipped_downgrades,
+        'errors':             errors,
+        'transitions':        dict(transitions.most_common()),
+        'sample':             changes[:10],
+        'dry_run':            False,
     }
