@@ -28,6 +28,11 @@ wheels/
 # (until we configure Railway to build it during deploy)
 !frontend/dist/
 !frontend/dist/**
+# Exception: frontend/src/lib/ holds shared frontend modules
+# (ownerType.js, sixLetters.js). These got accidentally caught by the
+# Python 'lib/' gitignore rule on line 20.
+!frontend/src/lib/
+!frontend/src/lib/**
 *.egg-info/
 .installed.cfg
 *.egg
