@@ -142,31 +142,73 @@ def _derive_owner_type(owner_name: str) -> str:
     Known previous bug: dotted entity abbreviations (L.L.C., L.P., L.L.P.)
     and bare LLP / LP were missed, causing LLP-named entities like
     "BELLEVUE I LLP WALLACE/SCOTT" to be classified as 'individual' and
-    zeroing out the MATURE LLC parcel-state tag. Fixed by:
-      1. Stripping periods from the uppercased name before regex match
-         so L.L.C. collapses to LLC and gets caught by the LLC branch.
-      2. Adding LLP and LP to the entity-suffix alternation.
-      3. Adding the spelled-out form "LIMITED LIABILITY COMPANY".
+    zeroing out the MATURE LLC parcel-state tag.
+
+    Second pass (verified against 818 production 98004 mismatches):
+      - TTEE / TTEES is a common assessor abbreviation for 'trustee';
+        names ending "-TTEE" or "-TTEES" are trusts.
+      - Entity abbreviations show up with internal spaces in assessor
+        data: "L L C", "L L P", "L P" — normalize those by collapsing
+        runs of single capital letters separated by whitespace into
+        concatenated tokens.
+      - Government entities (CITY OF / COUNTY OF / US OF AMERICA /
+        SCHOOL DIST / WATER DIST / PUBLIC UTILITY) have their own
+        classification — keep them separate from 'individual' so they
+        don't end up on seller-intent briefings.
+      - "LT+TTEE" and "-LT+TTEE" patterns (life-estate + trustee) also
+        indicate a trust arrangement.
+
+    Fix: strip periods, collapse "L L C" → "LLC" (and variants), add
+    TTEE/TTEES/LT+TTEE trust patterns, recognize government entities,
+    add LLP/LP and dotted variants.
     """
     if not owner_name:
         return 'unknown'
     on = owner_name.upper()
-    # Strip periods so L.L.C. -> LLC, L.P. -> LP, etc. Stripping after
-    # uppercase to keep the transform idempotent.
-    on_nodots = on.replace('.', '')
-    if re.search(r'\bESTATE\b|\bHEIRS\b|\bDECEASED\b|\bSURVIVOR\b', on_nodots):
+
+    # Normalize dotted forms: L.L.C. -> LLC, L.P. -> LP, etc.
+    on_norm = on.replace('.', '')
+    # Normalize space-separated single-letter abbreviations: "L L C" ->
+    # "LLC", "L L P" -> "LLP", "L P" -> "LP". Run the regex twice since
+    # a single pass can leave "A B C D E" partially collapsed.
+    #   Matches two-or-more single letters separated by whitespace.
+    on_norm = re.sub(r'\b([A-Z])\s+([A-Z])\s+([A-Z])\b', r'\1\2\3', on_norm)
+    on_norm = re.sub(r'\b([A-Z])\s+([A-Z])\b', r'\1\2', on_norm)
+
+    # Government entities first — before trust/llc so we don't mis-route
+    # "CITY OF BELLEVUE" into individual or llc on later rules.
+    if re.search(
+        r'\b(?:CITY\s+OF|COUNTY\s+OF|STATE\s+OF|US\s+OF\s+AMERICA|'
+        r'PORT\s+OF|UNITED\s+STATES|FEDERAL|MUNICIPAL|'
+        r'SCHOOL\s+DIST(?:RICT)?|PUBLIC\s+UTIL|WATER\s+DIST|'
+        r'PARK\s+DIST|FIRE\s+DIST|HOUSING\s+AUTH)\b',
+        on_norm,
+    ):
+        return 'gov'
+
+    if re.search(
+        r'\bESTATE\b|\bHEIRS\b|\bDECEASED\b|\bSURVIVOR\b',
+        on_norm,
+    ):
         return 'estate'
-    if re.search(r'\bTRUST\b|\bTRSTEE\b|\bTRUSTEE\b|\bLIVING\s*TR\b|\bFAMILY\s*TR\b',
-                 on_nodots):
+
+    if re.search(
+        r'\bTRUST\b|\bTRSTEE\b|\bTRUSTEE\b|\bTTEE\b|\bTTEES\b|'
+        r'\bLIVING\s*TR\b|\bFAMILY\s*TR\b|\bLT\s*\+\s*TTEE\b|'
+        r'-TTEE\b|-TTEES\b|-LT\b',
+        on_norm,
+    ):
         return 'trust'
+
     if re.search(
         r'\b(?:LLC|LLP|LP|INC|CORP|LTD|'
         r'PARTNERSHIP|PARTNERS|'
         r'HOLDINGS|GROUP|ENTERPRISES?|'
         r'LIMITED\s+LIABILITY\s+COMPANY)\b',
-        on_nodots,
+        on_norm,
     ):
         return 'llc'
+
     return 'individual'
 
 
