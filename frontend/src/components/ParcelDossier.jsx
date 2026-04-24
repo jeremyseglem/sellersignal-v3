@@ -314,9 +314,20 @@ export default function ParcelDossier({ dossier, onClose }) {
             tax_foreclosure signals that fired on this pin. Shown when ANY
             match exists; the block also surfaces a "converged" indicator
             at the top when 2+ strict signals hit the same pin. */}
-        {harvesterMatches.length > 0 && (
-          <HarvesterMatchesBlock
-            matches={harvesterMatches}
+        {/* Unified Evidence panel — merges harvester_matches (from the
+            free authoritative pipelines: KC Superior Court, obituary
+            RSS, KC Treasurer) with inv.signals (from the SerpAPI
+            investigator, where used for the remaining signal types
+            harvesters don't cover yet: listings, LinkedIn, retirement).
+            Replaces the previous split HarvesterMatchesBlock + separate
+            Evidence (SignalsBlock) that showed overlapping information
+            in two places. Ranked: harvester-strict → harvester-weak →
+            serp-high → serp-medium → serp-low. Converged badge when
+            2+ distinct harvester signal types hit the same pin. */}
+        {(harvesterMatches.length > 0 || (inv?.signals?.length ?? 0) > 0) && (
+          <EvidenceBlock
+            harvesterMatches={harvesterMatches}
+            serpSignals={inv?.signals || []}
             convergence={hasConvergence}
           />
         )}
@@ -402,10 +413,8 @@ export default function ParcelDossier({ dossier, onClose }) {
           <WhyNotSellingBlock why={why} />
         )}
 
-        {/* Investigation signals, if present */}
-        {inv?.signals?.length > 0 && (
-          <SignalsBlock signals={inv.signals} />
-        )}
+        {/* (Investigation signals are rendered upstream via the
+            unified EvidenceBlock along with harvester matches.) */}
       </div>
 
       {/* Six Letters modal */}
@@ -1118,38 +1127,151 @@ function WhyNotSellingBlock({ why }) {
   );
 }
 
-function HarvesterMatchesBlock({ matches, convergence }) {
-  // Map backend signal types to readable labels + soft color cues.
-  // Keep all four variants here (probate, obituary, divorce, tax_foreclosure).
-  const signalMeta = {
-    probate:          { label: 'Probate filing',    family: 'death_inheritance' },
-    obituary:         { label: 'Obituary match',    family: 'death_inheritance' },
-    divorce:          { label: 'Divorce filing',    family: 'divorce_unwinding' },
-    tax_foreclosure:  { label: 'Tax foreclosure',   family: 'financial_stress' },
+// ──────────────────────────────────────────────────────────────────────
+// EvidenceBlock — unified panel replacing the old split of
+// HarvesterMatchesBlock (harvester_matches) + SignalsBlock (inv.signals).
+//
+// Sources:
+//   - harvesterMatches[]: from the free authoritative pipelines
+//     (KC Superior Court probate/divorce, obituary RSS, KC Treasurer
+//     tax foreclosure). Has structured party_names, document_ref,
+//     event_date, match_strength (strict/weak).
+//   - serpSignals[]: from the legacy SerpAPI investigator, only for
+//     the signal types harvesters don't cover yet (previously_listed,
+//     linkedin_found, retirement, age_found, etc.). Has source_url,
+//     source_title, source_snippet, trust (high/medium/low).
+//
+// Normalization: every row becomes { label, authority, detail, party,
+//     when, ref, url, trust } regardless of source pipeline. The UI
+//     renders a single consistent list.
+//
+// Ordering:
+//   1. Harvester STRICT matches (authoritative + high-confidence name match)
+//   2. Harvester WEAK matches
+//   3. SerpAPI HIGH trust
+//   4. SerpAPI MEDIUM trust
+//   5. SerpAPI LOW trust
+//
+// Deduplication: serp signals whose type matches a harvester match
+// (probate, obituary, divorce, financial_distress) are dropped from
+// the serp side — the harvester row is authoritative. Phase 1
+// already removed these serp builders at the source; this is
+// belt-and-suspenders for any cached legacy signals.
+//
+// Convergence: when `convergence` is true (2+ distinct harvester
+// signal types on the same pin), show a CONVERGED badge at the top.
+// Example: probate + obituary for the same decedent is a strong
+// converged signal of an imminent sale.
+// ──────────────────────────────────────────────────────────────────────
+function EvidenceBlock({ harvesterMatches, serpSignals, convergence }) {
+  // Harvester signal types that take precedence over their serp
+  // equivalents. If a harvester match exists for one of these types,
+  // serp signals of the same type are suppressed.
+  const HARVESTER_PRIMARY_TYPES = new Set([
+    'probate', 'obituary', 'divorce', 'tax_foreclosure', 'financial_distress',
+  ]);
+
+  // Map backend signal types to readable labels.
+  const harvesterLabel = {
+    probate:         'Probate filing',
+    obituary:        'Obituary match',
+    divorce:         'Divorce filing',
+    tax_foreclosure: 'Tax foreclosure',
   };
 
-  // Format the primary matched party from the signal's party_names array.
-  // Role priority: decedent > petitioner > party > parcel_only > first entry.
-  const renderParty = (parties) => {
+  // SerpAPI signal types → labels. Deliberately does NOT include the
+  // types that harvesters authoritatively cover.
+  const serpLabel = (t) => {
+    if (!t) return '';
+    return String(t).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  // Render the primary party name from a harvester match's
+  // party_names array. Role priority: decedent > petitioner > party >
+  // parcel_only > first entry.
+  const renderHarvesterParty = (parties) => {
     if (!Array.isArray(parties) || parties.length === 0) return null;
-    const byRolePreference = ['decedent', 'petitioner', 'party', 'parcel_only'];
-    for (const role of byRolePreference) {
+    for (const role of ['decedent', 'petitioner', 'party', 'parcel_only']) {
       const hit = parties.find((p) => p && (p.role || '').toLowerCase() === role);
       if (hit && hit.raw) return hit.raw;
     }
     return parties[0]?.raw || null;
   };
 
-  const formatEventDate = (iso) => {
+  // Format ISO date to a friendly short date.
+  const formatWhen = (iso) => {
     if (!iso) return null;
     try {
       const d = new Date(iso);
       if (isNaN(d)) return iso;
-      return d.toLocaleDateString(undefined, {
-        year: 'numeric', month: 'short', day: 'numeric',
-      });
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     } catch { return iso; }
   };
+
+  // Extract hostname for SerpAPI source links.
+  const hostOf = (url) => {
+    if (!url) return null;
+    try { return new URL(url).hostname.replace(/^www\./, ''); }
+    catch { return url; }
+  };
+
+  // Normalize both pipelines to a common row shape.
+  const harvesterRows = (harvesterMatches || []).map((m) => {
+    const strong = m.match_strength === 'strict';
+    return {
+      source:      'harvester',
+      label:       harvesterLabel[m.signal_type] || serpLabel(m.signal_type),
+      type:        m.signal_type,
+      authority:   strong ? 'STRICT' : 'WEAK',
+      authorityColor: strong ? 'var(--accent)' : 'var(--text-tertiary)',
+      party:       renderHarvesterParty(m.party_names),
+      when:        formatWhen(m.event_date),
+      sourceType:  m.source_type,
+      ref:         m.document_ref,
+      url:         m.source_url,  // when present (e.g., obit RSS link)
+      // Sort key: lower = higher priority. Strict = 0, weak = 1.
+      sortRank:    strong ? 0 : 1,
+      key:         `h-${m.signal_type}-${m.document_ref || m.event_date || Math.random()}`,
+    };
+  });
+
+  // Keep only serp signals whose types aren't covered by harvesters.
+  // Already minimal after Phase 1, but this is a safety net in case
+  // old inv.signals rows linger in the DB.
+  const dedupedSerpSignals = (serpSignals || []).filter(
+    (s) => s?.type && !HARVESTER_PRIMARY_TYPES.has(s.type)
+  );
+
+  const serpRows = dedupedSerpSignals.map((s, i) => {
+    const trustRank = { high: 2, medium: 3, low: 4 }[s.trust] ?? 4;
+    const trustColor = {
+      high:   'var(--hold)',
+      medium: 'var(--accent)',
+      low:    'var(--text-tertiary)',
+    }[s.trust] || 'var(--text-tertiary)';
+    return {
+      source:      'serp',
+      label:       serpLabel(s.type),
+      type:        s.type,
+      authority:   (s.trust || 'LOW').toUpperCase(),
+      authorityColor: trustColor,
+      // SerpAPI signals carry detail (human-readable explanation) +
+      // source_title (actual page title, e.g., obituary headline) +
+      // source_snippet (matched text excerpt).
+      detail:      s.detail,
+      sourceTitle: s.source_title,
+      sourceSnippet: s.source_snippet,
+      url:         s.source_url,
+      sortRank:    trustRank,
+      key:         `s-${s.type}-${i}`,
+    };
+  });
+
+  const rows = [...harvesterRows, ...serpRows].sort(
+    (a, b) => a.sortRank - b.sortRank
+  );
+
+  if (rows.length === 0) return null;
 
   return (
     <div style={{
@@ -1172,7 +1294,7 @@ function HarvesterMatchesBlock({ matches, convergence }) {
           letterSpacing: '0.1em',
           textTransform: 'uppercase',
         }}>
-          Active signals ({matches.length})
+          Evidence ({rows.length})
         </div>
         {convergence && (
           <span style={{
@@ -1189,80 +1311,148 @@ function HarvesterMatchesBlock({ matches, convergence }) {
           </span>
         )}
       </div>
-      <ul style={{ listStyle: 'none' }}>
-        {matches.map((m, i) => {
-          const meta  = signalMeta[m.signal_type] || { label: m.signal_type, family: null };
-          const party = renderParty(m.party_names);
-          const when  = formatEventDate(m.event_date);
-          const strong = m.match_strength === 'strict';
-          return (
-            <li
-              key={`${m.signal_type}-${m.document_ref || i}`}
-              style={{
-                padding: 'var(--space-sm) 0',
-                borderBottom: i < matches.length - 1 ? '1px solid var(--border)' : 'none',
-                fontSize: 12,
-              }}
-            >
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'baseline',
-                gap: 'var(--space-sm)',
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {rows.map((r, i) => (
+          <li
+            key={r.key}
+            style={{
+              padding: 'var(--space-sm) 0',
+              borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none',
+              fontSize: 12,
+            }}
+          >
+            {/* Top line: label + authority badge */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'baseline',
+              gap: 'var(--space-sm)',
+            }}>
+              <span style={{
+                fontWeight: 600,
+                color: 'var(--text)',
+                letterSpacing: '0.02em',
               }}>
-                <span style={{ fontWeight: 500, color: 'var(--text)' }}>
-                  {meta.label}
-                </span>
-                <span style={{
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: '0.08em',
-                  padding: '1px 5px',
-                  borderRadius: 3,
-                  background: strong ? 'var(--accent)' : 'transparent',
-                  color:       strong ? 'white'        : 'var(--text-tertiary)',
-                  border:      strong ? 'none'         : '1px solid var(--text-tertiary)',
-                  fontFamily: 'var(--font-sans)',
-                }}>
-                  {strong ? 'STRICT' : 'WEAK'}
-                </span>
+                {r.label}
+              </span>
+              <span style={{
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                padding: '1px 5px',
+                borderRadius: 3,
+                background: r.source === 'harvester' && r.authority === 'STRICT'
+                  ? r.authorityColor : 'transparent',
+                color: r.source === 'harvester' && r.authority === 'STRICT'
+                  ? 'white' : r.authorityColor,
+                border: r.source === 'harvester' && r.authority === 'STRICT'
+                  ? 'none' : `1px solid ${r.authorityColor}`,
+                fontFamily: 'var(--font-sans)',
+              }}>
+                {r.authority}
+              </span>
+            </div>
+
+            {/* Harvester-specific: party name in italic serif */}
+            {r.party && (
+              <div style={{
+                color: 'var(--text-secondary)',
+                marginTop: 3,
+                fontFamily: 'var(--font-serif)',
+                fontStyle: 'italic',
+                lineHeight: 1.4,
+              }}>
+                {r.party}
               </div>
-              {party && (
-                <div style={{
-                  color: 'var(--text-secondary)',
-                  marginTop: 2,
-                  fontFamily: 'var(--font-serif)',
-                  fontStyle: 'italic',
-                }}>
-                  {party}
-                </div>
-              )}
+            )}
+
+            {/* Harvester: when + source type */}
+            {(r.when || r.sourceType) && (
               <div style={{
                 display: 'flex',
                 gap: 'var(--space-md)',
-                marginTop: 2,
+                marginTop: 3,
                 fontSize: 11,
                 color: 'var(--text-tertiary)',
               }}>
-                {when && <span>{when}</span>}
-                {m.source_type && <span>{m.source_type.replace(/_/g, ' ')}</span>}
+                {r.when && <span>{r.when}</span>}
+                {r.sourceType && <span>{r.sourceType.replace(/_/g, ' ')}</span>}
               </div>
-              {m.document_ref && (
-                <div style={{
-                  marginTop: 2,
-                  fontSize: 10,
-                  color: 'var(--text-tertiary)',
-                  fontFamily: 'monospace',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {m.document_ref}
-                </div>
-              )}
-            </li>
-          );
-        })}
+            )}
+
+            {/* Harvester: case/document reference in monospace */}
+            {r.ref && (
+              <div style={{
+                marginTop: 2,
+                fontSize: 10,
+                color: 'var(--text-tertiary)',
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {r.ref}
+              </div>
+            )}
+
+            {/* SerpAPI-specific: human-readable detail fallback */}
+            {r.detail && (
+              <div style={{
+                color: 'var(--text-secondary)',
+                marginTop: 3,
+                fontFamily: 'var(--font-serif)',
+                lineHeight: 1.4,
+              }}>
+                {r.detail}
+              </div>
+            )}
+
+            {/* SerpAPI-specific: matched page title in italic quotes */}
+            {r.sourceTitle && (
+              <div style={{
+                color: 'var(--text)',
+                marginTop: 4,
+                fontFamily: 'var(--font-serif)',
+                fontStyle: 'italic',
+                lineHeight: 1.4,
+              }}>
+                "{r.sourceTitle}"
+              </div>
+            )}
+
+            {/* SerpAPI-specific: matched snippet text */}
+            {r.sourceSnippet && (
+              <div style={{
+                color: 'var(--text-tertiary)',
+                marginTop: 3,
+                fontSize: 11,
+                lineHeight: 1.4,
+              }}>
+                {r.sourceSnippet}
+              </div>
+            )}
+
+            {/* Universal: clickable source link when available */}
+            {r.url && (
+              <div style={{ marginTop: 4 }}>
+                <a
+                  href={r.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    color: 'var(--accent)',
+                    fontSize: 11,
+                    textDecoration: 'none',
+                    borderBottom: '1px dotted var(--accent)',
+                  }}
+                >
+                  {hostOf(r.url) || 'view source'} →
+                </a>
+              </div>
+            )}
+          </li>
+        ))}
       </ul>
     </div>
   );
@@ -1333,149 +1523,3 @@ function ParcelStateTagsBlock({ tags }) {
 }
 
 
-function SignalsBlock({ signals }) {
-  const trustColor = {
-    high:   'var(--hold)',
-    medium: 'var(--accent)',
-    low:    'var(--text-tertiary)',
-  };
-
-  // Human-readable type labels. The raw signal types are snake_case
-  // developer strings; render them as capitalized words.
-  const typeLabel = (t) => {
-    if (!t) return '';
-    return String(t).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  };
-
-  // Extract a hostname from a URL for compact source attribution.
-  // Falls back to the raw URL when hostname parsing fails.
-  const hostOf = (url) => {
-    if (!url) return null;
-    try {
-      const u = new URL(url);
-      // Strip leading www. since it's visual noise
-      return u.hostname.replace(/^www\./, '');
-    } catch { return url; }
-  };
-
-  return (
-    <div style={{ marginTop: 'var(--space-lg)' }}>
-      <div style={{
-        fontSize: 11,
-        color: 'var(--text-tertiary)',
-        fontWeight: 600,
-        letterSpacing: '0.08em',
-        textTransform: 'uppercase',
-        marginBottom: 'var(--space-sm)',
-      }}>
-        Evidence ({signals.length})
-      </div>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {signals.map((s, i) => {
-          const host = hostOf(s.source_url);
-          return (
-            <li key={i} style={{
-              padding: 'var(--space-sm) 0',
-              borderBottom: i < signals.length - 1
-                ? '1px solid var(--border)'
-                : 'none',
-              fontSize: 12,
-            }}>
-              {/* Top line: type + trust badge */}
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'baseline',
-                gap: 'var(--space-sm)',
-              }}>
-                <span style={{
-                  fontWeight: 600,
-                  color: 'var(--text)',
-                  fontSize: 12,
-                  letterSpacing: '0.02em',
-                }}>
-                  {typeLabel(s.type)}
-                </span>
-                <span style={{
-                  fontSize: 10,
-                  color: trustColor[s.trust] || 'var(--text-tertiary)',
-                  fontWeight: 700,
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
-                }}>
-                  {s.trust}
-                </span>
-              </div>
-
-              {/* Generic detail — kept as the fallback one-liner */}
-              {s.detail && (
-                <div style={{
-                  color: 'var(--text-secondary)',
-                  marginTop: 3,
-                  fontFamily: 'var(--font-serif)',
-                  lineHeight: 1.4,
-                }}>
-                  {s.detail}
-                </div>
-              )}
-
-              {/* Source title — the actual headline of the matched
-                  obit / probate filing / news / listing. This is the
-                  crucial disambiguator: without it, 'probate with
-                  owner-name match' is meaningless noise; WITH it, the
-                  agent sees 'IN RE WILLIAM S MICHAEL' and knows
-                  whose estate this is. */}
-              {s.source_title && (
-                <div style={{
-                  color: 'var(--text)',
-                  marginTop: 4,
-                  fontFamily: 'var(--font-serif)',
-                  fontStyle: 'italic',
-                  lineHeight: 1.4,
-                }}>
-                  "{s.source_title}"
-                </div>
-              )}
-
-              {/* Matched snippet — the specific text that fired the
-                  regex. Often contains the decedent name, filing date,
-                  or other specific context the agent needs. */}
-              {s.source_snippet && (
-                <div style={{
-                  color: 'var(--text-tertiary)',
-                  marginTop: 3,
-                  fontSize: 11,
-                  lineHeight: 1.4,
-                }}>
-                  {s.source_snippet}
-                </div>
-              )}
-
-              {/* Source attribution — hostname + link. Agents can click
-                  through to verify the match themselves. target=_blank
-                  so the dossier stays open. */}
-              {s.source_url && (
-                <div style={{ marginTop: 4 }}>
-                  <a
-                    href={s.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      color: 'var(--accent)',
-                      fontSize: 11,
-                      textDecoration: 'none',
-                      borderBottom: '1px dotted var(--accent)',
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {host || 'view source'} →
-                  </a>
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
