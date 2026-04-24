@@ -806,3 +806,18 @@ async def ereal_backfill_recent(
             r['parcel_state'] = pmap.get(r['pin']) or {}
 
     return {'zip_code': zip_code, 'rows': rows}
+
+
+@router.get("/ereal-sales/{pin}",
+            dependencies=[Depends(require_admin)])
+async def ereal_sales(pin: str = Path(..., pattern=r'^[0-9A-Z]+$')):
+    """Read sales_history_v3 for a specific pin for quick inspection."""
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+    res = (supa.table('sales_history_v3')
+           .select('*')
+           .eq('pin', pin)
+           .order('sale_date', desc=True)
+           .execute())
+    return {'pin': pin, 'sales': res.data or []}
