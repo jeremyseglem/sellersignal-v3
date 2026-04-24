@@ -1334,7 +1334,30 @@ function ParcelStateTagsBlock({ tags }) {
 
 
 function SignalsBlock({ signals }) {
-  const trustColor = { high: 'var(--hold)', medium: 'var(--accent)', low: 'var(--text-tertiary)' };
+  const trustColor = {
+    high:   'var(--hold)',
+    medium: 'var(--accent)',
+    low:    'var(--text-tertiary)',
+  };
+
+  // Human-readable type labels. The raw signal types are snake_case
+  // developer strings; render them as capitalized words.
+  const typeLabel = (t) => {
+    if (!t) return '';
+    return String(t).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  // Extract a hostname from a URL for compact source attribution.
+  // Falls back to the raw URL when hostname parsing fails.
+  const hostOf = (url) => {
+    if (!url) return null;
+    try {
+      const u = new URL(url);
+      // Strip leading www. since it's visual noise
+      return u.hostname.replace(/^www\./, '');
+    } catch { return url; }
+  };
+
   return (
     <div style={{ marginTop: 'var(--space-lg)' }}>
       <div style={{
@@ -1347,43 +1370,111 @@ function SignalsBlock({ signals }) {
       }}>
         Evidence ({signals.length})
       </div>
-      <ul style={{ listStyle: 'none' }}>
-        {signals.map((s, i) => (
-          <li key={i} style={{
-            padding: 'var(--space-sm) 0',
-            borderBottom: i < signals.length - 1 ? '1px solid var(--border)' : 'none',
-            fontSize: 12,
-          }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'baseline',
-              gap: 'var(--space-sm)',
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {signals.map((s, i) => {
+          const host = hostOf(s.source_url);
+          return (
+            <li key={i} style={{
+              padding: 'var(--space-sm) 0',
+              borderBottom: i < signals.length - 1
+                ? '1px solid var(--border)'
+                : 'none',
+              fontSize: 12,
             }}>
-              <span style={{ fontWeight: 500, color: 'var(--text)' }}>
-                {s.type}
-              </span>
-              <span style={{
-                fontSize: 10,
-                color: trustColor[s.trust] || 'var(--text-tertiary)',
-                fontWeight: 600,
-                letterSpacing: '0.05em',
-                textTransform: 'uppercase',
-              }}>
-                {s.trust}
-              </span>
-            </div>
-            {s.detail && (
+              {/* Top line: type + trust badge */}
               <div style={{
-                color: 'var(--text-secondary)',
-                marginTop: 2,
-                fontFamily: 'var(--font-serif)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                gap: 'var(--space-sm)',
               }}>
-                {s.detail}
+                <span style={{
+                  fontWeight: 600,
+                  color: 'var(--text)',
+                  fontSize: 12,
+                  letterSpacing: '0.02em',
+                }}>
+                  {typeLabel(s.type)}
+                </span>
+                <span style={{
+                  fontSize: 10,
+                  color: trustColor[s.trust] || 'var(--text-tertiary)',
+                  fontWeight: 700,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                }}>
+                  {s.trust}
+                </span>
               </div>
-            )}
-          </li>
-        ))}
+
+              {/* Generic detail — kept as the fallback one-liner */}
+              {s.detail && (
+                <div style={{
+                  color: 'var(--text-secondary)',
+                  marginTop: 3,
+                  fontFamily: 'var(--font-serif)',
+                  lineHeight: 1.4,
+                }}>
+                  {s.detail}
+                </div>
+              )}
+
+              {/* Source title — the actual headline of the matched
+                  obit / probate filing / news / listing. This is the
+                  crucial disambiguator: without it, 'probate with
+                  owner-name match' is meaningless noise; WITH it, the
+                  agent sees 'IN RE WILLIAM S MICHAEL' and knows
+                  whose estate this is. */}
+              {s.source_title && (
+                <div style={{
+                  color: 'var(--text)',
+                  marginTop: 4,
+                  fontFamily: 'var(--font-serif)',
+                  fontStyle: 'italic',
+                  lineHeight: 1.4,
+                }}>
+                  "{s.source_title}"
+                </div>
+              )}
+
+              {/* Matched snippet — the specific text that fired the
+                  regex. Often contains the decedent name, filing date,
+                  or other specific context the agent needs. */}
+              {s.source_snippet && (
+                <div style={{
+                  color: 'var(--text-tertiary)',
+                  marginTop: 3,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}>
+                  {s.source_snippet}
+                </div>
+              )}
+
+              {/* Source attribution — hostname + link. Agents can click
+                  through to verify the match themselves. target=_blank
+                  so the dossier stays open. */}
+              {s.source_url && (
+                <div style={{ marginTop: 4 }}>
+                  <a
+                    href={s.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: 'var(--accent)',
+                      fontSize: 11,
+                      textDecoration: 'none',
+                      borderBottom: '1px dotted var(--accent)',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {host || 'view source'} →
+                  </a>
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
