@@ -766,3 +766,43 @@ async def ereal_backfill_status(
         'oldest_fetched_at': oldest,
         'coverage_pct':      round(100.0 * fetched_ok / max(total, 1), 1),
     }
+
+
+@router.get("/ereal-backfill/{zip_code}/recent",
+            dependencies=[Depends(require_admin)])
+async def ereal_backfill_recent(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    limit: int = 20,
+):
+    """
+    List recently-fetched eReal meta rows for a ZIP. Diagnostic aid
+    for verifying what the backfill actually touched.
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+
+    pin_res = (supa.table('parcels_v3').select('pin')
+               .eq('zip_code', zip_code).limit(50000).execute())
+    pins = [r['pin'] for r in (pin_res.data or [])]
+
+    meta = (supa.table('parcel_ereal_meta_v3')
+            .select('pin, fetched_at, last_attempt_at, last_error, '
+                    'http_status, body_length, sales_count, parser_version')
+            .in_('pin', pins)
+            .order('last_attempt_at', desc=True)
+            .limit(limit)
+            .execute())
+
+    # Also pull each pin's current parcels_v3 state for sqft/year_built/owner_name_raw
+    rows = meta.data or []
+    if rows:
+        pr = (supa.table('parcels_v3')
+              .select('pin, sqft, year_built, owner_name_raw')
+              .in_('pin', [r['pin'] for r in rows])
+              .execute())
+        pmap = {p['pin']: p for p in (pr.data or [])}
+        for r in rows:
+            r['parcel_state'] = pmap.get(r['pin']) or {}
+
+    return {'zip_code': zip_code, 'rows': rows}
