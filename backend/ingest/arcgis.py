@@ -49,12 +49,37 @@ except ImportError:
 
 MARKET_CONFIGS = {
     'WA_KING': {
-        'url': 'https://gismaps.kingcounty.gov/arcgis/rest/services/Property/KingCo_Parcels/MapServer/0/query',
+        # Parcel address + property info service.
+        #
+        # History: this config previously pointed at
+        #   https://gismaps.kingcounty.gov/arcgis/rest/services/Property/
+        #   KingCo_Parcels/MapServer/0
+        # which is a geometry-only layer with 7 fields (PIN, MAJOR, MINOR,
+        # Shape, ...). Every ingest query silently returned HTTP 200 with
+        # a JSON 400-error body because we were asking for fields that do
+        # not exist on that layer (ZIP5, OwnerName, AddressLine1, etc).
+        #
+        # The correct endpoint is property__parcel_address_area layer 1722
+        # under the OpenDataPortal service. It has 66 fields including all
+        # the property details we care about. Field names differ from the
+        # previous config; see _parse_feature for the mapping.
+        #
+        # This endpoint does NOT expose owner name or owner mailing
+        # street address (KC filters those out per RCW 42.56.070(8), the
+        # commercial-use prohibition). It DOES expose taxpayer city +
+        # state (KCTP_CITY, KCTP_STATE), which is sufficient to compute
+        # is_out_of_state. Owner name and full taxpayer mailing street
+        # come from the separate eReal Property harvester (see Fix 3 —
+        # ereal_property.py).
+        'url': (
+            'https://gisdata.kingcounty.gov/arcgis/rest/services/'
+            'OpenDataPortal/property__parcel_address_area/MapServer/1722/query'
+        ),
         'zip_field': 'ZIP5',
         'out_fields': (
-            'PARCELID,OwnerName,AddressLine1,CityStateZip,TotalValue,'
-            'TotalBuildingValue,TotalLandValue,PropType,GISAcres,'
-            'OwnerAddress1,OwnerCity,OwnerState,OwnerZipCode,Subdivision'
+            'PIN,ADDR_FULL,ZIP5,KCTP_CITY,KCTP_STATE,'
+            'APPRLNDVAL,APPR_IMPR,PROPTYPE,LOTSQFT,KCA_ACRES,'
+            'LAT,LON,CTYNAME,POSTALCTYNAME'
         ),
         'default_state': 'WA',
     },
@@ -98,20 +123,49 @@ def _parse_value(raw) -> Optional[int]:
         return None
 
 
+def _parse_float(raw) -> Optional[float]:
+    """Parse numeric value preserving decimals (for acres: NUMERIC(10,3))."""
+    if raw is None or raw == '':
+        return None
+    try:
+        cleaned = str(raw).replace(',', '').strip()
+        return round(float(cleaned), 3)
+    except (ValueError, TypeError):
+        return None
+
+
 def _derive_owner_type(owner_name: str) -> str:
     """
     Route owner_name to owner_type for structural classification.
     Identical to the classifier used by why_not_selling.
+
+    Known previous bug: dotted entity abbreviations (L.L.C., L.P., L.L.P.)
+    and bare LLP / LP were missed, causing LLP-named entities like
+    "BELLEVUE I LLP WALLACE/SCOTT" to be classified as 'individual' and
+    zeroing out the MATURE LLC parcel-state tag. Fixed by:
+      1. Stripping periods from the uppercased name before regex match
+         so L.L.C. collapses to LLC and gets caught by the LLC branch.
+      2. Adding LLP and LP to the entity-suffix alternation.
+      3. Adding the spelled-out form "LIMITED LIABILITY COMPANY".
     """
     if not owner_name:
         return 'unknown'
     on = owner_name.upper()
-    if re.search(r'\bESTATE\b|\bHEIRS\b|\bDECEASED\b|\bSURVIVOR\b', on):
+    # Strip periods so L.L.C. -> LLC, L.P. -> LP, etc. Stripping after
+    # uppercase to keep the transform idempotent.
+    on_nodots = on.replace('.', '')
+    if re.search(r'\bESTATE\b|\bHEIRS\b|\bDECEASED\b|\bSURVIVOR\b', on_nodots):
         return 'estate'
-    if re.search(r'\bTRUST\b|\bTRSTEE\b|\bTRUSTEE\b|\bLIVING\s*TR\b|\bFAMILY\s*TR\b', on):
+    if re.search(r'\bTRUST\b|\bTRSTEE\b|\bTRUSTEE\b|\bLIVING\s*TR\b|\bFAMILY\s*TR\b',
+                 on_nodots):
         return 'trust'
-    if re.search(r'\bLLC\b|\bINC\b|\bCORP\b|\bLTD\b|\bPARTNERSHIP\b|'
-                 r'\bHOLDINGS\b|\bGROUP\b|\bENTERPRISES?\b|\bPARTNERS\b', on):
+    if re.search(
+        r'\b(?:LLC|LLP|LP|INC|CORP|LTD|'
+        r'PARTNERSHIP|PARTNERS|'
+        r'HOLDINGS|GROUP|ENTERPRISES?|'
+        r'LIMITED\s+LIABILITY\s+COMPANY)\b',
+        on_nodots,
+    ):
         return 'llc'
     return 'individual'
 
@@ -220,29 +274,75 @@ async def fetch_parcels_for_zip(
 
 
 def _parse_feature(feature: dict, zip_code: str, market_key: str, config: dict) -> dict:
-    """Convert a raw ArcGIS feature into a parcels_v3 row dict."""
+    """
+    Convert a raw ArcGIS feature into a parcels_v3 row dict.
+
+    Field mapping from OpenDataPortal/property__parcel_address_area/1722:
+      PIN              -> pin (primary key)
+      ADDR_FULL        -> address (site)
+      CTYNAME          -> city (site city)
+      ZIP5             -> (already known from query)
+      KCTP_CITY        -> owner_city (taxpayer mailing city)
+      KCTP_STATE       -> owner_state (taxpayer mailing state)
+      APPRLNDVAL       -> land_value
+      APPR_IMPR        -> building_value (appraised improvements)
+      PROPTYPE         -> prop_type
+      LOTSQFT          -> lot_sqft (not building sqft — that's eReal
+                          Property only)
+      KCA_ACRES        -> acres
+      LAT, LON         -> lat, lng
+
+    Fields INTENTIONALLY NOT on this layer:
+      - owner_name, owner_name_raw: KC doesn't expose on public ArcGIS.
+        Pulled separately by backend/harvesters/ereal_property.py
+        (Fix 3). During re-ingest we do NOT overwrite owner_name on
+        existing rows — the upsert only sets it if we have a value.
+      - owner_address (street): not available in the ArcGIS layer, see
+        the eReal Property harvester.
+      - year_built, sqft, bedrooms, baths: detail-page-only fields.
+
+    The previous version of this function computed is_absentee by
+    comparing situs street address to owner street. Since we don't have
+    owner street here, is_absentee drops back to the taxpayer-city
+    heuristic: absentee IF the taxpayer city is different from the
+    site city. Coarser but meaningful — if taxpayer mailing goes to a
+    different city, they don't live in the property.
+    """
     attrs = feature.get('attributes', {}) or {}
     geom = feature.get('geometry', {}) or {}
 
-    pin = str(attrs.get('PARCELID', '')).strip()
-    owner_name_raw = (attrs.get('OwnerName') or '').strip()
-    address = (attrs.get('AddressLine1') or '').strip()
-    city_state_zip = attrs.get('CityStateZip') or ''
-    city, state = _parse_city_state(city_state_zip)
-    state = state or config['default_state']
+    pin = str(attrs.get('PIN', '')).strip()
+    address        = (attrs.get('ADDR_FULL') or '').strip()
+    site_city      = (attrs.get('CTYNAME') or
+                      attrs.get('POSTALCTYNAME') or '').strip()
 
-    owner_address = (attrs.get('OwnerAddress1') or '').strip()
-    owner_city = (attrs.get('OwnerCity') or '').strip()
-    owner_state = (attrs.get('OwnerState') or '').strip()
-    owner_zip = (attrs.get('OwnerZipCode') or '').strip()
+    owner_city  = (attrs.get('KCTP_CITY') or '').strip()
+    owner_state = (attrs.get('KCTP_STATE') or '').strip()
 
-    # Lat/lng from geometry (ArcGIS polygon -> use centroid, but for simple
-    # point parcels or ring geometries we need to compute)
-    lat, lng = _extract_lat_lng(geom)
+    # Lat/lng: this layer exposes LAT/LON attributes directly; fall
+    # back to geometry centroid if missing.
+    lat = attrs.get('LAT')
+    lng = attrs.get('LON')
+    if lat is None or lng is None:
+        lat, lng = _extract_lat_lng(geom)
 
-    owner_type = _derive_owner_type(owner_name_raw)
-    owner_name = _normalize_owner_display_name(owner_name_raw)
-    is_absentee = _is_absentee(address, owner_address)
+    default_state = config['default_state']
+    state = site_state_from_city(site_city) or default_state
+
+    # Absentee heuristic: taxpayer city differs from site city (case-
+    # insensitive). Conservative — missing taxpayer city means we can't
+    # tell, so False.
+    #
+    # CAVEAT: this will fire on adjacent-city crossovers (Ballmer's
+    # Hunts Point home with a Bellevue taxpayer mailing, for example).
+    # Those aren't "absentee" in the usual sense — they're just someone
+    # getting mail at a nearby city. For a harder check, look at
+    # is_out_of_state, which only fires when the taxpayer STATE differs
+    # from the site state (i.e. genuine OOS ownership, which is the
+    # seller signal we actually care about for absentee_oos_disposition).
+    is_absentee = bool(owner_city and site_city
+                       and owner_city.strip().upper()
+                           != site_city.strip().upper())
     is_out_of_state = bool(owner_state) and owner_state.upper() != state.upper()
 
     return {
@@ -250,26 +350,44 @@ def _parse_feature(feature: dict, zip_code: str, market_key: str, config: dict) 
         'zip_code':         zip_code,
         'market_key':       market_key,
         'address':          address,
-        'city':             city,
+        'city':             site_city or None,
         'state':            state,
-        'owner_name_raw':   owner_name_raw,
-        'owner_name':       owner_name,
-        'owner_type':       owner_type,
-        'owner_address':    owner_address,
-        'owner_city':       owner_city,
-        'owner_state':      owner_state,
-        'owner_zip':        owner_zip,
+        # Owner name & raw are NOT touched during ArcGIS re-ingest. Upsert
+        # merges on 'pin' conflict but only overwrites columns we include
+        # in the payload. By omitting owner_name / owner_name_raw /
+        # owner_type, we preserve any existing value (loaded via eReal
+        # Property harvester or older ingest).
+        'owner_city':       owner_city or None,
+        'owner_state':      owner_state or None,
         'lat':              lat,
         'lng':              lng,
-        'total_value':      _parse_value(attrs.get('TotalValue')),
-        'land_value':       _parse_value(attrs.get('TotalLandValue')),
-        'building_value':   _parse_value(attrs.get('TotalBuildingValue')),
-        'acres':            _parse_value(attrs.get('GISAcres')),  # handles as int, ok for ~2 decimal precision rough
-        'prop_type':        (attrs.get('PropType') or '').strip(),
+        'total_value':      (
+            (_parse_value(attrs.get('APPRLNDVAL')) or 0)
+            + (_parse_value(attrs.get('APPR_IMPR')) or 0)
+        ) or None,
+        'land_value':       _parse_value(attrs.get('APPRLNDVAL')),
+        'building_value':   _parse_value(attrs.get('APPR_IMPR')),
+        'acres':            _parse_float(attrs.get('KCA_ACRES')),
+        'prop_type':        (attrs.get('PROPTYPE') or '').strip() or None,
         'is_absentee':      is_absentee,
         'is_out_of_state':  is_out_of_state,
-        'is_vacant_land':   bool(attrs.get('TotalBuildingValue')) is False,
+        # is_vacant_land: building value 0 means no improvements ≈ vacant
+        'is_vacant_land':   not bool(_parse_value(attrs.get('APPR_IMPR'))),
     }
+
+
+def site_state_from_city(city: str) -> Optional[str]:
+    """
+    Derive state from site city for King County. All King County cities
+    are in WA, but we expose this helper so ingest for other counties
+    can override. Returns None if the city is unknown; caller falls
+    back to config['default_state'].
+    """
+    if not city:
+        return None
+    # All KC cities are WA. Keep the function so future markets can
+    # override per-county rules.
+    return 'WA'
 
 
 def _extract_lat_lng(geom: dict) -> tuple[Optional[float], Optional[float]]:

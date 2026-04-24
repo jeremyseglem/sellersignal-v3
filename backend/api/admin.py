@@ -428,3 +428,93 @@ async def geometry_status_endpoint(
         'missing_geom': missing,
         'coverage_pct': coverage_pct,
     }
+
+
+# ─── Re-ingest property details from ArcGIS ──────────────────────────────
+
+@router.post("/reingest-property-details/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def reingest_property_details(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    market_key: str = 'WA_KING',
+    dry_run: bool = False,
+):
+    """
+    Backfill land_value, building_value, total_value, prop_type, acres,
+    is_absentee, is_out_of_state, owner_city, owner_state from the
+    correctly-pointed ArcGIS endpoint.
+
+    Why this endpoint exists: parcels_v3 was historically ingested from
+    a broken ArcGIS URL (Property/KingCo_Parcels layer 0 — 7-field
+    geometry layer that returned 400 errors for the fields we asked
+    for). Owner names, tenure, and total_value got loaded via some other
+    path (likely a CSV), but property-detail columns stayed NULL. Fix 2
+    of Option 2 re-points arcgis.py to the correct endpoint
+    (OpenDataPortal/property__parcel_address_area layer 1722); this
+    endpoint runs the re-ingest on demand.
+
+    Upsert behavior (see _parse_feature comments): owner_name and
+    owner_name_raw are NOT touched — we only set property-detail
+    columns. Existing owner data is preserved.
+
+    Rate safety: the ArcGIS service caps at 2000 features/page and we
+    sleep 0.3s between pages. 98004 has ~6,658 parcels so full ingest
+    is 4 pages / ~1.2s + response time — well under Railway's 5-min
+    proxy cutoff. For larger ZIPs this may need background execution.
+
+    Response:
+        {
+          "zip_code": "98004",
+          "fetched": 6658,
+          "upserted": 6658,
+          "failed": 0,
+          "dry_run": false,
+          "sample": {...}    // first parcel's parsed payload, for audit
+        }
+    """
+    import asyncio
+    from backend.ingest.arcgis import (
+        fetch_parcels_for_zip, upsert_parcels, MARKET_CONFIGS,
+    )
+
+    if market_key not in MARKET_CONFIGS:
+        raise HTTPException(400, f"Unknown market_key {market_key}")
+
+    try:
+        parcels = await fetch_parcels_for_zip(zip_code, market_key)
+    except Exception as e:
+        raise HTTPException(502, f"ArcGIS fetch failed: {e}")
+
+    if not parcels:
+        return {
+            'zip_code': zip_code,
+            'fetched':  0,
+            'upserted': 0,
+            'failed':   0,
+            'dry_run':  dry_run,
+            'note':     'No parcels returned from ArcGIS for this ZIP.',
+        }
+
+    sample = dict(parcels[0])
+
+    if dry_run:
+        return {
+            'zip_code': zip_code,
+            'fetched':  len(parcels),
+            'upserted': 0,
+            'failed':   0,
+            'dry_run':  True,
+            'sample':   sample,
+            'note':     'Dry run — no DB writes. Review sample, then repeat without dry_run=true.',
+        }
+
+    stats = upsert_parcels(parcels)
+    return {
+        'zip_code': zip_code,
+        'fetched':  len(parcels),
+        'upserted': stats.get('inserted_or_updated', 0),
+        'failed':   stats.get('failed', 0),
+        'batches':  stats.get('batches', 0),
+        'dry_run':  False,
+        'sample':   sample,
+    }
