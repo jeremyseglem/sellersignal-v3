@@ -2517,6 +2517,72 @@ def diag_probe_url(
     }
 
 
+@router.get("/diag/fetch-json")
+def diag_fetch_json(
+    url: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Fetch a JSON URL from Railway and return the parsed JSON in full.
+    Used for remote debugging of third-party JSON endpoints (e.g. KC
+    ArcGIS parcel service) that the Claude sandbox cannot reach via TLS.
+
+    Caps the response body at 2 MB to avoid OOMs. Returns the parsed
+    JSON under the 'data' key, or a parse error if not JSON. Does NOT
+    write to DB.
+    """
+    _require_admin(x_admin_key)
+    import requests
+    import json as _json
+
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,*/*;q=0.8",
+    })
+
+    try:
+        r = s.get(url, timeout=60)
+    except Exception as e:
+        return {
+            "url":    url,
+            "error":  f"{type(e).__name__}: {str(e)[:300]}",
+        }
+
+    body = r.text or ""
+    if len(body) > 2_000_000:
+        return {
+            "url":          url,
+            "status":       r.status_code,
+            "length":       len(body),
+            "error":        "Body too large (> 2MB). Narrow your query.",
+            "body_preview": body[:2000],
+        }
+
+    try:
+        data = _json.loads(body)
+    except Exception as e:
+        return {
+            "url":            url,
+            "status":         r.status_code,
+            "length":         len(body),
+            "json_parse_err": f"{type(e).__name__}: {str(e)[:200]}",
+            "body_preview":   body[:2000],
+        }
+
+    return {
+        "url":        url,
+        "status":     r.status_code,
+        "length":     len(body),
+        "content_type": r.headers.get("content-type"),
+        "data":       data,
+    }
+
+
 @router.get("/diag/landmark-probe")
 def diag_landmark_probe(
     x_admin_key: Optional[str] = Header(None),
