@@ -159,6 +159,42 @@ async def get_briefing(
                 for r in (s_res.data or []):
                     signals_by_id[r['id']] = r
 
+        # ── Load per-pin last-arms-length data ──
+        # parcel_last_arms_length_v3 is a VIEW over sales_history_v3
+        # that gives, per pin, the most recent arms-length transaction.
+        # We join it client-side to the parcels list so derive_tags can
+        # prefer arms-length price over the assessor's recorded
+        # last_transfer_price when the latter is 0 (trust transfer,
+        # quit-claim, etc.). Defensive: if the view doesn't exist or
+        # returns an error (e.g. migration 009 not yet applied in this
+        # environment), fall through with an empty dict — the tag
+        # derivation gracefully handles missing arms-length data.
+        arms_length_by_pin: dict = {}
+        try:
+            al_rows = _fetch_all('parcel_last_arms_length_v3', zip_code) \
+                if False else []
+            # parcel_last_arms_length_v3 does NOT have zip_code; it's a
+            # derived view. Fetch by pin chunks instead.
+            for i in range(0, len(pins), CHUNK):
+                chunk = pins[i:i + CHUNK]
+                al_res = (supa.table('parcel_last_arms_length_v3')
+                          .select('pin, last_arms_length_price, '
+                                  'last_arms_length_date, '
+                                  'last_arms_length_buyer, '
+                                  'last_arms_length_seller')
+                          .in_('pin', chunk)
+                          .execute())
+                for r in (al_res.data or []):
+                    arms_length_by_pin[r['pin']] = r
+        except Exception as e:
+            # View may not exist yet — log but continue. Empty dict
+            # means derive_tags falls back to legacy last_transfer_price.
+            import logging
+            logging.getLogger(__name__).warning(
+                f"parcel_last_arms_length_v3 load failed: {e}"
+            )
+            arms_length_by_pin = {}
+
         # Build per-pin harvester overlay (investigation-shaped)
         from backend.selection.harvester_overlay import (
             build_investigation_overlay, merge_with_existing,
@@ -260,11 +296,17 @@ async def get_briefing(
                 'timeline_months': p.get('timeline_months'),
                 'inevitability':   p.get('inevitability'),
                 # Parcel-state tags (HIGH EQUITY / DEEP TENURE / LEGACY HOLD /
-                # MATURE LLC). Derived from the same parcels_v3 columns the
-                # briefing already loads — no extra I/O. See
-                # backend/selection/parcel_state_tags.py for thresholds.
-                # Empty list if nothing fires.
-                'parcel_state_tags': derive_tags(p),
+                # MATURE LLC). Derived from parcels_v3 columns plus any
+                # arms-length data from parcel_last_arms_length_v3 (a view
+                # over sales_history_v3 populated by the eReal Property
+                # harvester). When arms-length fields are available,
+                # derive_tags prefers them over the raw last_transfer_price
+                # for HIGH EQUITY — fixes the common case where the
+                # recorded last transfer was a $0 trust move or quit-claim.
+                'parcel_state_tags': derive_tags({
+                    **p,
+                    **(arms_length_by_pin.get(p['pin']) or {}),
+                }),
             }
             if inv:
                 rec = None

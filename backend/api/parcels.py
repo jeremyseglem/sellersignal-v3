@@ -132,6 +132,25 @@ async def get_parcel(pin: str):
             }
         merged = merge_with_existing(existing_shaped, overlay)
 
+        # Per-pin last arms-length sale (from sales_history_v3 via the
+        # parcel_last_arms_length_v3 view). Only queries when the view
+        # exists; silently falls through on empty/error so derive_tags
+        # uses the legacy last_transfer_price path.
+        al_row: dict = {}
+        try:
+            al_res = (supa.table('parcel_last_arms_length_v3')
+                      .select('last_arms_length_price, '
+                              'last_arms_length_date, '
+                              'last_arms_length_buyer, '
+                              'last_arms_length_seller')
+                      .eq('pin', pin)
+                      .maybe_single()
+                      .execute())
+            if al_res and al_res.data:
+                al_row = al_res.data
+        except Exception:
+            al_row = {}
+
         response = {
             'pin':          pin,
             'parcel':       parcel,
@@ -143,11 +162,17 @@ async def get_parcel(pin: str):
             'harvester_matches':   [],
             'convergence':         False,
             'strict_match_count':  0,
-            # Parcel-state situational tags (HIGH EQUITY, DEEP TENURE,
-            # LEGACY HOLD, MATURE LLC). Derived at read time from
-            # parcels_v3 columns — no extra I/O. Empty list when nothing
-            # fires. See backend/selection/parcel_state_tags.py.
-            'parcel_state_tags':   derive_parcel_state_tags(parcel),
+            # Parcel-state situational tags, enriched with arms-length
+            # data when the parcel has sales history. See
+            # backend/selection/parcel_state_tags.py.
+            'parcel_state_tags':   derive_parcel_state_tags({**parcel, **al_row}),
+            # Expose arms-length fields directly so the dossier UI can
+            # show them in the facts block. None when no sales history
+            # has been fetched yet.
+            'last_arms_length_price':  al_row.get('last_arms_length_price'),
+            'last_arms_length_date':   al_row.get('last_arms_length_date'),
+            'last_arms_length_buyer':  al_row.get('last_arms_length_buyer'),
+            'last_arms_length_seller': al_row.get('last_arms_length_seller'),
         }
 
         # The merged recommended_action reflects the highest-pressure of
