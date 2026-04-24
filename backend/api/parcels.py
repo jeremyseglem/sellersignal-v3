@@ -12,6 +12,9 @@ from fastapi import APIRouter, HTTPException
 from backend.api.db import get_supabase_client
 from backend.api.zip_gate import get_zip_status
 from backend.scoring.why_not_selling import generate_why_not_selling
+from backend.selection.parcel_state_tags import (
+    derive_tags as derive_parcel_state_tags,
+)
 
 router = APIRouter()
 
@@ -140,6 +143,11 @@ async def get_parcel(pin: str):
             'harvester_matches':   [],
             'convergence':         False,
             'strict_match_count':  0,
+            # Parcel-state situational tags (HIGH EQUITY, DEEP TENURE,
+            # LEGACY HOLD, MATURE LLC). Derived at read time from
+            # parcels_v3 columns — no extra I/O. Empty list when nothing
+            # fires. See backend/selection/parcel_state_tags.py.
+            'parcel_state_tags':   derive_parcel_state_tags(parcel),
         }
 
         # The merged recommended_action reflects the highest-pressure of

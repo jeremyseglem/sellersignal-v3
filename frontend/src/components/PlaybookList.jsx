@@ -28,7 +28,7 @@ function signalTypeLabel(t) {
 // Inline badge used on lead cards to surface active harvester signals.
 // `prominent` swaps the rendering to a filled pill — used for the
 // convergence badge where we want extra visual weight.
-function SignalBadge({ label, color, prominent = false }) {
+function SignalBadge({ label, color, prominent = false, title = null }) {
   const base = {
     fontSize: 9,
     fontWeight: 700,
@@ -41,7 +41,7 @@ function SignalBadge({ label, color, prominent = false }) {
   };
   if (prominent) {
     return (
-      <span style={{
+      <span title={title || undefined} style={{
         ...base,
         background: color,
         color: 'white',
@@ -51,7 +51,7 @@ function SignalBadge({ label, color, prominent = false }) {
     );
   }
   return (
-    <span style={{
+    <span title={title || undefined} style={{
       ...base,
       background: 'transparent',
       color: color,
@@ -162,6 +162,12 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
   ));
   const hasConvergence = Boolean(lead.convergence);
 
+  // Parcel-state tags — HIGH EQUITY, DEEP TENURE, LEGACY HOLD, MATURE LLC.
+  // Descriptive situational markers derived from the parcel's own columns.
+  // Lower visual priority than harvester badges (already sorted by rank
+  // on the backend).
+  const parcelStateTags = lead.parcel_state_tags || [];
+
   return (
     <li
       onClick={onClick}
@@ -250,6 +256,27 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
               )}
               {uniqueSignalTypes.map((t) => (
                 <SignalBadge key={t} label={signalTypeLabel(t)} color={accent} />
+              ))}
+            </div>
+          )}
+          {/* Parcel-state tags (HIGH EQUITY, DEEP TENURE, LEGACY HOLD,
+              MATURE LLC) — descriptive situational markers derived from
+              parcel columns. Rendered in a muted color (text-tertiary)
+              to de-emphasize relative to harvester signals. */}
+          {parcelStateTags.length > 0 && (
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 4,
+              marginTop: 6,
+            }}>
+              {parcelStateTags.map((t) => (
+                <SignalBadge
+                  key={t.kind}
+                  label={t.label}
+                  color="var(--text-tertiary)"
+                  title={t.description}
+                />
               ))}
             </div>
           )}

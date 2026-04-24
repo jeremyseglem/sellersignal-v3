@@ -29,22 +29,28 @@ Live harvesters feeding raw_signals_v3:
                          167 parcel rows in DB
 
 Parcel-state signals computed at read time (no harvester needed):
-  • absentee_oos_disposition     (is_out_of_state column)
-  • high_equity_long_tenure      (tenure_years + total_value)
+  • high_equity_long_tenure      (HIGH EQUITY lead-card tag — ships
+                                  total_value, last_transfer_price,
+                                  tenure_years via parcel_state_tags.py)
+  • high_equity long tenure      (DEEP TENURE >= 30y; LEGACY HOLD >= 40y)
+  • investor_disposition         (MATURE LLC tag — owner_type='llc'
+                                  AND tenure >= 5y; under-fires due to
+                                  ingest-layer owner_type misclassification)
   • retirement_downsize          (partial — missing age data)
-  • investor_disposition         (owner_type = 'llc' + tenure)
   • pre_listing_structuring      (trigger-only; deed history)
 
 NOT yet built:
+  • absentee_oos_disposition     (BLOCKED — owner_address columns are
+                                  NULL in parcels_v3. Ingest cleanup
+                                  required before this signal can fire)
   • relocation_executive         (needs historical mail-addr deltas +
                                   LinkedIn job-change scraper)
   • failed_sale_attempt          (Layer 1 parser exists; Layer 2 SerpAPI
                                   Zillow queries run in old investigation
                                   flow; Layer 3 bulk scraper not built)
   • financial_stress (NOD/NOTS)  (KC Recorder is captcha-blocked; newspaper
-                                  legal notices feed unexplored; third-party
-                                  property-data aggregators are not used per
-                                  project policy)
+                                  legal notices is ToS-blocked via WNPA
+                                  $10K/incident liquidated damages clause)
 
 Harvester → briefing bridge:
   /api/briefings/{zip} reads raw_signal_matches_v3 and promotes matched
@@ -140,15 +146,19 @@ SIGNAL_REGISTRY: dict[str, SignalFamilySpec] = {
             "arms_length_sale",
             "active_listing",
         ],
-        data_available_today=True,
+        data_available_today=False,
         missing_data=[
-            # search_absentee_oos_candidates() exists in pipeline/candidate_search.py
-            # but is NOT wired into the production briefing flow — only into
-            # the dead v2 research pipeline. The is_out_of_state column on
-            # parcels_v3 IS populated and usable today for a read-time check,
-            # but no promotion path for this family is live yet.
-            "Production wiring: candidate_search is only called by "
-            "research/run_bellevue.py, not by the live /api/briefings flow",
+            # CRITICAL: parcels_v3.owner_address / owner_city / owner_state
+            # / owner_zip columns exist in the schema but are NULL for all
+            # sampled parcels. The is_absentee and is_out_of_state computed
+            # columns always return False as a consequence. Verified by
+            # sampling pins 1802000050, 3225059122, 3394100120 on
+            # 2026-04-23 — all showed owner_address = None.
+            # This signal family CANNOT fire until the ingest layer is
+            # fixed to populate owner mailing addresses from KC Assessor.
+            "Owner mailing-address ingest is broken (all NULL in parcels_v3)",
+            "Production wiring: search_absentee_oos_candidates is only "
+            "called by research/run_bellevue.py, not the live briefing",
             "Historical mail-address deltas for true relocation signal "
             "(mail_address_changed_to_oos_recently trigger)",
         ],
@@ -184,13 +194,14 @@ SIGNAL_REGISTRY: dict[str, SignalFamilySpec] = {
         ],
         data_available_today=True,
         missing_data=[
-            # Same wiring gap as absentee_oos_disposition:
-            # search_high_equity_long_tenure_candidates() exists but is only
-            # called by research/run_bellevue.py. tenure_years + total_value
-            # + last_transfer_price ARE all populated in parcels_v3, so this
-            # would be straightforward to wire at read time in briefings.
-            "Production wiring: candidate_search is only called by "
-            "research/run_bellevue.py, not by the live /api/briefings flow",
+            # Shipped: the HIGH EQUITY lead-card tag surfaces this on the
+            # briefing using the (total_value, last_transfer_price,
+            # tenure_years) columns. See
+            # backend/selection/parcel_state_tags.py for thresholds.
+            # This is descriptive-tag only — no promotion/ranking impact.
+            "Promotion logic (not just tagging) — HIGH EQUITY currently "
+            "surfaces as a situational badge but does not change the "
+            "lead's band or call_now/build_now placement",
             "KC senior exemption file (for senior_exemption_flag_plus_long_tenure trigger)",
             "Owner age data (for age-based activation)",
         ],
@@ -365,6 +376,13 @@ SIGNAL_REGISTRY: dict[str, SignalFamilySpec] = {
             # Briefing surfaces investor_disposition today via parcel-state
             # signals (owner_type='llc' + tenure_years above typical exit
             # window → band 2.5 or 3). No harvester-sourced catalyst yet.
+            # NOTE: parcels_v3.owner_type has accuracy issues — some LLP
+            # owners get classified as 'individual' (e.g.
+            # "Bellevue I Llp Wallace/scott" → owner_type='individual'
+            # on pin 3225059122). This causes MATURE LLC tag and
+            # archetype classification to under-fire. Ingest cleanup
+            # needed to re-classify entity names correctly.
+            "Owner-type classification accuracy (some LLPs show as individual)",
             "WA SOS entity filings (for dissolution / registered-agent-change "
             "catalysts that would promote passive holds to active leads)",
             "KC building permits for renovation-complete signal",

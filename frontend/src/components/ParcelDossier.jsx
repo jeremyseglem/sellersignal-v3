@@ -68,6 +68,12 @@ export default function ParcelDossier({ dossier, onClose }) {
   // when the parcel has no harvester matches.
   const harvesterMatches = dossier.harvester_matches || [];
   const hasConvergence   = Boolean(dossier.convergence);
+  // Parcel-state tags: HIGH EQUITY / DEEP TENURE / LEGACY HOLD / MATURE
+  // LLC. Descriptive situational markers derived at read time from
+  // parcels_v3 columns (see backend/selection/parcel_state_tags.py).
+  // Each has { label, kind, description, rank }. Empty list when none
+  // fire.
+  const parcelStateTags = dossier.parcel_state_tags || [];
 
   const ownerTag = ownerTypeLabel(p.owner_type);
   const signalLabel = p.signal_family ? p.signal_family.replace(/_/g, ' ') : null;
@@ -253,6 +259,14 @@ export default function ParcelDossier({ dossier, onClose }) {
             matches={harvesterMatches}
             convergence={hasConvergence}
           />
+        )}
+
+        {/* Parcel-state tags — descriptive markers (HIGH EQUITY, DEEP
+            TENURE, LEGACY HOLD, MATURE LLC) derived from the parcel's
+            own columns. No promotion/ranking impact — these are
+            situational context for the agent. */}
+        {parcelStateTags.length > 0 && (
+          <ParcelStateTagsBlock tags={parcelStateTags} />
         )}
 
         {/* Action buttons — Deep Signal + Six Letters */}
@@ -864,6 +878,70 @@ function HarvesterMatchesBlock({ matches, convergence }) {
             </li>
           );
         })}
+      </ul>
+    </div>
+  );
+}
+
+
+// Dossier block rendering parcel-state tags (HIGH EQUITY, DEEP TENURE,
+// LEGACY HOLD, MATURE LLC). These are derived at read time from
+// parcels_v3 columns — no harvester match required. Each tag has a
+// human-readable description for the hover state + inline body.
+function ParcelStateTagsBlock({ tags }) {
+  return (
+    <div style={{ marginTop: 'var(--space-lg)' }}>
+      <div style={{
+        fontSize: 11,
+        color: 'var(--text-tertiary)',
+        fontWeight: 600,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        marginBottom: 'var(--space-sm)',
+      }}>
+        Parcel State
+      </div>
+      <ul style={{
+        listStyle: 'none',
+        padding: 0,
+        margin: 0,
+      }}>
+        {tags.map((t) => (
+          <li key={t.kind} style={{
+            padding: 'var(--space-sm) 0',
+            borderTop: '1px solid var(--border-subtle)',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 8,
+              marginBottom: 2,
+            }}>
+              <span style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                padding: '2px 6px',
+                borderRadius: 3,
+                border: '1px solid var(--text-tertiary)',
+                color: 'var(--text-tertiary)',
+                whiteSpace: 'nowrap',
+              }}>
+                {t.label}
+              </span>
+            </div>
+            {t.description && (
+              <div style={{
+                fontSize: 13,
+                color: 'var(--text-secondary)',
+                lineHeight: 1.4,
+                marginLeft: 2,
+              }}>
+                {t.description}
+              </div>
+            )}
+          </li>
+        ))}
       </ul>
     </div>
   );

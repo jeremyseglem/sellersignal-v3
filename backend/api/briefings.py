@@ -12,6 +12,7 @@ from datetime import datetime, date, timedelta, timezone
 from backend.api.db import get_supabase_client
 from backend.api.zip_gate import require_live_zip
 from backend.selection import weekly_selector as _ws
+from backend.selection.parcel_state_tags import derive_tags
 
 router = APIRouter()
 
@@ -258,6 +259,12 @@ async def get_briefing(
                 'calibrated_rank_score': p.get('calibrated_rank_score'),
                 'timeline_months': p.get('timeline_months'),
                 'inevitability':   p.get('inevitability'),
+                # Parcel-state tags (HIGH EQUITY / DEEP TENURE / LEGACY HOLD /
+                # MATURE LLC). Derived from the same parcels_v3 columns the
+                # briefing already loads — no extra I/O. See
+                # backend/selection/parcel_state_tags.py for thresholds.
+                # Empty list if nothing fires.
+                'parcel_state_tags': derive_tags(p),
             }
             if inv:
                 rec = None
@@ -340,6 +347,11 @@ async def get_briefing(
                 'harvester_matches':   inv.get('harvester_matches') or [],
                 'convergence':         inv.get('convergence') or False,
                 'strict_match_count':  inv.get('strict_match_count') or 0,
+                # Parcel-state situational tags derived in _shape_lead
+                # (HIGH EQUITY, DEEP TENURE, LEGACY HOLD, MATURE LLC).
+                # Empty list when nothing fires. Each tag has
+                # label/kind/description/rank.
+                'parcel_state_tags':   L.get('parcel_state_tags') or [],
             }
 
         call_now_picks  = [_shape_pick(L) for L in call_now_leads]
