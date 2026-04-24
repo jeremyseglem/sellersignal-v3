@@ -576,12 +576,22 @@ async def reclassify_owner_type(
                 'new_type': new_type,
             })
 
+    # Summarize the transitions (e.g. {'individual->llc': 150,
+    # 'gov->llc': 5, 'trust->individual': 0, ...}) so operators can
+    # sanity-check the overall shape of the change before applying.
+    from collections import Counter
+    transitions: Counter = Counter()
+    for ch in changes:
+        old = str(ch['old_type']) if ch['old_type'] is not None else 'None'
+        transitions[f"{old} -> {ch['new_type']}"] += 1
+
     if dry_run:
         return {
             'zip_code':      zip_code,
             'examined':      len(all_rows),
             'would_change':  len(changes),
-            'sample':        changes[:10],
+            'transitions':   dict(transitions.most_common()),
+            'sample':        changes[:30],
             'dry_run':       True,
         }
 
