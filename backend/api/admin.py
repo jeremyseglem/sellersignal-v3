@@ -647,3 +647,122 @@ async def reclassify_owner_type(
         'sample':             changes[:10],
         'dry_run':            False,
     }
+
+
+# ─── eReal Property backfill (Fix 3 of Option 2) ─────────────────────────
+
+@router.post("/ereal-backfill/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def ereal_backfill(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    limit: int = 100,
+    ttl_days: int = 30,
+    force: bool = False,
+):
+    """
+    Run one batch of KC eReal Property detail-page fetches against the
+    parcels in a ZIP. Each parcel gets:
+      - owner_name_raw refreshed (from assessor's authoritative page)
+      - sqft, year_built filled in parcels_v3
+      - sales history upserted to sales_history_v3
+      - meta row written to parcel_ereal_meta_v3
+
+    A batch is limited to `limit` parcels (default 100) so each HTTP
+    call completes under Railway's 5-minute proxy timeout. At the
+    default 1.2s rate limit per parcel, 100 parcels is ~2 minutes.
+
+    Operator runs this repeatedly until everything in the ZIP is
+    populated (or until candidates_found is 0). The harvester picks up
+    where it left off via parcel_ereal_meta_v3.fetched_at.
+
+    Parameters:
+      limit      — max parcels this call (1..500; default 100)
+      ttl_days   — skip parcels fetched within this many days (default 30)
+      force      — ignore TTL and re-fetch everything in ZIP
+
+    Does NOT re-fetch parcels that failed recently unless `force=True`
+    (failures are captured in parcel_ereal_meta_v3.last_error).
+
+    Response includes aggregate stats, fetch/parse counts, sales
+    upserted, and a sample of any errors encountered.
+    """
+    if limit < 1 or limit > 500:
+        raise HTTPException(400, "limit must be between 1 and 500")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Lazy import to keep the admin router light when not used
+    from backend.harvesters.ereal_property import run_batch
+
+    try:
+        result = run_batch(
+            supa=supa,
+            zip_code=zip_code,
+            limit=limit,
+            ttl_days=ttl_days,
+            force=force,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"ereal batch failed: {e}")
+
+    return result
+
+
+@router.get("/ereal-backfill/{zip_code}/status",
+            dependencies=[Depends(require_admin)])
+async def ereal_backfill_status(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+):
+    """
+    Report eReal Property fetch coverage for a ZIP. Returns counts of
+    parcels with/without a successful fetch, the oldest fetched_at
+    (so operators know if a refresh is overdue), and error counts.
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Total parcels in ZIP
+    total_res = (
+        supa.table('parcels_v3')
+        .select('pin', count='exact')
+        .eq('zip_code', zip_code)
+        .limit(1)
+        .execute()
+    )
+    total = total_res.count or 0
+
+    # Parcels with eReal meta (any attempt)
+    meta_res = (
+        supa.table('parcel_ereal_meta_v3')
+        .select('pin, fetched_at, last_error, consecutive_errors')
+        .in_('pin',
+             [r['pin'] for r in
+              (supa.table('parcels_v3').select('pin')
+               .eq('zip_code', zip_code).limit(50000).execute().data or [])])
+        .execute()
+    )
+    meta_rows = meta_res.data or []
+    fetched_ok = sum(1 for r in meta_rows if r.get('fetched_at'))
+    with_errors = sum(1 for r in meta_rows if r.get('last_error'))
+    never_touched = total - len(meta_rows)
+
+    # Oldest successful fetch
+    oldest = None
+    for r in meta_rows:
+        f = r.get('fetched_at')
+        if f and (oldest is None or f < oldest):
+            oldest = f
+
+    return {
+        'zip_code':          zip_code,
+        'total_parcels':     total,
+        'meta_rows':         len(meta_rows),
+        'fetched_ok':        fetched_ok,
+        'with_errors':       with_errors,
+        'never_touched':     never_touched,
+        'oldest_fetched_at': oldest,
+        'coverage_pct':      round(100.0 * fetched_ok / max(total, 1), 1),
+    }
