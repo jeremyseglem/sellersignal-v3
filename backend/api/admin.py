@@ -518,3 +518,92 @@ async def reingest_property_details(
         'dry_run':  False,
         'sample':   sample,
     }
+
+
+# ─── Reclassify owner_type from owner_name_raw ──────────────────────────
+
+@router.post("/reclassify-owner-type/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def reclassify_owner_type(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    dry_run: bool = False,
+):
+    """
+    Re-run _derive_owner_type on existing parcels_v3.owner_name_raw and
+    update owner_type in place. Used to apply Fix 1 (LLP classification
+    bug) to parcels already in the database — the re-ingest endpoint
+    intentionally doesn't touch owner_type so existing owner_name data
+    is preserved, but that also means the LLP fix can't take effect
+    retroactively without this reclassify pass.
+
+    Reads owner_name_raw (or owner_name if raw is missing), recomputes
+    owner_type, and updates the row only when the new classification
+    differs from the stored value. Returns counts of changes made.
+    """
+    from backend.ingest.arcgis import _derive_owner_type
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Page through parcels in the ZIP
+    all_rows: list[dict] = []
+    offset = 0
+    while True:
+        page = (supa.table('parcels_v3')
+                .select('pin, owner_name, owner_name_raw, owner_type')
+                .eq('zip_code', zip_code)
+                .range(offset, offset + 999)
+                .execute())
+        rows = page.data or []
+        all_rows.extend(rows)
+        if len(rows) < 1000:
+            break
+        offset += 1000
+        if offset > 100_000:
+            break  # safety
+
+    changes: list[dict] = []
+    for r in all_rows:
+        name = r.get('owner_name_raw') or r.get('owner_name') or ''
+        new_type = _derive_owner_type(name)
+        old_type = r.get('owner_type')
+        if new_type != old_type:
+            changes.append({
+                'pin':      r['pin'],
+                'name':     name,
+                'old_type': old_type,
+                'new_type': new_type,
+            })
+
+    if dry_run:
+        return {
+            'zip_code':      zip_code,
+            'examined':      len(all_rows),
+            'would_change':  len(changes),
+            'sample':        changes[:10],
+            'dry_run':       True,
+        }
+
+    # Apply in batches of 200 — many small updates, one per row
+    applied = 0
+    errors = 0
+    for ch in changes:
+        try:
+            supa.table('parcels_v3').update(
+                {'owner_type': ch['new_type']}
+            ).eq('pin', ch['pin']).execute()
+            applied += 1
+        except Exception as e:
+            errors += 1
+            if errors < 5:
+                print(f"[reclassify] {ch['pin']}: {e}")
+
+    return {
+        'zip_code':   zip_code,
+        'examined':   len(all_rows),
+        'changed':    applied,
+        'errors':     errors,
+        'sample':     changes[:10],
+        'dry_run':    False,
+    }
