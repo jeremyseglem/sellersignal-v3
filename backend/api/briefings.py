@@ -288,6 +288,13 @@ async def get_briefing(
                 'owner':        p.get('owner_name'),
                 'owner_type':   p.get('owner_type'),
                 'is_absentee':  bool(p.get('is_absentee')),
+                # Out-of-state and taxpayer mailing city/state — used by
+                # the playbook card to render the MAILS TO xx badge
+                # (stronger signal than generic absentee, which fires
+                # on adjacent-city neighbors like Hunts Point/Bellevue).
+                'is_out_of_state': bool(p.get('is_out_of_state')),
+                'owner_state':  p.get('owner_state'),
+                'owner_city':   p.get('owner_city'),
                 'value':        p.get('total_value') or 0,
                 'zip':          p.get('zip_code'),
                 'tenure_years': p.get('tenure_years'),
@@ -372,6 +379,12 @@ async def get_briefing(
                 'owner_name':    L.get('owner'),
                 'owner_type':    L.get('owner_type'),
                 'is_absentee':   L.get('is_absentee', False),
+                # OOS / mailing city/state — see _shape_lead above for
+                # rationale. The PlaybookList card uses these to render
+                # a MAILS TO XX badge distinct from absentee.
+                'is_out_of_state': L.get('is_out_of_state', False),
+                'owner_state':   L.get('owner_state'),
+                'owner_city':    L.get('owner_city'),
                 'value':         L.get('value'),
                 'band':          L.get('band'),
                 'signal_family': L.get('signal_family'),

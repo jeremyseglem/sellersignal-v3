@@ -139,7 +139,7 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
   const [hovered, setHovered] = useState(false);
   const action = lead.recommended_action;
 
-  // Build the secondary-meta line: owner name + type + tenure
+  // Build the secondary-meta line: owner name + type + tenure + OOS
   const ownerBits = [];
   if (lead.owner_name) ownerBits.push(lead.owner_name);
   // Uses shared ownerTypeLabel from lib/ownerType so labels stay
@@ -154,6 +154,17 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
   }
   if (lead.tenure_years != null) {
     ownerBits.push(`${Math.round(lead.tenure_years)}yr`);
+  }
+  // Absentee / Out-of-State marker. Prefer OOS when both apply —
+  // it's the stronger signal (genuine out-of-state ownership,
+  // typically high disposition intent). Include the mailing city
+  // when available so the agent sees "CA" or "TX" not just "OOS".
+  if (lead.is_out_of_state) {
+    ownerBits.push(lead.owner_state
+      ? `MAILS TO ${lead.owner_state}`
+      : 'OUT OF STATE');
+  } else if (lead.is_absentee) {
+    ownerBits.push('ABSENTEE');
   }
 
   // Signal family label: replace underscores with spaces, keep lowercase

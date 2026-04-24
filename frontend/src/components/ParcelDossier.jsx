@@ -180,7 +180,27 @@ export default function ParcelDossier({ dossier, onClose }) {
                 </div>
               </>
             )}
-            {p.is_absentee && (
+            {/* Absentee / Out-of-State badge.
+                OOS is the stronger signal (genuine out-of-state ownership
+                strongly correlates with disposition intent), so prefer it
+                when both fire. Adjacent-city absentee (e.g., Ballmer's
+                Hunts Point home with Bellevue taxpayer mailing) is still
+                meaningful context but gets the softer ABSENTEE label. */}
+            {p.is_out_of_state && (
+              <>
+                <div>·</div>
+                <div style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: 'var(--call-now)',
+                }}>
+                  Out of State
+                </div>
+              </>
+            )}
+            {!p.is_out_of_state && p.is_absentee && (
               <>
                 <div>·</div>
                 <div style={{
@@ -228,6 +248,34 @@ export default function ParcelDossier({ dossier, onClose }) {
           }}>
             {ownerTag || 'unknown'} · {formatYears(p.tenure_years)} tenure
           </div>
+          {/* Mailing address — only shown when different from site,
+              since it's redundant otherwise. KC assessor filters the
+              street-level mailing address out of public data (RCW
+              42.56.070(8)) so we only have city/state. Useful context
+              for absentee/OOS outreach: an agent can see at a glance
+              that the owner gets mail in Covina, CA. */}
+          {p.owner_city && (p.owner_city.toUpperCase() !== (p.city || '').toUpperCase()
+                            || (p.owner_state || '').toUpperCase() !== (p.state || '').toUpperCase()) && (
+            <div style={{
+              fontSize: 12,
+              color: 'var(--text-tertiary)',
+              marginTop: 4,
+              paddingTop: 4,
+              borderTop: '1px dashed var(--border)',
+            }}>
+              <span style={{
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+                color: 'var(--text-tertiary)',
+              }}>
+                Mails to:
+              </span>
+              {' '}
+              {p.owner_city}{p.owner_state ? `, ${p.owner_state}` : ''}
+            </div>
+          )}
         </div>
 
         {/* Street View — graceful when key isn't configured */}
