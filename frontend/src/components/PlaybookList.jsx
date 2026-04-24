@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ownerTypeLabel } from '../lib/ownerType';
 
 const SECTIONS = [
   { key: 'call_now',        label: 'CALL NOW',         color: 'var(--call-now)' },
@@ -141,8 +142,15 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
   // Build the secondary-meta line: owner name + type + tenure
   const ownerBits = [];
   if (lead.owner_name) ownerBits.push(lead.owner_name);
-  if (lead.owner_type && lead.owner_type !== 'unknown') {
-    ownerBits.push(lead.owner_type.toUpperCase());
+  // Uses shared ownerTypeLabel from lib/ownerType so labels stay
+  // consistent with the dossier. Returns null for 'unknown' so the
+  // badge is hidden entirely for those rows.
+  const ownerTypeText = ownerTypeLabel(lead.owner_type);
+  if (ownerTypeText) {
+    // PlaybookList rendered this in ALL CAPS historically (pre-sharing
+    // the helper). Keep the uppercase presentation here for visual
+    // consistency with the other uppercase meta markers on the card.
+    ownerBits.push(ownerTypeText.toUpperCase());
   }
   if (lead.tenure_years != null) {
     ownerBits.push(`${Math.round(lead.tenure_years)}yr`);

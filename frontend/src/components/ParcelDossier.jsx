@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { map as mapApi, deepSignal as deepSignalApi } from '../api/client.js';
 import SixLettersModal from './SixLettersModal.jsx';
+import { ownerTypeLabel, isSellerTargetType } from '../lib/ownerType';
 
 function formatValue(v) {
   if (!v) return '—';
@@ -24,11 +25,10 @@ function formatDate(iso) {
   } catch { return iso; }
 }
 
-function ownerTypeLabel(t) {
-  if (!t || t === 'unknown') return null;
-  const map = { llc: 'LLC', trust: 'Trust', individual: 'Individual', company: 'Company' };
-  return map[t.toLowerCase()] || t;
-}
+// ownerTypeLabel + isSellerTargetType imported from ../lib/ownerType
+// (moved out so PlaybookList can share the same conversion and the
+// shared helpers can enumerate every backend category: individual,
+// trust, llc, estate, gov, nonprofit, unknown).
 
 export default function ParcelDossier({ dossier, onClose }) {
   const [streetViewUrl, setStreetViewUrl] = useState(null);
@@ -269,13 +269,17 @@ export default function ParcelDossier({ dossier, onClose }) {
           <ParcelStateTagsBlock tags={parcelStateTags} />
         )}
 
-        {/* Action buttons — Deep Signal + Six Letters */}
+        {/* Action buttons — Deep Signal + Six Letters.
+            Six Letters is hidden for gov / nonprofit owner types
+            since direct-mail seller cultivation is inappropriate for
+            them (see isSellerTargetType in lib/ownerType). */}
         {canGenerateDeepSignal && (
           <ActionButtons
             hasDeepSignal={Boolean(deepSignal)}
             deepSignalLoading={deepSignalLoading}
             onGenerateDeepSignal={handleGenerateDeepSignal}
             onOpenSixLetters={() => setSixLettersOpen(true)}
+            showSixLetters={isSellerTargetType(p.owner_type)}
           />
         )}
 
@@ -332,7 +336,16 @@ export default function ParcelDossier({ dossier, onClose }) {
 // ──────────────────────────────────────────────────────────────────────
 // Action buttons (Deep Signal + Six Letters)
 // ──────────────────────────────────────────────────────────────────────
-function ActionButtons({ hasDeepSignal, deepSignalLoading, onGenerateDeepSignal, onOpenSixLetters }) {
+function ActionButtons({
+  hasDeepSignal,
+  deepSignalLoading,
+  onGenerateDeepSignal,
+  onOpenSixLetters,
+  // showSixLetters defaults to true — callers only pass false to hide
+  // the button for gov / nonprofit owners where direct-mail seller
+  // cultivation is inappropriate.
+  showSixLetters = true,
+}) {
   return (
     <div style={{
       marginTop: 'var(--space-lg)',
@@ -363,24 +376,26 @@ function ActionButtons({ hasDeepSignal, deepSignalLoading, onGenerateDeepSignal,
             ? 'Refresh Deep Signal'
             : 'Deep Signal'}
       </button>
-      <button
-        onClick={onOpenSixLetters}
-        style={{
-          flex: 1,
-          padding: '10px 12px',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 12,
-          fontWeight: 600,
-          letterSpacing: '0.03em',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          background: 'transparent',
-          color: 'var(--text)',
-          cursor: 'pointer',
-        }}
-      >
-        Six Letters
-      </button>
+      {showSixLetters && (
+        <button
+          onClick={onOpenSixLetters}
+          style={{
+            flex: 1,
+            padding: '10px 12px',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: '0.03em',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)',
+            background: 'transparent',
+            color: 'var(--text)',
+            cursor: 'pointer',
+          }}
+        >
+          Six Letters
+        </button>
+      )}
     </div>
   );
 }
