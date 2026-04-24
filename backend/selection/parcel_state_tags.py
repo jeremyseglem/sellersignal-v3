@@ -47,13 +47,35 @@ from __future__ import annotations
 # resulting tag distribution (target: each tag fires on <= 15-20% of
 # parcels to stay differentiating).
 
-HIGH_EQUITY_MULT_THRESHOLD    = 4.0   # total_value / last_transfer_price
+HIGH_EQUITY_MULT_THRESHOLD    = 6.0   # total_value / last_transfer_price.
+                                      # Calibrated on 98004 on 2026-04-23:
+                                      # 4.0 fired on 46% of leads (too noisy).
+                                      # 6.0 narrows to ~20-25% — genuinely
+                                      # differentiating tier. In a long-held
+                                      # Bellevue market, 4x multipliers are
+                                      # ambient; 6x requires both decade-plus
+                                      # tenure AND above-market appreciation.
 HIGH_EQUITY_MIN_TENURE_YEARS  = 10.0  # must have held long enough for
                                       # appreciation to be real, not just
                                       # a renovation or bubble year
 DEEP_TENURE_YEARS             = 30.0
 LEGACY_HOLD_YEARS             = 40.0
 MATURE_LLC_MIN_TENURE_YEARS   = 5.0
+
+
+def _fmt_dollars(v: float) -> str:
+    """
+    Format dollar amounts with the threshold switch at $1M so the
+    human-readable description doesn't show 'Implied 11.7x appreciation
+    since last sale ($1870K → $21.8M)' where the unit inconsistency makes
+    the ratio harder to read. With this, the example becomes
+    '($1.9M → $21.8M)'.
+    """
+    if v >= 1_000_000:
+        return f"${v/1_000_000:.1f}M"
+    if v >= 1_000:
+        return f"${v/1_000:.0f}K"
+    return f"${v:.0f}"
 
 
 def _safe_float(v) -> float:
@@ -103,8 +125,8 @@ def derive_tags(parcel: dict) -> list[dict]:
                 'kind':        'high_equity',
                 'description': (
                     f"Implied {mult:.1f}x appreciation since last sale "
-                    f"(${last_transfer_price/1_000:.0f}K → "
-                    f"${total_value/1_000_000:.1f}M over {tenure:.0f} yrs)"
+                    f"({_fmt_dollars(last_transfer_price)} → "
+                    f"{_fmt_dollars(total_value)} over {tenure:.0f} yrs)"
                 ),
                 'rank':        30,
             })
