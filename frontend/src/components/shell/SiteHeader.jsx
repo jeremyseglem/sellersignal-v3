@@ -1,6 +1,13 @@
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo.jsx';
 
+// Build-time feature flag mirroring AuthGate. When auth isn't
+// required, the header renders 'demo nav' (Briefing button only)
+// instead of the public marketing CTAs (Sign in / Request access).
+// This gives Jeremy + Brian the lived-in 'agent already inside the
+// product' feel without forcing actual sign-in.
+const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED === 'true';
+
 // SiteHeader — dark navigation bar present on every authenticated page.
 //
 // Left: SellerSignal logo (light tone, links to /territories — the home
@@ -16,13 +23,17 @@ import Logo from './Logo.jsx';
 // page's responsibility.
 export default function SiteHeader({ agent, onSignOut, mode = 'auto' }) {
   const location = useLocation();
-  // 'auto' resolves to 'public' or 'authenticated' based on agent
-  // prop. Callers can force a mode (e.g., the marketing page wants
-  // the public header even if the user happens to be signed in).
+  // Mode resolution:
+  //   explicit override   — caller passed mode='public' or 'authenticated'
+  //   agent present       — render authenticated
+  //   auth not required   — render demo-app (Briefing nav, no agent)
+  //   else                — render public marketing nav (Sign in / Request access)
   const resolvedMode =
     mode === 'public'        ? 'public'
     : mode === 'authenticated' ? 'authenticated'
-    : (agent ? 'authenticated' : 'public');
+    : agent                  ? 'authenticated'
+    : !AUTH_REQUIRED         ? 'demo'
+    : 'public';
 
   const isActive = (path) => {
     if (path === '/territories') {
@@ -67,6 +78,8 @@ export default function SiteHeader({ agent, onSignOut, mode = 'auto' }) {
             isActive={isActive}
             onSignOut={onSignOut}
           />
+        ) : resolvedMode === 'demo' ? (
+          <DemoNav isActive={isActive} />
         ) : (
           <PublicNav isActive={isActive} />
         )}
@@ -86,6 +99,34 @@ function PublicNav({ isActive }) {
       <Link to="/signup" style={navBtnStyle('primary', false)}>
         Request access
       </Link>
+    </>
+  );
+}
+
+
+// ── Demo nav (auth bypassed; product walkthrough mode) ──────────
+// Same visual treatment as authenticated nav but skips the agent
+// name slot and the Sign Out button. Looks 'lived in' to Jeremy
+// and Brian without misrepresenting that anyone is actually
+// signed in. The 'Demo' tag in the corner is honest about state
+// without being intrusive.
+function DemoNav({ isActive }) {
+  return (
+    <>
+      <Link to="/territories" style={navBtnStyle('ghost', isActive('/territories'))}>
+        Briefing
+      </Link>
+      <span style={{
+        color: 'rgba(245, 240, 235, 0.4)',
+        fontSize: 11,
+        fontWeight: 600,
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase',
+        marginLeft: 12,
+        fontFamily: 'var(--font-sans)',
+      }}>
+        Demo
+      </span>
     </>
   );
 }

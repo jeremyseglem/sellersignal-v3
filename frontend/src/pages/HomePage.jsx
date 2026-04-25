@@ -2,6 +2,13 @@ import { Link } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import Logo from '../components/shell/Logo.jsx';
 
+// Build-time feature flag mirroring AuthGate. When auth is off,
+// the homepage CTAs route directly into the product (Open
+// briefing / View territory) instead of marketing CTAs (Sign in /
+// Request access). Lets Jeremy + Brian land at / and step into
+// the demo without an account.
+const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED === 'true';
+
 // HomePage — the marketing landing at `/`. Full-bleed hero on the
 // dark gradient backdrop, then a few content sections, then the
 // footer. Public mode (signed-out nav).
@@ -120,8 +127,17 @@ function Hero() {
           justifyContent: 'center',
           flexWrap: 'wrap',
         }}>
-          <Link to="/signup" style={ctaPrimary}>Request access</Link>
-          <Link to="/login"  style={ctaGhost}>Sign in</Link>
+          {AUTH_REQUIRED ? (
+            <>
+              <Link to="/signup" style={ctaPrimary}>Request access</Link>
+              <Link to="/login"  style={ctaGhost}>Sign in</Link>
+            </>
+          ) : (
+            <>
+              <Link to="/territories" style={ctaPrimary}>Open the briefing</Link>
+              <Link to="/zip/98004"   style={ctaGhost}>Jump to 98004</Link>
+            </>
+          )}
         </div>
 
         <div style={{
