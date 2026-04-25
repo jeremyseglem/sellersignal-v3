@@ -1278,39 +1278,6 @@ function OperatorProbateCard({ card }) {
     </div>
   );
 
-  // Monospace case number chip — used in First Move and Contact
-  // Method sections where the agent needs to copy the case ref into
-  // the court portal.
-  const caseChip = card.caseNum && (
-    <span style={{
-      fontFamily: 'monospace',
-      padding: '1px 4px',
-      background: 'var(--bg-card)',
-      borderRadius: 2,
-    }}>
-      {card.caseNum}
-    </span>
-  );
-
-  // Docket link (used in First Move and Contact Method sections).
-  const docketLink = card.caseUrl ? (
-    <a
-      href={card.caseUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={(e) => e.stopPropagation()}
-      style={{
-        color: 'var(--accent)',
-        textDecoration: 'none',
-        borderBottom: '1px dotted var(--accent)',
-      }}
-    >
-      King County Superior Court case search →
-    </a>
-  ) : (
-    <>King County Superior Court case search</>
-  );
-
   // Urgency badge — top-right of card. Uses the toneColor palette
   // already in use in RecommendedActionBlock.
   const urgencyBadge = (level, color) => (
@@ -1361,14 +1328,21 @@ function OperatorProbateCard({ card }) {
 
         {contextLine}
 
-        {section(
-          'Contact method',
-          <>
-            <div><strong>Primary:</strong> Handwritten letter (best first contact for estate situations)</div>
-            <div><strong>Address:</strong> On the Petition filing in {docketLink} (case {caseChip}). Addresses for parties are listed on the cover sheet.</div>
-            <div><strong>Backup:</strong> Phone via skip trace if needed</div>
-          </>,
-          'how'
+        {section('Contact',
+          <div>
+            <div style={{ color: 'var(--text-tertiary)' }}>
+              Mailing address: not yet resolved
+            </div>
+            <div style={{
+              marginTop: 4,
+              fontSize: 11,
+              color: 'var(--text-tertiary)',
+              fontStyle: 'italic',
+            }}>
+              Auto-resolution coming in next release · beta
+            </div>
+          </div>,
+          'contact'
         )}
 
         {section('Why now',
@@ -1379,7 +1353,7 @@ function OperatorProbateCard({ card }) {
           'why'
         )}
 
-        {section('What to say (first contact)',
+        {section('Script',
           <div style={{
             padding: 'var(--space-sm)',
             background: 'var(--bg-card)',
@@ -1392,14 +1366,9 @@ function OperatorProbateCard({ card }) {
           'script'
         )}
 
-        {section('First move',
-          <ol style={{ paddingLeft: 20, margin: 0, lineHeight: 1.6 }}>
-            <li>Open {docketLink} and look up case {caseChip}</li>
-            <li>Pull {card.prDisplay}&rsquo;s mailing address from the Petition filing</li>
-            <li>Send a handwritten condolence note using the script above</li>
-            <li>Follow up in two weeks if no reply — do not cold-call</li>
-          </ol>,
-          'first'
+        {section('Next step',
+          <strong>Send a handwritten condolence letter.</strong>,
+          'next'
         )}
       </div>
     );
@@ -1407,9 +1376,6 @@ function OperatorProbateCard({ card }) {
 
   // ── Variant B: no_pr_yet — WATCH / PREP card ──
   if (card.contactStatus === 'no_pr_yet') {
-    const likelyFamily = card.otherParties.filter(
-      (p) => p.pr_classification === 'family'
-    );
     return (
       <div style={{ marginTop: 'var(--space-sm)' }}>
         <div style={{
@@ -1434,63 +1400,18 @@ function OperatorProbateCard({ card }) {
             : `${card.decedentDisplay} is deceased. Personal representative not yet appointed.`}
         </div>
 
-        {urgencyBadge('Medium · will convert to Call Now when PR is appointed', 'var(--accent)')}
+        {urgencyBadge('Watch · will convert when PR is appointed', 'var(--accent)')}
 
         {contextLine}
 
-        {card.otherParties.length > 0 && section(
-          'Known parties on the docket',
-          <div style={{ lineHeight: 1.6 }}>
-            {card.otherParties.map((p, i) => (
-              <div key={i}>
-                {_titleCaseName(p.name_raw)}
-                {p.raw_role && (
-                  <span style={{
-                    color: 'var(--text-tertiary)',
-                    fontSize: 12,
-                    marginLeft: 6,
-                  }}>
-                    · {p.raw_role}
-                  </span>
-                )}
-                {p.pr_classification === 'family' && (
-                  <span style={{
-                    color: 'var(--accent)',
-                    fontSize: 11,
-                    marginLeft: 6,
-                  }}>
-                    (likely family)
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>,
-          'parties'
-        )}
-
         {section('Why this still matters',
-          <>
-            {card.timingPhrase}{' '}
-            {likelyFamily.length > 0
-              ? <>A PR will be appointed soon — often a named family member from the docket above.</>
-              : <>A PR will be appointed soon — typically a close relative.</>
-            }
-          </>,
+          <>{card.timingPhrase} A personal representative will be appointed soon — typically a close family member.</>,
           'why'
         )}
 
-        {section('What to do now',
-          <strong>Do not reach out yet — no confirmed decision-maker.</strong>,
-          'dont'
-        )}
-
-        {section('First move',
-          <ol style={{ paddingLeft: 20, margin: 0, lineHeight: 1.6 }}>
-            <li>Check {docketLink} case {caseChip} every 1–2 weeks</li>
-            <li>Watch for &ldquo;Personal Representative appointed&rdquo; or similar filing</li>
-            <li>Once named → send condolence letter immediately</li>
-          </ol>,
-          'first'
+        {section('Next step',
+          <strong>Hold for now. We will surface this lead automatically once a personal representative is appointed.</strong>,
+          'next'
         )}
       </div>
     );
@@ -1508,7 +1429,7 @@ function OperatorProbateCard({ card }) {
           lineHeight: 1.3,
           marginTop: 'var(--space-xs)',
         }}>
-          Manual lookup required
+          Lead pending — case parties resolving
         </div>
         <div style={{
           fontSize: 12,
@@ -1518,32 +1439,19 @@ function OperatorProbateCard({ card }) {
           fontFamily: 'var(--font-serif)',
         }}>
           {card.ownerIsDecedent
-            ? `${card.ownerName} is deceased. Case parties haven't been fetched yet.`
-            : `Probate filing active for ${card.decedentDisplay}. Case parties haven't been fetched yet.`}
+            ? `${card.ownerName} is deceased.`
+            : `Probate filing active for ${card.decedentDisplay}.`}
         </div>
 
-        {urgencyBadge('Medium · pending data', 'var(--text-tertiary)')}
+        {urgencyBadge('Watch · pending data', 'var(--text-tertiary)')}
 
         {contextLine}
 
-        {section('Contact method',
-          <>
-            <div><strong>Primary:</strong> Handwritten letter to the personal representative</div>
-            <div><strong>Address:</strong> On the Petition filing in {docketLink} (case {caseChip})</div>
-          </>,
-          'how'
-        )}
-
         {section('Why now', card.timingPhrase, 'why')}
 
-        {section('First move',
-          <ol style={{ paddingLeft: 20, margin: 0, lineHeight: 1.6 }}>
-            <li>Open {docketLink} and search for case {caseChip}</li>
-            <li>Identify the personal representative on the Petition or Notice of Appointment</li>
-            <li>Pull their mailing address from the filing</li>
-            <li>Send a handwritten condolence note</li>
-          </ol>,
-          'first'
+        {section('Next step',
+          <strong>Hold for now. We will surface this lead automatically once the personal representative is identified.</strong>,
+          'next'
         )}
       </div>
     );
@@ -1578,19 +1486,13 @@ function OperatorProbateCard({ card }) {
         {contextLine}
 
         {section('Why this still matters',
-          <>
-            {card.timingPhrase} Corporate fiduciaries and attorney
-            PRs usually list through established channels, but the
-            property will still transact.
-          </>,
+          <>{card.timingPhrase} Corporate fiduciaries and attorney PRs usually list through established channels.</>,
           'why'
         )}
 
-        {section('First move',
-          <>
-            Lower-priority monitoring. Watch {docketLink} case {caseChip} for any change in representation, or watch for listing activity on this parcel.
-          </>,
-          'first'
+        {section('Next step',
+          <strong>Hold. Watch for listing activity on this parcel.</strong>,
+          'next'
         )}
       </div>
     );
@@ -1611,13 +1513,12 @@ function OperatorProbateCard({ card }) {
           ? `${card.ownerName} is deceased. Probate active.`
           : `Probate filing active for ${card.decedentDisplay}.`}
       </div>
+      {urgencyBadge('Watch · pending data', 'var(--text-tertiary)')}
       {contextLine}
       {section('Why now', card.timingPhrase, 'why')}
-      {section('First move',
-        <>
-          Open {docketLink} and pull the appointment filing for case {caseChip}. It names the personal representative and their mailing address.
-        </>,
-        'first'
+      {section('Next step',
+        <strong>Hold. We will surface this lead automatically once the personal representative is identified.</strong>,
+        'next'
       )}
     </div>
   );
