@@ -53,9 +53,10 @@
   --tone-neutral:     #A89B8A;  /* tertiary — context, no action */
 
   /* ── Typography ───────────────────────────────────────────────── */
-  --font-display: 'Playfair Display', Georgia, serif;
-  --font-serif:   'Source Serif 4', Georgia, serif;
-  --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display:  'Playfair Display', Georgia, serif;
+  --font-serif:    'Source Serif 4', Georgia, serif;
+  --font-sans:     'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-wordmark: 'DM Serif Display', Georgia, serif;
 
   /* ── Spacing scale ────────────────────────────────────────────── */
   --space-xs:  4px;

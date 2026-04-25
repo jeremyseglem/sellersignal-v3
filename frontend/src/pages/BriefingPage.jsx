@@ -9,6 +9,7 @@ import {
 import MapPanel from '../components/MapPanel.jsx';
 import PlaybookList from '../components/PlaybookList.jsx';
 import ParcelDossier from '../components/ParcelDossier.jsx';
+import SiteLayout from '../components/shell/SiteLayout.jsx';
 
 function formatValue(v) {
   if (!v) return '—';
@@ -67,7 +68,20 @@ function searchLeads(leads, query) {
   ));
 }
 
-export default function BriefingPage() {
+export default function BriefingPage(props) {
+  return (
+    <SiteLayout
+      agent={props.agent || null}
+      onSignOut={props.onSignOut || null}
+      mode="authenticated"
+      showFooter={false}
+    >
+      <BriefingBody />
+    </SiteLayout>
+  );
+}
+
+function BriefingBody() {
   const { zip } = useParams();
   const [briefing, setBriefing] = useState(null);
   const [mapData, setMapData]   = useState(null);
@@ -124,7 +138,7 @@ export default function BriefingPage() {
   if (error) {
     return (
       <div style={{ padding: 'var(--space-xl)', maxWidth: 720, margin: '0 auto' }}>
-        <Link to="/coverage" style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontSize: 13 }}>
+        <Link to="/territories" style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontSize: 13 }}>
           ← Back to territories
         </Link>
         <h2 style={{ marginTop: 'var(--space-md)', fontFamily: 'var(--font-display)' }}>
@@ -141,7 +155,7 @@ export default function BriefingPage() {
     <div style={{
       display: 'grid',
       gridTemplateColumns: '420px 1fr',
-      height: '100vh',
+      height: 'calc(100vh - 56px)',
       overflow: 'hidden',
     }}>
       {/* ── Left panel ── */}
@@ -157,7 +171,7 @@ export default function BriefingPage() {
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
         }}>
-          <Link to="/coverage" style={{
+          <Link to="/territories" style={{
             color: 'var(--text-tertiary)',
             textDecoration: 'none',
             fontSize: 12,
