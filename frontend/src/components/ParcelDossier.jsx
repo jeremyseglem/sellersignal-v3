@@ -1064,6 +1064,14 @@ function _monthsAgo(isoDate) {
 // the full harvester match plus the parcel's owner_name so we can
 // decide whether the owner IS the decedent (the common case) vs a
 // surviving spouse / co-owner scenario.
+//
+// Uses the enriched fields that the /api/parcels/{pin} endpoint now
+// attaches per-match:
+//   personal_representative  — the identified heir-in-charge, or null
+//   contact_status           — one of family_pr_identified,
+//                               unworkable_pr, no_pr_yet,
+//                               parties_not_scraped, not_applicable
+//   all_case_parties         — full docket party list for context
 function _buildProbateCard(match, parcel) {
   const decedentParty = (match.party_names || []).find(
     (p) => (p.role || '').toLowerCase() === 'decedent'
@@ -1079,17 +1087,10 @@ function _buildProbateCard(match, parcel) {
         { year: 'numeric', month: 'long', day: 'numeric' })
     : null;
   const caseNum = match.document_ref;
-  // KC Superior Court Clerk's public case search portal (KC Script
-  // Portal). The search page doesn't take a case number in the query
-  // string directly, so we link to the case-search landing page and
-  // ask the agent to paste the case number. This is the correct
-  // public source — verified April 2026 via
-  // https://kingcountycourt.us/ and kingcounty.gov records-access docs.
   const caseUrl = caseNum
     ? 'https://dja-prd-ecexap1.kingcounty.gov/node/501'
     : null;
 
-  // Derive a human timing phrase from months elapsed.
   const monthsElapsed = _monthsAgo(filed);
   let timingPhrase = 'The estate is in the decision window.';
   if (monthsElapsed != null) {
@@ -1104,20 +1105,52 @@ function _buildProbateCard(match, parcel) {
     }
   }
 
-  // The headline statement — the single most important sentence.
-  const headline = ownerIsDecedent
-    ? `${_titleCaseName(ownerName)} owned this property and is the decedent in this probate filing.`
-    : `A probate filing is active for ${decedentDisplay}, whose name appears in the ownership record for this property.`;
+  // PR extraction. `personal_representative` is null when no PR has
+  // been identified on the docket yet. When present, has name + first
+  // name + last name + classification (family / attorney / corporate /
+  // unknown) + role_source ('personal_representative' for formal
+  // appointment, 'petitioner' for family member who filed to be
+  // appointed — typically the incoming PR).
+  const pr = match.personal_representative || null;
+  const prDisplay = pr ? _titleCaseName(pr.name) : null;
+  const prRoleLabel = pr
+    ? (pr.role_source === 'personal_representative'
+        ? 'Personal representative (appointed)'
+        : 'Petitioner (likely incoming personal representative)')
+    : null;
+  const prClassLabel = pr?.classification === 'family'
+    ? 'family member'
+    : pr?.classification === 'attorney'
+      ? 'attorney'
+      : pr?.classification === 'corporate'
+        ? 'corporate fiduciary'
+        : null;
+
+  // Other named parties on the docket when no PR is appointed yet —
+  // filter out the decedent and any already-identified PR.
+  const otherParties = (match.all_case_parties || []).filter((p) => {
+    if (p.role === 'deceased') return false;
+    if (pr && p.name_raw === pr.name) return false;
+    return true;
+  });
+
+  const contactStatus = match.contact_status || 'parties_not_scraped';
 
   return {
     kind: 'probate',
-    headline,
+    contactStatus,
+    ownerIsDecedent,
+    decedentDisplay,
+    ownerName: _titleCaseName(ownerName),
     filedDisplay,
     caseNum,
     caseUrl,
     timingPhrase,
-    ownerIsDecedent,
-    decedentDisplay,
+    pr,
+    prDisplay,
+    prRoleLabel,
+    prClassLabel,
+    otherParties,
   };
 }
 
@@ -1192,15 +1225,20 @@ function RecommendedActionBlock({ rec, parcel, harvesterMatches }) {
   );
 }
 
-// Sub-component: operator-format probate card. Kept separate from
-// RecommendedActionBlock so the layout structure is obvious from the
-// caller and we can add OperatorDivorceCard / OperatorForeclosureCard
-// in the same pattern when those signal families get rewritten.
+// Sub-component: operator-format probate card. Branches on
+// contact_status so the agent sees a different call-to-action
+// depending on whether a workable PR has been identified:
+//   family_pr_identified — CALL [PR NAME], full action card
+//   no_pr_yet            — docket exists but no PR appointed;
+//                          show other named parties, direct agent
+//                          to monitor
+//   parties_not_scraped  — case exists, parties haven't been
+//                          harvested yet; direct agent to docket
+//   unworkable_pr        — corporate/attorney PR, acknowledge
+//                          limited workability
+//   pr_unknown_classification — PR exists but classification wasn't
+//                          determinable; treat conservatively
 function OperatorProbateCard({ card }) {
-  // Section header styling — small caps, uppercase, muted. Each
-  // section below has a 1-sentence / short-paragraph body designed
-  // to be read in the order they appear: what happened, who to
-  // contact, how to find them, why now, what to say, first move.
   const section = (label, body, key) => (
     <div key={key} style={{ marginTop: 'var(--space-sm)' }}>
       <div style={{
@@ -1224,11 +1262,263 @@ function OperatorProbateCard({ card }) {
     </div>
   );
 
+  // Common context line: probate filed + case number. Used by all
+  // status variants below.
+  const contextLine = (card.filedDisplay || card.caseNum) && (
+    <div style={{
+      marginTop: 'var(--space-xs)',
+      fontSize: 12,
+      color: 'var(--text-tertiary)',
+    }}>
+      Re: estate of {card.decedentDisplay}
+      {card.filedDisplay && <> · Probate filed {card.filedDisplay}</>}
+      {card.caseNum && (
+        <> · King County Superior Court, case {card.caseNum}</>
+      )}
+    </div>
+  );
+
+  // Common docket link — renders the case search URL with the case
+  // number in a monospace span the agent can copy.
+  const docketLink = card.caseUrl ? (
+    <>
+      <a
+        href={card.caseUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          color: 'var(--accent)',
+          textDecoration: 'none',
+          borderBottom: '1px dotted var(--accent)',
+        }}
+      >
+        King County Superior Court case search →
+      </a>
+      {card.caseNum && (
+        <>
+          {' '}(case{' '}
+          <span style={{
+            fontFamily: 'monospace',
+            padding: '1px 4px',
+            background: 'var(--bg-card)',
+            borderRadius: 2,
+          }}>
+            {card.caseNum}
+          </span>)
+        </>
+      )}
+    </>
+  ) : (
+    <>King County Superior Court case search</>
+  );
+
+  // ── Variant A: family_pr_identified — the card you want ──
+  if (card.contactStatus === 'family_pr_identified' && card.pr) {
+    return (
+      <div style={{ marginTop: 'var(--space-sm)' }}>
+        {/* Headline is the CALL directive with the PR's name. */}
+        <div style={{
+          fontSize: 18,
+          color: 'var(--text)',
+          fontFamily: 'var(--font-serif)',
+          fontWeight: 600,
+          lineHeight: 1.3,
+          marginTop: 'var(--space-xs)',
+        }}>
+          Call {card.prDisplay}
+        </div>
+        <div style={{
+          fontSize: 12,
+          color: 'var(--text-secondary)',
+          marginTop: 2,
+          fontStyle: 'italic',
+          fontFamily: 'var(--font-serif)',
+        }}>
+          {card.prRoleLabel}
+          {card.prClassLabel && ` · ${card.prClassLabel}`}
+        </div>
+
+        {contextLine}
+
+        {section(
+          'Why now',
+          <>
+            {card.prDisplay} controls the estate's decision on this
+            property. {card.timingPhrase}
+          </>,
+          'why'
+        )}
+
+        {section(
+          'What to say',
+          'Condolence first. Offer help navigating property decisions during estate settlement — valuation, carrying costs, timeline guidance. Do not ask for the listing. Most agents treat estates as transactions; being the one who helped will matter when the estate is ready to list.',
+          'what'
+        )}
+
+        {section(
+          'First move',
+          <>
+            Pull {card.prDisplay}&rsquo;s mailing address from the
+            court filing ({docketLink}), then send a handwritten
+            letter. Follow up in two weeks if no reply. Do not
+            cold-call.
+          </>,
+          'first'
+        )}
+      </div>
+    );
+  }
+
+  // ── Variant B: no_pr_yet — case exists, no PR appointed ──
+  if (card.contactStatus === 'no_pr_yet') {
+    return (
+      <div style={{ marginTop: 'var(--space-sm)' }}>
+        <div style={{
+          fontSize: 15,
+          color: 'var(--text)',
+          fontFamily: 'var(--font-serif)',
+          lineHeight: 1.4,
+          marginTop: 'var(--space-xs)',
+        }}>
+          {card.ownerIsDecedent
+            ? `${card.ownerName} is deceased. No personal representative has been appointed yet.`
+            : `${card.decedentDisplay} is deceased. No personal representative has been appointed yet.`}
+        </div>
+
+        {contextLine}
+
+        {card.otherParties.length > 0 && section(
+          'Other parties on the docket',
+          <>
+            {card.otherParties.map((p, i) => (
+              <div key={i}>
+                {_titleCaseName(p.name_raw)}
+                {p.raw_role && (
+                  <span style={{
+                    color: 'var(--text-tertiary)',
+                    fontSize: 12,
+                    marginLeft: 6,
+                  }}>
+                    · {p.raw_role}
+                  </span>
+                )}
+                {p.pr_classification === 'family' && (
+                  <span style={{
+                    color: 'var(--accent)',
+                    fontSize: 11,
+                    marginLeft: 6,
+                  }}>
+                    (likely family)
+                  </span>
+                )}
+              </div>
+            ))}
+          </>,
+          'parties'
+        )}
+
+        {section(
+          'Why this still matters',
+          <>
+            {card.timingPhrase} A PR will be appointed soon — often
+            a named family member from the docket above.
+          </>,
+          'why'
+        )}
+
+        {section(
+          'First move',
+          <>
+            Monitor the docket at {docketLink}. Check back every two
+            weeks. Once a personal representative is appointed,
+            send a condolence letter — their name and mailing address
+            will be on the appointment filing.
+          </>,
+          'first'
+        )}
+      </div>
+    );
+  }
+
+  // ── Variant C: parties_not_scraped — data gap ──
+  if (card.contactStatus === 'parties_not_scraped') {
+    return (
+      <div style={{ marginTop: 'var(--space-sm)' }}>
+        <div style={{
+          fontSize: 15,
+          color: 'var(--text)',
+          fontFamily: 'var(--font-serif)',
+          lineHeight: 1.4,
+          marginTop: 'var(--space-xs)',
+        }}>
+          {card.ownerIsDecedent
+            ? `${card.ownerName} is deceased. Case parties have not been fetched yet.`
+            : `A probate filing is active for ${card.decedentDisplay}. Case parties have not been fetched yet.`}
+        </div>
+
+        {contextLine}
+
+        {section('Why now', card.timingPhrase, 'why')}
+
+        {section(
+          'First move',
+          <>
+            Open {docketLink} and search by case number. The
+            appointment filing lists the personal representative's
+            name and mailing address — both are public. Send a
+            condolence-first letter.
+          </>,
+          'first'
+        )}
+      </div>
+    );
+  }
+
+  // ── Variant D: unworkable_pr — corporate/attorney PR ──
+  if (card.contactStatus === 'unworkable_pr' && card.pr) {
+    return (
+      <div style={{ marginTop: 'var(--space-sm)' }}>
+        <div style={{
+          fontSize: 15,
+          color: 'var(--text)',
+          fontFamily: 'var(--font-serif)',
+          lineHeight: 1.4,
+          marginTop: 'var(--space-xs)',
+        }}>
+          Personal representative is {card.prClassLabel || 'corporate / attorney'} —
+          outreach typically does not convert.
+        </div>
+
+        {contextLine}
+
+        {section(
+          'Why this still matters',
+          <>
+            {card.timingPhrase} Corporate fiduciaries and attorney
+            PRs usually list through established channels, but the
+            property will still transact and the beneficiaries
+            sometimes have input.
+          </>,
+          'why'
+        )}
+
+        {section(
+          'First move',
+          <>
+            Lower-priority. Monitor the docket at {docketLink} for
+            any change in representation, or watch for listing
+            activity on the parcel.
+          </>,
+          'first'
+        )}
+      </div>
+    );
+  }
+
+  // ── Fallback: pr_unknown_classification or anything else ──
   return (
     <div style={{ marginTop: 'var(--space-sm)' }}>
-      {/* Headline — the single most important sentence. Renders in
-          the primary text color and serif face so it reads like a
-          conclusion, not a label. */}
       <div style={{
         fontSize: 15,
         color: 'var(--text)',
@@ -1236,83 +1526,19 @@ function OperatorProbateCard({ card }) {
         lineHeight: 1.4,
         marginTop: 'var(--space-xs)',
       }}>
-        {card.headline}
+        {card.ownerIsDecedent
+          ? `${card.ownerName} is deceased. Probate is active.`
+          : `A probate filing is active for ${card.decedentDisplay}.`}
       </div>
-
-      {/* Filing context line — date + case number, subtle. */}
-      {(card.filedDisplay || card.caseNum) && (
-        <div style={{
-          marginTop: 'var(--space-xs)',
-          fontSize: 12,
-          color: 'var(--text-tertiary)',
-        }}>
-          {card.filedDisplay && <>Probate filed {card.filedDisplay}</>}
-          {card.filedDisplay && card.caseNum && ' · '}
-          {card.caseNum && (
-            <>King County Superior Court, case {card.caseNum}</>
-          )}
-        </div>
-      )}
-
-      {section(
-        'Who to contact',
-        card.ownerIsDecedent
-          ? 'The personal representative of the estate — not the owner of record, who is deceased.'
-          : 'The personal representative of the estate.',
-        'who'
-      )}
-
-      {section(
-        'How to find them',
-        <>
-          {card.caseUrl ? (
-            <>
-              Open{' '}
-              <a
-                href={card.caseUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  color: 'var(--accent)',
-                  textDecoration: 'none',
-                  borderBottom: '1px dotted var(--accent)',
-                }}
-              >
-                King County Superior Court case search →
-              </a>{' '}
-              and search Probate/Guardianship by case number{' '}
-              <span style={{
-                fontFamily: 'monospace',
-                padding: '1px 4px',
-                background: 'var(--bg-card)',
-                borderRadius: 2,
-              }}>
-                {card.caseNum}
-              </span>. The initial filing lists the personal
-              representative&rsquo;s name and mailing address — both
-              are public record.
-            </>
-          ) : (
-            <>Search King County Superior Court records for the
-               personal representative&rsquo;s name and mailing
-               address. Both are public.</>
-          )}
-        </>,
-        'how'
-      )}
-
+      {contextLine}
       {section('Why now', card.timingPhrase, 'why')}
-
-      {section(
-        'What to say',
-        'Condolence first. Offer help navigating property decisions during estate settlement — valuation, carrying costs, timeline guidance. Do not ask for the listing. Most agents treat estates as transactions; being the one who helped will matter when the estate is ready to list.',
-        'what'
-      )}
-
       {section(
         'First move',
-        'Send a handwritten letter to the personal representative at the mailing address on the case filing. Follow up in two weeks if there is no reply. Do not cold-call.',
+        <>
+          Open {docketLink} and pull the appointment filing. It
+          names the personal representative and their mailing
+          address — the agent's entry point.
+        </>,
         'first'
       )}
     </div>

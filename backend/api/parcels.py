@@ -210,6 +210,105 @@ async def get_parcel(pin: str):
             response['convergence']        = bool(merged.get('convergence'))
             response['strict_match_count'] = int(merged.get('strict_match_count') or 0)
 
+        # ── Case-parties enrichment: personal representative + contact routing ──
+        # For each harvester match with a court-record document_ref (probate,
+        # divorce from KC Superior Court), look up scraped parties from
+        # case_parties_v3 and attach:
+        #   - personal_representative: {name, name_first/last, classification,
+        #       role_source}  (null if no PR identified yet)
+        #   - contact_status: one of
+        #       family_pr_identified    — actionable PR is a family member, CALL
+        #       unworkable_pr           — corporate/attorney PR, demote lead
+        #       no_pr_yet               — case exists, no PR appointed yet
+        #       parties_not_scraped     — case exists, parties not yet harvested
+        #       not_applicable          — non-court-record signal type
+        #   - all_case_parties: full list of scraped parties on the case
+        #
+        # Mirrors the enrichment already happening in
+        # /api/harvest/matches/{zip} (backend/api/harvest.py ~line 2290). See
+        # that endpoint for the classification lookup table. Without this
+        # enrichment, the dossier UI has no way to render "CALL ROBERT
+        # ARNOLD" — it only gets the decedent name from the raw signal.
+        court_case_refs = [
+            m.get('document_ref')
+            for m in response['harvester_matches']
+            if m.get('document_ref') and m.get('source_type') == 'kc_superior_court'
+        ]
+        parties_by_case: dict = {}
+        if court_case_refs:
+            try:
+                parties_res = (supa.table('case_parties_v3')
+                               .select('case_number, role, raw_role, '
+                                       'name_raw, name_last, name_first, '
+                                       'name_middle, represented_by, '
+                                       'pr_classification')
+                               .in_('case_number', court_case_refs)
+                               .execute())
+                for p in (parties_res.data or []):
+                    parties_by_case.setdefault(p['case_number'], []).append(p)
+            except Exception:
+                # case_parties_v3 may not exist in some deployments, or may
+                # not be populated yet. Fall through with empty dict — the
+                # harvester_matches will carry contact_status='parties_not_scraped'
+                # for every court match rather than failing the endpoint.
+                parties_by_case = {}
+
+        for m in response['harvester_matches']:
+            case_num = m.get('document_ref')
+            src = m.get('source_type')
+            if not case_num or src != 'kc_superior_court':
+                m['personal_representative'] = None
+                m['contact_status'] = 'not_applicable'
+                m['all_case_parties'] = []
+                continue
+
+            case_parties = parties_by_case.get(case_num, [])
+            m['all_case_parties'] = case_parties
+
+            # Priority: formal PR > petitioner (often becomes PR) > nothing.
+            # Both surface under personal_representative for UI simplicity;
+            # role_source tells downstream which was used.
+            personal_rep = None
+            for p in case_parties:
+                if p['role'] == 'personal_representative':
+                    personal_rep = {
+                        'name':           p['name_raw'],
+                        'name_last':      p['name_last'],
+                        'name_first':     p['name_first'],
+                        'name_middle':    p['name_middle'],
+                        'classification': p['pr_classification'],
+                        'role_source':    'personal_representative',
+                    }
+                    break
+            if not personal_rep:
+                for p in case_parties:
+                    if p['role'] == 'petitioner':
+                        personal_rep = {
+                            'name':           p['name_raw'],
+                            'name_last':      p['name_last'],
+                            'name_first':     p['name_first'],
+                            'name_middle':    p['name_middle'],
+                            'classification': p.get('pr_classification') or 'family',
+                            'role_source':    'petitioner',
+                        }
+                        break
+            m['personal_representative'] = personal_rep
+
+            # Contact status — the single routing bit that drives the
+            # operator card. UI should not need to interpret pr_classification.
+            if personal_rep:
+                cls = personal_rep.get('classification')
+                if cls == 'family':
+                    m['contact_status'] = 'family_pr_identified'
+                elif cls in ('corporate', 'attorney'):
+                    m['contact_status'] = 'unworkable_pr'
+                else:
+                    m['contact_status'] = 'pr_unknown_classification'
+            elif case_parties:
+                m['contact_status'] = 'no_pr_yet'
+            else:
+                m['contact_status'] = 'parties_not_scraped'
+
         # If there's no actionable signal (no investigation AND no
         # harvester match promoting this parcel), include the why-not-selling
         # structural read. With a strict harvester match, the agent already
