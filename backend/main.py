@@ -22,6 +22,7 @@ from backend.api import (
     admin,
     deep_signal,
     harvest,
+    profile,
 )
 
 
@@ -106,6 +107,7 @@ app.include_router(map_data.router,       prefix="/api/map",         tags=["map"
 app.include_router(admin.router,          prefix="/api/admin",       tags=["admin"])
 app.include_router(deep_signal.router,    prefix="/api/deep-signal", tags=["deep-signal"])
 app.include_router(harvest.router,        prefix="/api/harvest",     tags=["harvest"])
+app.include_router(profile.router,        prefix="/api/profile",     tags=["profile"])
 
 
 # ── FRONTEND ───────────────────────────────────────────────────────────

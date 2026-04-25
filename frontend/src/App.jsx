@@ -8,36 +8,33 @@ import BriefingPage    from './pages/BriefingPage.jsx';
 import ProfilePage     from './pages/ProfilePage.jsx';
 import { PrivacyPage, TermsPage } from './pages/LegalPages.jsx';
 
+import AuthGate from './components/shell/AuthGate.jsx';
+import { useAuth } from './lib/AuthContext.jsx';
+
 // Application routes for the V3 React SPA.
 //
-// Public routes (no auth required for now — Session 2 adds the auth
-// guard wrapper):
+// Public routes (no auth):
 //   /            — marketing landing page
-//   /login       — sign-in (Supabase magic link, Session 2)
-//   /signup      — request access (invite-only beta)
-//   /privacy     — privacy policy placeholder
-//   /terms       — terms of service placeholder
+//   /login       — magic-link sign-in
+//   /signup      — magic-link 'request access'
+//   /privacy     — privacy policy
+//   /terms       — terms of service
 //
-// Authenticated routes (Session 2 will gate these on auth):
-//   /territories — agent's territory list (the post-sign-in home)
-//   /zip/:zip    — the briefing for a given ZIP — operator cards,
-//                  tiered map, dossier
-//   /profile     — agent profile (name, brokerage, signature)
+// Authenticated routes (gated via <AuthGate>):
+//   /territories — agent's territory list
+//   /zip/:zip    — briefing (operator cards, tiered map, dossier)
+//   /profile     — agent profile form
 //
-// Legacy aliases (kept temporarily so any existing bookmarks survive
-// the transition):
-//   /coverage    — redirects to /territories
+// Legacy alias: /coverage redirects to /territories.
+//
+// AuthGate handles the redirect-to-login flow, including preserving
+// the original path as ?next= so post-sign-in the user lands where
+// they were trying to go.
+//
+// Inside protected pages, components call useAuth() directly to pull
+// the current profile + signOut handler. App.jsx no longer threads
+// these as explicit props — the context is the source of truth.
 export default function App() {
-  // Session 1: no real auth wired yet, so agent is null everywhere
-  // and the authenticated-mode pages just render with public-style
-  // headers. Session 2 replaces this with a real AuthProvider that
-  // populates `agent` from Supabase and threads it down via context
-  // (or props for now).
-  const agent = null;
-  const handleSignOut = () => {
-    // Stub — Session 2 wires real Supabase signOut.
-  };
-
   return (
     <Routes>
       {/* Public marketing + auth */}
@@ -50,23 +47,49 @@ export default function App() {
       {/* Authenticated app surfaces */}
       <Route
         path="/territories"
-        element={<TerritoriesPage agent={agent} onSignOut={handleSignOut} />}
+        element={
+          <AuthGate>
+            <AuthenticatedTerritories />
+          </AuthGate>
+        }
       />
       <Route
         path="/zip/:zip"
-        element={<BriefingPage agent={agent} onSignOut={handleSignOut} />}
+        element={
+          <AuthGate>
+            <AuthenticatedBriefing />
+          </AuthGate>
+        }
       />
       <Route
         path="/profile"
-        element={<ProfilePage agent={agent} onSignOut={handleSignOut} />}
+        element={
+          <AuthGate>
+            <ProfilePage />
+          </AuthGate>
+        }
       />
 
-      {/* Legacy alias — anyone hitting /coverage gets redirected to
-          the new /territories route. Remove after a few months. */}
+      {/* Legacy alias */}
       <Route path="/coverage" element={<Navigate to="/territories" replace />} />
 
-      {/* Catch-all — unknown URL goes back to the marketing page */}
+      {/* Catch-all */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
+}
+
+
+// Thin wrappers that pull profile + signOut from context and pass
+// them to the page as props. Pages are kept prop-driven (rather
+// than calling useAuth themselves) so they can be reused in
+// non-authenticated contexts later (e.g. an admin preview tool).
+function AuthenticatedTerritories() {
+  const { profile, signOut } = useAuth();
+  return <TerritoriesPage agent={profile} onSignOut={signOut} />;
+}
+
+function AuthenticatedBriefing() {
+  const { profile, signOut } = useAuth();
+  return <BriefingPage agent={profile} onSignOut={signOut} />;
 }
