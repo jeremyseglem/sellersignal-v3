@@ -296,20 +296,137 @@ def _investigation_promotes_to_call_now(L):
     return rec.get('category') == 'call_now' and (rec.get('pressure') or 0) >= 3
 
 
-def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
-    """CALL NOW picks with slot reservations:
+# ─────────────────────────────────────────────────────────────────────
+# CALL NOW eligibility contract
+#
+# Per product rule: a parcel can only appear in CALL NOW if ALL of
+# these hold. Any single failure drops the lead out of the section.
+# Leads that fail the contract still appear in BUILD NOW or STRATEGIC
+# HOLDS if the rest of the logic qualifies them — they just can't be
+# promoted to Tier 1.
+#
+# This exists because the legacy SerpAPI investigator can promote a
+# lead to pressure=3 via regex hits on Google snippets (e.g., obit
+# matched on partial surname, probate matched on a neighboring case).
+# The William S Michael parcel (pin 2571200030) is the canonical
+# failure: alive owner, no harvester backing, "call now about a
+# probate that belongs to a different William." The contract below
+# blocks that entire class of false positives.
+# ─────────────────────────────────────────────────────────────────────
 
+# Pressure types the contract accepts. These are the signal_types that
+# come from authoritative harvesters (not SerpAPI snippets).
+_CONTRACT_PRESSURE_TYPES = {
+    'probate',
+    'obituary',
+    'divorce',
+    'tax_foreclosure',
+    'trustee_sale',           # future harvester
+    'nod',                    # future harvester
+    'lis_pendens',            # future harvester
+    'financial_distress',     # when backed by a real filing
+}
+
+
+def _has_verified_harvester_support(L):
+    """Contract rule 1 & 2: must have at least one harvester match whose
+    match_strength is 'strict' (not 'weak'). Strict means full-name or
+    decedent-role overlap with the owner, not just surname-only match.
+    """
+    inv = L.get('investigation') or {}
+    matches = inv.get('harvester_matches') or []
+    if not matches:
+        return False
+    return any(m.get('match_strength') == 'strict' for m in matches)
+
+
+def _primary_contact_name(L):
+    """Contract rule 3: return the name of the human the agent should
+    contact, or None if no one can be named. We accept:
+      - owner of record (always present on parcels with a named owner)
+      - surviving spouse / co-owner (derived from multi-owner deeds)
+      - personal representative (from harvester when PR extracted)
+      - petitioner / respondent (from divorce harvester)
+      - trustee / entity principal (from trust or LLC ownership)
+
+    Currently the harvester match records don't always surface the
+    PR/petitioner as a separate field — the owner_name is used as the
+    proxy for "who to call," with understanding that for probate this
+    may be the surviving spouse or co-owner already on the deed rather
+    than the decedent.
+    """
+    if L.get('owner'):
+        return L['owner']
+    if L.get('owner_name'):
+        return L['owner_name']
+    return None
+
+
+def _has_active_pressure_type(L):
+    """Contract rule 4: at least one harvester match must be of a type
+    that represents real, court-backed or similarly authoritative
+    timing pressure.
+    """
+    inv = L.get('investigation') or {}
+    matches = inv.get('harvester_matches') or []
+    return any(
+        m.get('signal_type') in _CONTRACT_PRESSURE_TYPES
+        for m in matches
+    )
+
+
+def _has_blocker_flag(L):
+    """Contract rule 5: active listing / pending sale / recent sale /
+    blocker bit set by upstream processing."""
+    if L.get('has_blocker'):
+        return True
+    inv = L.get('investigation') or {}
+    if inv.get('has_blocker'):
+        return True
+    return False
+
+
+def eligible_for_call_now(L):
+    """Enforce the 5-rule CALL NOW contract on a lead.
+
+    Returns True only if every rule passes. Returns False otherwise —
+    the lead is NOT deleted from the inventory, just blocked from
+    appearing in the Tier 1 section. It can still be a BUILD NOW or
+    STRATEGIC HOLDS candidate downstream.
+    """
+    # Rule 1 & 2: verified source + parcel match confidence
+    if not _has_verified_harvester_support(L):
+        return False
+    # Rule 3: actionable human
+    if _primary_contact_name(L) is None:
+        return False
+    # Rule 4: real timing pressure type
+    if not _has_active_pressure_type(L):
+        return False
+    # Rule 5: no active blocker
+    if _has_blocker_flag(L):
+        return False
+    return True
+
+
+def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
+    """CALL NOW picks with slot reservations AND contract enforcement.
+
+    Slot structure (unchanged):
       Slots 1-2 reserved for Band 3 financial_stress (trustee sale, NOD,
-         lis pendens) — these always lead the week
+         lis pendens)
       Remaining slots: highest-scoring eligible leads, drawn from
          - Band 3 leads NOT demoted by investigation
          - Band 2 leads promoted by investigation pressure=3
 
-    Investigation demotion rule: any Band 3 lead whose deep investigation
-    recommended build_now/hold/avoid gets dropped from CALL NOW eligibility.
+    **Contract enforcement (added):** every candidate must pass
+    eligible_for_call_now(L) before it can enter picks. Leads that
+    would have historically promoted via pressure=3 but have no
+    harvester backing (e.g., SerpAPI-only obit/probate regex hits) are
+    now filtered out regardless of pressure score.
 
     n: maximum number of picks to return. Default None = no cap (return
-       every pressure-3 real signal). Pass an int to cap.
+       every contract-eligible signal). Pass an int to cap.
     """
     def base_filter(L):
         return (L['pin'] not in exclude_pins
@@ -318,11 +435,15 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
 
     picks = []
 
-    # Slots 1-2: Band 3 financial_stress (NOD, trustee sale, lis pendens)
+    # Slots 1-2: Band 3 financial_stress (NOD, trustee sale, lis pendens).
+    # Contract applies here too — a Band 3 financial_stress lead with
+    # no harvester backing is almost certainly a false positive from
+    # the legacy pipeline and should be dropped rather than led with.
     fin_stress = sorted(
         [L for L in leads
          if L['band'] == 3 and L.get('signal_family') == 'financial_stress'
-         and base_filter(L)],
+         and base_filter(L)
+         and eligible_for_call_now(L)],
         key=lambda x: -_score(x),
     )
     for L in fin_stress[:2]:
@@ -330,7 +451,8 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
         if ok in used_owner_keys: continue
         picks.append(L); used_owner_keys.add(ok)
 
-    # Remaining slots: Band 3 NOT demoted, plus Band 2 promoted
+    # Remaining slots: Band 3 NOT demoted, plus Band 2 promoted — with
+    # contract enforcement on every candidate.
     already_picked = {p['pin'] for p in picks}
     remaining = sorted(
         [L for L in leads
@@ -339,7 +461,8 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
              (L['band'] == 3 and not _investigation_demotes_from_call_now(L))
              or _investigation_promotes_to_call_now(L)
          )
-         and base_filter(L)],
+         and base_filter(L)
+         and eligible_for_call_now(L)],
         key=lambda x: -_score(x),
     )
     for L in remaining:
