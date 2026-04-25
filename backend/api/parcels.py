@@ -15,6 +15,27 @@ from backend.scoring.why_not_selling import generate_why_not_selling
 from backend.selection.parcel_state_tags import (
     derive_tags as derive_parcel_state_tags,
 )
+from backend.selection.weekly_selector import resolve_copy as _ws_resolve_copy
+
+# Mirror of _ARCHETYPE_TO_SIGNAL_FAMILY in backend/api/briefings.py.
+# Kept in sync so the dossier sees the same family taxonomy as the
+# playbook card. Single source of truth would be a refactor for
+# another session — both copies should be updated together if
+# archetypes change.
+_ARCHETYPE_TO_SIGNAL_FAMILY = {
+    'trust_aging':              'trust_aging',
+    'trust_mature':             'trust_aging',
+    'trust_young':              'trust_aging',
+    'llc_investor_mature':      'investor_disposition',
+    'llc_investor_early':       'investor_disposition',
+    'llc_long_hold':            'investor_disposition',
+    'individual_long_tenure':   'silent_transition',
+    'individual_settled':       'silent_transition',
+    'individual_recent':        'silent_transition',
+    'absentee_dormant':         'dormant_absentee',
+    'absentee_active':          'dormant_absentee',
+    'estate_heirs':             'family_event_cluster',
+}
 
 router = APIRouter()
 
@@ -198,6 +219,43 @@ async def get_parcel(pin: str):
             # Full sales history — empty list if parcel not harvested yet.
             'sales_history':       sales_history,
         }
+
+        # ── Signal family + copy enrichment for the operator card ──
+        # The playbook endpoint runs this same logic in _shape_lead +
+        # _shape_pick. The dossier path must mirror it so the BUILD
+        # NOW operator card on a clicked parcel matches the playbook
+        # card. We also surface the archetype itself so the UI can
+        # branch on richer detail (e.g., 'llc_long_hold' vs
+        # 'llc_investor_mature') if it ever needs to.
+        raw_archetype = parcel.get('signal_family')
+        signal_family = _ARCHETYPE_TO_SIGNAL_FAMILY.get(
+            raw_archetype, raw_archetype
+        )
+        # resolve_copy expects a lead-shape dict. Build a minimal one
+        # from the parcel's known fields. The merged investigation
+        # (set above) drives any deep-mode action override inside
+        # resolve_copy. signal_family is the family-level key
+        # (investor_disposition, trust_aging, etc.) used to pick the
+        # template; raw_archetype is preserved on the response for
+        # future branching.
+        _lead_for_copy = {
+            'address':       parcel.get('address'),
+            'signal_family': signal_family,
+            'archetype':     raw_archetype,
+            'sub_signal':    None,  # dossier doesn't infer sub-signal
+            'investigation': merged or {},
+        }
+        try:
+            copy_block = _ws_resolve_copy(_lead_for_copy, section=None)
+        except Exception:
+            # Defensive: if resolve_copy fails for any reason, ship a
+            # null copy block. The frontend tolerates None and falls
+            # back to the existing recommended_action one-liner.
+            copy_block = None
+
+        response['signal_family'] = signal_family
+        response['archetype']     = raw_archetype
+        response['copy']          = copy_block
 
         # The merged recommended_action reflects the highest-pressure of
         # (SerpAPI-era action, harvester overlay). This is what the

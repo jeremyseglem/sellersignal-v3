@@ -255,6 +255,23 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
               {signalLabel}
             </div>
           )}
+          {/* One-line situation summary from the backend's resolve_copy.
+              Same source the dossier's BUILD NOW card uses for WHY NOW —
+              showing it on the card too lets the agent skim the deck
+              and recognize lead types without clicking each one open.
+              Renders only when present (always present for classified
+              parcels). */}
+          {lead.copy?.happening && (
+            <div style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: 12,
+              color: 'var(--text-secondary)',
+              marginTop: 4,
+              lineHeight: 1.4,
+            }}>
+              {lead.copy.happening}
+            </div>
+          )}
           {/* Harvester signal tags — render one badge per distinct
               signal_type, plus a convergence badge if 2+ strict signals
               fired on the same pin. These make the lead's actionable

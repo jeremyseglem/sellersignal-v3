@@ -75,6 +75,17 @@ export default function ParcelDossier({ dossier, onClose }) {
   // fire.
   const parcelStateTags = dossier.parcel_state_tags || [];
 
+  // Tier 3 (structural) operator-card inputs. Backend now ships these
+  // on the dossier response so the BUILD NOW card mirrors what the
+  // playbook list shows. signalFamily is one of: investor_disposition,
+  // silent_transition, trust_aging, dormant_absentee,
+  // family_event_cluster (or null for parcels without classification).
+  // copy is { happening, why, action } from resolve_copy() — shared
+  // with the playbook so dossier and list always agree.
+  const signalFamily = dossier.signal_family || null;
+  const archetype    = dossier.archetype || null;
+  const copy         = dossier.copy || null;
+
   const ownerTag = ownerTypeLabel(p.owner_type);
   const signalLabel = p.signal_family ? p.signal_family.replace(/_/g, ' ') : null;
 
@@ -314,6 +325,29 @@ export default function ParcelDossier({ dossier, onClose }) {
             rec={rec}
             parcel={p}
             harvesterMatches={harvesterMatches}
+          />
+        )}
+
+        {/* Tier 3 (structural) BUILD NOW card. Renders ONLY when
+            there's no urgent recommended_action firing (no probate,
+            divorce, tax-foreclosure overlay). For parcels that DO
+            have an urgent rec, the operator-format probate card
+            already covers the action and we don't want a duplicate
+            BUILD NOW block competing with it.
+
+            The card uses the existing copy templates that the
+            backend already generates for every classified parcel,
+            keyed by signal_family. Five families currently render:
+            investor_disposition, trust_aging, silent_transition,
+            dormant_absentee, family_event_cluster. */}
+        {(!rec || !rec.category || rec.category === 'hold') &&
+         signalFamily && copy && (
+          <OperatorBuildNowCard
+            signalFamily={signalFamily}
+            archetype={archetype}
+            copy={copy}
+            parcel={p}
+            parcelStateTags={parcelStateTags}
           />
         )}
 
@@ -1238,6 +1272,269 @@ function RecommendedActionBlock({ rec, parcel, harvesterMatches }) {
 //                          limited workability
 //   pr_unknown_classification — PR exists but classification wasn't
 //                          determinable; treat conservatively
+// ──────────────────────────────────────────────────────────────────────
+// OperatorBuildNowCard — Tier 3 (structural) operator card.
+//
+// Renders for parcels classified into a structural signal_family
+// (investor_disposition, trust_aging, silent_transition,
+// dormant_absentee, family_event_cluster) that DON'T already have an
+// urgent CALL NOW overlay (probate / divorce / tax_foreclosure). The
+// caller in ParcelDossier already enforces that gate.
+//
+// Card layout mirrors the probate variants: primary headline,
+// secondary subtitle, urgency badge, optional address/value context
+// line, WHY NOW (composed from the backend's resolve_copy
+// happening + why), NEXT STEP (single bold directive from
+// copy.action), and a beta-flagged Contact block for actionable
+// families.
+//
+// The headline + tone are derived per-family from FAMILY_CONFIG
+// below. Copy content (the body of WHY NOW and NEXT STEP) comes
+// straight from the shared backend copy templates so dossier and
+// playbook always agree.
+// ──────────────────────────────────────────────────────────────────────
+
+const _BUILD_NOW_FAMILY_CONFIG = {
+  investor_disposition: {
+    label: 'Investor disposition window',
+    urgency: 'Build · approaching disposition window',
+    urgencyColor: 'var(--accent)',
+    tone: 'analytical',
+    showsContact: true,        // LLC has a mailing address; outreach makes sense
+  },
+  trust_aging: {
+    label: 'Trust-held · biological decision window',
+    urgency: 'Build · long-cycle trust position',
+    urgencyColor: 'var(--accent)',
+    tone: 'sensitive',
+    showsContact: false,       // Trustee outreach is relational, not letter-based
+  },
+  silent_transition: {
+    label: 'Long individual tenure',
+    urgency: 'Build · quiet transition likely',
+    urgencyColor: 'var(--accent)',
+    tone: 'relational',
+    showsContact: true,
+  },
+  dormant_absentee: {
+    label: 'Dormant out-of-area owner',
+    urgency: 'Build · disengaged owner',
+    urgencyColor: 'var(--accent)',
+    tone: 'analytical',
+    showsContact: true,
+  },
+  family_event_cluster: {
+    label: 'Family event cluster',
+    urgency: 'Build · pending verification',
+    urgencyColor: 'var(--tone-sensitive)',
+    tone: 'sensitive',
+    showsContact: false,       // Verification first, then contact
+  },
+};
+
+function OperatorBuildNowCard({ signalFamily, archetype, copy, parcel, parcelStateTags }) {
+  const config = _BUILD_NOW_FAMILY_CONFIG[signalFamily];
+
+  // Defensive: if a parcel has a signal_family the UI doesn't know
+  // about, render nothing rather than crashing or showing a generic
+  // empty card. Silent fallback to the existing dossier sections.
+  if (!config) return null;
+
+  // The primary contact name shown in the headline. For LLCs and
+  // trusts the entity name is the contact (e.g., '1410 151ST LLC',
+  // 'CAHILL FAMILY TRUST'). For individuals the owner name is title-
+  // cased. owner_name comes from parcels_v3 — same field the playbook
+  // uses, so display agrees with the list view.
+  const ownerRaw = parcel?.owner_name || parcel?.owner || '';
+  const ownerType = (parcel?.owner_type || '').toLowerCase();
+  // LLCs / Trusts / Corporations: leave the all-caps entity name as
+  // recorded — that's how the agent will look them up. Individuals
+  // get title-cased for readability.
+  const isEntity = ['llc', 'trust', 'corporation', 'partnership']
+    .some((t) => ownerType.includes(t));
+  const ownerDisplay = isEntity
+    ? ownerRaw.toUpperCase()
+    : (ownerRaw ? _titleCaseName(ownerRaw) : '(unknown owner)');
+
+  // Tenure label — the most concrete fact about why this parcel is
+  // in this signal family. Used as part of the subtitle so the agent
+  // sees 'Investor-held · 14 yr tenure' rather than abstract jargon.
+  const tenure = parcel?.tenure_years;
+  const tenureLabel = tenure
+    ? `${Math.round(tenure)} yr tenure`
+    : null;
+
+  // Out-of-state badge: when the owner mails to a different state,
+  // surface that on the subtitle — it's a strong supporting signal
+  // for investor_disposition / dormant_absentee families.
+  const oosLabel = parcel?.is_out_of_state
+    ? `mails to ${parcel?.owner_state}`
+    : null;
+
+  // Compose the subtitle: family label + tenure + OOS, dot-separated,
+  // skip falsy parts. Reads naturally:
+  //   'Investor disposition window · 14 yr tenure · mails to NY'
+  const subtitle = [config.label, tenureLabel, oosLabel]
+    .filter(Boolean)
+    .join(' · ');
+
+  // Section helper — same visual grammar as OperatorProbateCard.
+  const section = (label, body, key) => (
+    <div key={key} style={{ marginTop: 'var(--space-sm)' }}>
+      <div style={{
+        fontSize: 10,
+        color: 'var(--text-tertiary)',
+        fontWeight: 700,
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
+        marginBottom: 3,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 13,
+        color: 'var(--text)',
+        lineHeight: 1.5,
+        fontFamily: 'var(--font-serif)',
+      }}>
+        {body}
+      </div>
+    </div>
+  );
+
+  const urgencyBadge = (
+    <div style={{
+      marginTop: 'var(--space-xs)',
+      display: 'inline-block',
+      padding: '2px 8px',
+      borderRadius: 3,
+      background: config.urgencyColor,
+      color: 'white',
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: '0.1em',
+      textTransform: 'uppercase',
+      fontFamily: 'var(--font-sans)',
+    }}>
+      {config.urgency}
+    </div>
+  );
+
+  // WHY NOW body: backend ships copy.happening (one-line situation
+  // summary) and copy.why (one-line rationale). Concatenate with a
+  // space so the agent reads them as a unit: 'Investor holding past
+  // typical exit window. Numbers-driven decision, not emotional.'
+  // If only one is present, render whichever is.
+  const whyNowText = [copy?.happening, copy?.why]
+    .filter(Boolean)
+    .join(' ');
+
+  // NEXT STEP body: backend ships copy.action. This is already
+  // imperative voice from the templates; render as bold directive.
+  const nextStep = copy?.action;
+
+  // Top parcel-state tag, used as an evidentiary line just above
+  // WHY NOW so the agent sees the most concrete supporting fact.
+  // E.g. 'High equity: implied 7.2x appreciation since last
+  // arms-length sale ($810K → $5.8M over 22 yrs)'. Pick the
+  // highest-rank tag if multiple fired.
+  const topTag = (parcelStateTags || [])
+    .slice()
+    .sort((a, b) => (b.rank || 0) - (a.rank || 0))[0];
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      padding: 'var(--space-md)',
+      borderLeft: `3px solid ${config.urgencyColor}`,
+      background: 'var(--bg)',
+    }}>
+      <div style={{
+        fontSize: 11,
+        color: config.urgencyColor,
+        fontWeight: 700,
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
+      }}>
+        Recommended action — build now
+      </div>
+
+      {/* PRIMARY CTA — owner/entity name, sized to be unmissable. */}
+      <div style={{
+        fontSize: 22,
+        color: 'var(--text)',
+        fontFamily: 'var(--font-serif)',
+        fontWeight: 700,
+        lineHeight: 1.2,
+        marginTop: 'var(--space-xs)',
+      }}>
+        {ownerDisplay}
+      </div>
+      {subtitle && (
+        <div style={{
+          fontSize: 12,
+          color: 'var(--text-secondary)',
+          marginTop: 2,
+          fontStyle: 'italic',
+          fontFamily: 'var(--font-serif)',
+        }}>
+          {subtitle}
+        </div>
+      )}
+
+      {urgencyBadge}
+
+      {/* Optional supporting fact: the strongest parcel-state tag
+          (HIGH EQUITY / LEGACY HOLD / etc.) renders in the muted
+          context-line slot directly under the urgency badge. Same
+          slot probate uses for filing date + case number. */}
+      {topTag && (
+        <div style={{
+          marginTop: 'var(--space-xs)',
+          fontSize: 12,
+          color: 'var(--text-tertiary)',
+        }}>
+          {topTag.label}: {topTag.description}
+        </div>
+      )}
+
+      {whyNowText && section('Why now', whyNowText, 'why')}
+
+      {/* Contact block: same beta treatment as probate Variant A —
+          honest 'address pending' state with the upcoming-feature
+          label. Only renders for families where letter outreach is
+          the appropriate channel. trust_aging and family_event_cluster
+          skip this because the right move there is relational
+          (estate attorney connector, obit verification) rather than
+          a cold letter. */}
+      {config.showsContact && section(
+        'Contact',
+        <div>
+          <div style={{ color: 'var(--text-tertiary)' }}>
+            Mailing address: not yet resolved
+          </div>
+          <div style={{
+            marginTop: 4,
+            fontSize: 11,
+            color: 'var(--text-tertiary)',
+            fontStyle: 'italic',
+          }}>
+            Auto-resolution coming in next release · beta
+          </div>
+        </div>,
+        'contact'
+      )}
+
+      {nextStep && section(
+        'Next step',
+        <strong>{nextStep}</strong>,
+        'next'
+      )}
+    </div>
+  );
+}
+
+
 function OperatorProbateCard({ card }) {
   const section = (label, body, key) => (
     <div key={key} style={{ marginTop: 'var(--space-sm)' }}>
