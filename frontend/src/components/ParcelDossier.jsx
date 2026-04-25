@@ -305,9 +305,16 @@ export default function ParcelDossier({ dossier, onClose }) {
           />
         )}
 
-        {/* Recommended action — if investigated */}
+        {/* Recommended action — if investigated. Receives the full
+            parcel + harvester match context so it can generate a
+            Who/How/Why/What/First-Move operator card instead of a
+            one-line analyst summary. */}
         {rec && rec.category && rec.category !== 'hold' && (
-          <RecommendedActionBlock rec={rec} />
+          <RecommendedActionBlock
+            rec={rec}
+            parcel={p}
+            harvesterMatches={harvesterMatches}
+          />
         )}
 
         {/* Harvester matches — itemized list of obit / probate / divorce /
@@ -997,13 +1004,145 @@ function SalesHistoryBlock({ sales }) {
   );
 }
 
-function RecommendedActionBlock({ rec }) {
+// ──────────────────────────────────────────────────────────────────────
+// Helpers used by the operator card. Extracted to keep the component
+// body focused on layout.
+// ──────────────────────────────────────────────────────────────────────
+
+// Title-case a raw uppercase name from court records. 'MATTHEW ARNOLD'
+// becomes 'Matthew Arnold'. Leaves initialisms like LLC alone.
+function _titleCaseName(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\b(Llc|Llp|Inc|Corp|Lp|Co)\b/g, (m) => m.toUpperCase());
+}
+
+// Normalize a name for comparison — strip punctuation, collapse
+// spaces, lowercase. Used to decide whether the parcel owner IS the
+// decedent on a probate filing.
+function _normalizeName(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Whether two name strings describe the same person. Conservative:
+// we require first name + last name to both appear in the other
+// string. 'Matthew Arnold' and 'Matthew L Arnold' match. 'Matthew
+// Arnold' and 'Robert Arnold' do not.
+function _samePerson(a, b) {
+  const aa = _normalizeName(a);
+  const bb = _normalizeName(b);
+  if (!aa || !bb) return false;
+  const aTokens = aa.split(' ').filter((t) => t.length > 1);
+  const bTokens = bb.split(' ').filter((t) => t.length > 1);
+  if (aTokens.length < 2 || bTokens.length < 2) return false;
+  // First & last of A must both appear in B (or vice versa).
+  const aFirst = aTokens[0];
+  const aLast  = aTokens[aTokens.length - 1];
+  const bFirst = bTokens[0];
+  const bLast  = bTokens[bTokens.length - 1];
+  return (bb.includes(aFirst) && bb.includes(aLast)) ||
+         (aa.includes(bFirst) && aa.includes(bLast));
+}
+
+// Months elapsed between an ISO date and now. Negative means future.
+function _monthsAgo(isoDate) {
+  if (!isoDate) return null;
+  const then = new Date(isoDate);
+  if (isNaN(then)) return null;
+  const now = new Date();
+  return Math.round((now - then) / (1000 * 60 * 60 * 24 * 30.4));
+}
+
+// Generate the operator card content for a probate lead. Inputs are
+// the full harvester match plus the parcel's owner_name so we can
+// decide whether the owner IS the decedent (the common case) vs a
+// surviving spouse / co-owner scenario.
+function _buildProbateCard(match, parcel) {
+  const decedentParty = (match.party_names || []).find(
+    (p) => (p.role || '').toLowerCase() === 'decedent'
+  );
+  const decedentRaw = decedentParty?.raw || (match.party_names || [])[0]?.raw;
+  const decedentDisplay = _titleCaseName(decedentRaw);
+  const ownerName = parcel?.owner_name || parcel?.owner_name_raw;
+  const ownerIsDecedent = _samePerson(decedentRaw, ownerName);
+
+  const filed = match.event_date;
+  const filedDisplay = filed
+    ? new Date(filed).toLocaleDateString(undefined,
+        { year: 'numeric', month: 'long', day: 'numeric' })
+    : null;
+  const caseNum = match.document_ref;
+  // KC Superior Court Clerk's public case search portal (KC Script
+  // Portal). The search page doesn't take a case number in the query
+  // string directly, so we link to the case-search landing page and
+  // ask the agent to paste the case number. This is the correct
+  // public source — verified April 2026 via
+  // https://kingcountycourt.us/ and kingcounty.gov records-access docs.
+  const caseUrl = caseNum
+    ? 'https://dja-prd-ecexap1.kingcounty.gov/node/501'
+    : null;
+
+  // Derive a human timing phrase from months elapsed.
+  const monthsElapsed = _monthsAgo(filed);
+  let timingPhrase = 'The estate is in the decision window.';
+  if (monthsElapsed != null) {
+    if (monthsElapsed < 2) {
+      timingPhrase = 'Probate just opened. The estate is still appointing the personal representative.';
+    } else if (monthsElapsed < 4) {
+      timingPhrase = `Probate is ${monthsElapsed} months in — the personal representative is being appointed or has just been appointed.`;
+    } else if (monthsElapsed < 10) {
+      timingPhrase = `Probate is ${monthsElapsed} months in. Most estates decide on real property within the next 60–90 days.`;
+    } else {
+      timingPhrase = `Probate has been open ${monthsElapsed} months. The estate must resolve soon — the property decision is imminent or has already been made.`;
+    }
+  }
+
+  // The headline statement — the single most important sentence.
+  const headline = ownerIsDecedent
+    ? `${_titleCaseName(ownerName)} owned this property and is the decedent in this probate filing.`
+    : `A probate filing is active for ${decedentDisplay}, whose name appears in the ownership record for this property.`;
+
+  return {
+    kind: 'probate',
+    headline,
+    filedDisplay,
+    caseNum,
+    caseUrl,
+    timingPhrase,
+    ownerIsDecedent,
+    decedentDisplay,
+  };
+}
+
+function RecommendedActionBlock({ rec, parcel, harvesterMatches }) {
   const toneColor = {
     urgent:     'var(--tone-urgent)',
     sensitive:  'var(--tone-sensitive)',
     relational: 'var(--tone-relational)',
     neutral:    'var(--tone-neutral)',
   }[rec.tone] || 'var(--accent)';
+
+  // Identify whether we can render the operator card.
+  //
+  // Prefer a STRICT probate match. When found, the card is built
+  // from real harvester data: decedent name, case number, filing
+  // date. For non-probate leads or leads without a strict match we
+  // fall back to the original one-line analyst summary so we don't
+  // regress behavior on divorce / tax-foreclosure cases until those
+  // operator cards are built.
+  const probateMatch = (harvesterMatches || []).find(
+    (m) => m.signal_type === 'probate' && m.match_strength === 'strict'
+  );
+  const card = probateMatch ? _buildProbateCard(probateMatch, parcel) : null;
+
+  const headerLabel = `Recommended action — ${rec.category.replace('_', ' ')}`;
 
   return (
     <div style={{
@@ -1019,28 +1158,162 @@ function RecommendedActionBlock({ rec }) {
         letterSpacing: '0.1em',
         textTransform: 'uppercase',
       }}>
-        Recommended action — {rec.category.replace('_', ' ')}
+        {headerLabel}
       </div>
-      {rec.reason && (
+
+      {card && card.kind === 'probate' ? (
+        <OperatorProbateCard card={card} />
+      ) : (
+        <>
+          {rec.reason && (
+            <div style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: 13,
+              color: 'var(--text-secondary)',
+              marginTop: 'var(--space-xs)',
+              fontStyle: 'italic',
+            }}>
+              {rec.reason}
+            </div>
+          )}
+          {rec.next_step && (
+            <div style={{
+              fontSize: 14,
+              color: 'var(--text)',
+              marginTop: 'var(--space-sm)',
+              fontWeight: 500,
+            }}>
+              → {rec.next_step}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Sub-component: operator-format probate card. Kept separate from
+// RecommendedActionBlock so the layout structure is obvious from the
+// caller and we can add OperatorDivorceCard / OperatorForeclosureCard
+// in the same pattern when those signal families get rewritten.
+function OperatorProbateCard({ card }) {
+  // Section header styling — small caps, uppercase, muted. Each
+  // section below has a 1-sentence / short-paragraph body designed
+  // to be read in the order they appear: what happened, who to
+  // contact, how to find them, why now, what to say, first move.
+  const section = (label, body, key) => (
+    <div key={key} style={{ marginTop: 'var(--space-sm)' }}>
+      <div style={{
+        fontSize: 10,
+        color: 'var(--text-tertiary)',
+        fontWeight: 700,
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
+        marginBottom: 3,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 13,
+        color: 'var(--text)',
+        lineHeight: 1.5,
+        fontFamily: 'var(--font-serif)',
+      }}>
+        {body}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ marginTop: 'var(--space-sm)' }}>
+      {/* Headline — the single most important sentence. Renders in
+          the primary text color and serif face so it reads like a
+          conclusion, not a label. */}
+      <div style={{
+        fontSize: 15,
+        color: 'var(--text)',
+        fontFamily: 'var(--font-serif)',
+        lineHeight: 1.4,
+        marginTop: 'var(--space-xs)',
+      }}>
+        {card.headline}
+      </div>
+
+      {/* Filing context line — date + case number, subtle. */}
+      {(card.filedDisplay || card.caseNum) && (
         <div style={{
-          fontFamily: 'var(--font-serif)',
-          fontSize: 13,
-          color: 'var(--text-secondary)',
           marginTop: 'var(--space-xs)',
-          fontStyle: 'italic',
+          fontSize: 12,
+          color: 'var(--text-tertiary)',
         }}>
-          {rec.reason}
+          {card.filedDisplay && <>Probate filed {card.filedDisplay}</>}
+          {card.filedDisplay && card.caseNum && ' · '}
+          {card.caseNum && (
+            <>King County Superior Court, case {card.caseNum}</>
+          )}
         </div>
       )}
-      {rec.next_step && (
-        <div style={{
-          fontSize: 14,
-          color: 'var(--text)',
-          marginTop: 'var(--space-sm)',
-          fontWeight: 500,
-        }}>
-          → {rec.next_step}
-        </div>
+
+      {section(
+        'Who to contact',
+        card.ownerIsDecedent
+          ? 'The personal representative of the estate — not the owner of record, who is deceased.'
+          : 'The personal representative of the estate.',
+        'who'
+      )}
+
+      {section(
+        'How to find them',
+        <>
+          {card.caseUrl ? (
+            <>
+              Open{' '}
+              <a
+                href={card.caseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  color: 'var(--accent)',
+                  textDecoration: 'none',
+                  borderBottom: '1px dotted var(--accent)',
+                }}
+              >
+                King County Superior Court case search →
+              </a>{' '}
+              and search Probate/Guardianship by case number{' '}
+              <span style={{
+                fontFamily: 'monospace',
+                padding: '1px 4px',
+                background: 'var(--bg-card)',
+                borderRadius: 2,
+              }}>
+                {card.caseNum}
+              </span>. The initial filing lists the personal
+              representative&rsquo;s name and mailing address — both
+              are public record.
+            </>
+          ) : (
+            <>Search King County Superior Court records for the
+               personal representative&rsquo;s name and mailing
+               address. Both are public.</>
+          )}
+        </>,
+        'how'
+      )}
+
+      {section('Why now', card.timingPhrase, 'why')}
+
+      {section(
+        'What to say',
+        'Condolence first. Offer help navigating property decisions during estate settlement — valuation, carrying costs, timeline guidance. Do not ask for the listing. Most agents treat estates as transactions; being the one who helped will matter when the estate is ready to list.',
+        'what'
+      )}
+
+      {section(
+        'First move',
+        'Send a handwritten letter to the personal representative at the mailing address on the case filing. Follow up in two weeks if there is no reply. Do not cold-call.',
+        'first'
       )}
     </div>
   );
