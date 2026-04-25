@@ -301,6 +301,7 @@ export default function BriefingPage() {
         {mapData && (
           <MapPanel
             mapData={mapData}
+            playbook={briefing?.playbook}
             selectedPin={selectedPin}
             onPickPin={handlePickLead}
           />

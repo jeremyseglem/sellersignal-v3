@@ -17,6 +17,60 @@ from backend.selection.parcel_state_tags import derive_tags
 router = APIRouter()
 
 
+# ── New-this-week helpers ──────────────────────────────────────────
+# Used in _shape_pick to flag leads whose earliest harvester match
+# occurred within the last 7 days. The match record's matched_at
+# field comes from raw_signal_matches_v3 and is set the moment the
+# matcher first ties a court filing / obit / treasury notice to a
+# parcel. That timestamp IS "lead birth" for event-driven CALL NOW
+# leads.
+#
+# Structural BUILD NOW leads don't go through harvester matching;
+# their archetype is computed live from parcel attributes. They have
+# no "new" status by design — those leads are essentially permanent.
+# Both helpers return None/False for those.
+
+from datetime import datetime, timezone, timedelta as _td
+from typing import Optional
+
+
+def _earliest_match_at(investigation: dict) -> Optional[str]:
+    """Earliest matched_at across an investigation's harvester_matches,
+    as an ISO-8601 string. Returns None when the investigation has no
+    matches (i.e., this is a structural BUILD NOW lead, not an event-
+    driven CALL NOW lead).
+    """
+    matches = (investigation or {}).get('harvester_matches') or []
+    if not matches:
+        return None
+    timestamps = [m.get('matched_at') for m in matches if m.get('matched_at')]
+    if not timestamps:
+        return None
+    # ISO-8601 strings sort lexically — earliest is min().
+    return min(timestamps)
+
+
+def _is_new_this_week(investigation: dict) -> bool:
+    """True when the earliest harvester match on this lead landed
+    within the last 7 days. False otherwise — including for leads
+    with no matches (structural BUILD NOW leads), which are not
+    'new' even on first system encounter.
+    """
+    earliest = _earliest_match_at(investigation)
+    if not earliest:
+        return False
+    try:
+        # Tolerate both 'Z' and '+00:00' forms in the ISO string.
+        s = earliest.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        return False
+    cutoff = datetime.now(timezone.utc) - _td(days=7)
+    return dt >= cutoff
+
+
 # ============================================================================
 # Helper: score a parcel for selection ranking
 # ============================================================================
@@ -358,8 +412,13 @@ async def get_briefing(
 
         call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys,
                                              n=cn_n)
+        # build_now defaults to 8 (family- and tier-diverse selection).
+        # Live API caps at this default unless the client passes an
+        # explicit limit. Strategic holds remain uncapped (n=1000)
+        # because they're a long-cycle reference list rather than a
+        # weekly action set.
         build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
-                                               n=bn_n if bn_n is not None else 1000)
+                                               n=bn_n if bn_n is not None else 8)
         hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
                                                     n=hd_n if hd_n is not None else 1000)
 
@@ -407,6 +466,16 @@ async def get_briefing(
                 # Empty list when nothing fires. Each tag has
                 # label/kind/description/rank.
                 'parcel_state_tags':   L.get('parcel_state_tags') or [],
+                # New-this-week tracking. For event-driven leads
+                # (probate, divorce, obituary, tax_foreclosure), the
+                # earliest harvester match's matched_at is when the
+                # lead first appeared in the system. Compare against
+                # 7 days ago to flag fresh leads. Structural BUILD NOW
+                # leads don't have an event timestamp — their archetype
+                # is computed on every page load — so these fields
+                # only fire for leads with at least one harvester match.
+                'first_seen_at':       _earliest_match_at(inv),
+                'is_new_this_week':    _is_new_this_week(inv),
             }
 
         call_now_picks  = [_shape_pick(L) for L in call_now_leads]

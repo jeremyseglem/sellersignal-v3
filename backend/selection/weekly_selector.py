@@ -498,26 +498,65 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
     return picks
 
 
-def select_build_now(leads, exclude_pins, used_owner_keys, n=3):
-    """3 Band 2 with tier mix: prefer 1 ultra + 1 luxury + 1 mid."""
-    # Tolerate Query / int / None — see _coerce_n. For build_now the
-    # default is 3, so when _coerce_n returns None (e.g. caller passed
-    # 0 meaning "uncapped"), we use 1000 as the practical "uncapped"
-    # ceiling so the loops below still terminate.
+def select_build_now(leads, exclude_pins, used_owner_keys, n=8):
+    """Up to 8 Band 2 picks, balanced across signal families and value tiers.
+
+    Selection strategy:
+      Round 1 (signal-family diversity): one pick from each of the 5
+        structural families that has any qualifying lead — guarantees
+        the deck shows variety (investor / trust / silent / dormant /
+        family_event_cluster) rather than collapsing to whichever
+        family happens to dominate the ZIP.
+      Round 2 (tier balance): one additional pick from each value
+        tier (ultra / luxury / mid) that hasn't already been hit.
+      Round 3 (top-up by score): fill remaining slots with the
+        highest-scoring leads across all tiers/families.
+
+    The default of 8 is calibrated for typical King County ZIPs:
+      - 5 family slots + 3 score-driven top-ups = enough variety
+      - small enough that an agent can review every lead in <10min
+      - matches the cap user explicitly requested
+
+    Raising n above 8 widens the score-driven Round 3 — the deck
+    becomes longer but no more diverse. Lowering n below 5 may skip
+    some families entirely.
+    """
+    # Tolerate Query / int / None — see _coerce_n. When _coerce_n
+    # returns None (caller passed 0 = uncapped), use 1000 as
+    # practical 'uncapped' ceiling so the loops below terminate.
     n = _coerce_n(n)
     if n is None:
         n = 1000
+
+    # Family-keyed buckets. Each lead's `signal_family` was set by
+    # _shape_lead in briefings.py via _ARCHETYPE_TO_SIGNAL_FAMILY,
+    # so structural archetypes group into the 5 user-facing families.
+    # Sort each bucket by score so 'top of bucket' is the strongest
+    # lead in that family.
+    def in_pool(L):
+        return (L['band'] == 2
+                and L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L))
+
+    family_buckets = {}
+    for L in leads:
+        if not in_pool(L):
+            continue
+        fam = L.get('signal_family') or 'unknown'
+        family_buckets.setdefault(fam, []).append(L)
+    for fam in family_buckets:
+        family_buckets[fam].sort(key=lambda x: -_score(x))
+
+    # Tier pools — used in Round 2 to ensure value-tier diversity
+    # alongside family diversity. Same definition as before but
+    # scoped to in-pool leads.
     def pool_for(lo, hi):
         return sorted(
             [L for L in leads
-             if L['band'] == 2
-             and lo <= (L.get('value') or 0) < hi
-             and L['pin'] not in exclude_pins
-             and owner_base_key(L) not in used_owner_keys
-             and not _has_blocker(L)],
+             if in_pool(L) and lo <= (L.get('value') or 0) < hi],
             key=lambda x: -_score(x),
         )
-
     tier_pools = OrderedDict([
         ('ultra',  pool_for(*TIER_ULTRA)),
         ('luxury', pool_for(*TIER_LUXURY)),
@@ -525,26 +564,51 @@ def select_build_now(leads, exclude_pins, used_owner_keys, n=3):
     ])
 
     picks = []
-    # Round 1: one from each tier (guarantees mix)
+    picked_pins = set()
+
+    def take(L):
+        # Helper: add lead L to picks if it isn't already there and
+        # the owner hasn't been used. Returns True if added.
+        if L['pin'] in picked_pins:               return False
+        if owner_base_key(L) in used_owner_keys:  return False
+        picks.append(L)
+        picked_pins.add(L['pin'])
+        used_owner_keys.add(owner_base_key(L))
+        return True
+
+    # Round 1: one pick per signal family. Iterate in a stable order
+    # so the deck composition is reproducible across calls.
+    family_order = [
+        'investor_disposition',
+        'silent_transition',
+        'trust_aging',
+        'dormant_absentee',
+        'family_event_cluster',
+    ]
+    for fam in family_order:
+        if len(picks) >= n: break
+        bucket = family_buckets.get(fam) or []
+        for L in bucket:
+            if take(L): break
+
+    # Round 2: one pick per value tier (any tier not represented yet
+    # gets its top lead added). Tier diversity layered on top of
+    # family diversity guarantees a price mix.
     for tier_name, pool in tier_pools.items():
         if len(picks) >= n: break
         for L in pool:
-            if owner_base_key(L) in used_owner_keys: continue
-            picks.append(L)
-            used_owner_keys.add(owner_base_key(L))
-            break
+            if take(L): break
 
-    # Round 2: fill remaining slots by highest-ranked across all tiers
+    # Round 3: top-up by raw score across all qualifying leads.
     if len(picks) < n:
-        remaining = []
-        for pool in tier_pools.values(): remaining.extend(pool)
-        remaining.sort(key=lambda x: -_score(x))
+        remaining = sorted(
+            [L for L in leads if in_pool(L) and L['pin'] not in picked_pins],
+            key=lambda x: -_score(x),
+        )
         for L in remaining:
             if len(picks) >= n: break
-            if owner_base_key(L) in used_owner_keys: continue
-            if L['pin'] in {p['pin'] for p in picks}: continue
-            picks.append(L)
-            used_owner_keys.add(owner_base_key(L))
+            take(L)
+
     return picks
 
 

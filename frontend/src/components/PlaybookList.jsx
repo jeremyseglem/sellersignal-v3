@@ -274,15 +274,25 @@ function LeadRow({ lead, index, accent, selected, onClick }) {
           )}
           {/* Harvester signal tags — render one badge per distinct
               signal_type, plus a convergence badge if 2+ strict signals
-              fired on the same pin. These make the lead's actionable
-              signal visible without opening the dossier. */}
-          {uniqueSignalTypes.length > 0 && (
+              fired on the same pin. NEW badge fires when the lead's
+              earliest harvester match landed within the last 7 days
+              (backend computes `is_new_this_week`). These make the
+              lead's actionable signal visible without opening the
+              dossier. */}
+          {(uniqueSignalTypes.length > 0 || lead.is_new_this_week) && (
             <div style={{
               display: 'flex',
               flexWrap: 'wrap',
               gap: 4,
               marginTop: 6,
             }}>
+              {lead.is_new_this_week && (
+                <SignalBadge
+                  label="NEW"
+                  color="#9E4B3C"
+                  prominent
+                />
+              )}
               {hasConvergence && (
                 <SignalBadge
                   label="CONVERGED"
