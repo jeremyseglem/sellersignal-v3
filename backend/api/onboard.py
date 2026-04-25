@@ -268,3 +268,244 @@ async def onboard_zips_status():
     if snap is None:
         raise HTTPException(404, "No onboarding job has been started yet.")
     return snap
+
+
+# ── Hydrate-owners (eReal Property + reclassify + reband) ───────
+# Onboarding's `ingest` stage pulls parcels from KC ArcGIS, but
+# ArcGIS doesn't expose owner_name (KC filters it under RCW 42.56.
+# 070(8)). The KC eRealProperty harvester scrapes the assessor's
+# detail pages for the missing owner data — that's what populates
+# parcels_v3.owner_name, which classify+band depend on to produce
+# meaningful archetypes and scores.
+#
+# This endpoint runs that backfill across an entire ZIP roster,
+# looping run_batch until the ZIP is fully covered, then re-runs
+# classify+band on each ZIP so the now-populated owners drive
+# real archetypes. Total wall time is hours (not minutes) because
+# eRealProperty rate-limits at 1.2s/parcel — that's a deliberate
+# good-citizen rate against KC's servers.
+#
+# Idempotent: TTL-based skipping in run_batch means re-running
+# this endpoint won't re-scrape parcels already covered.
+
+# Separate job state for hydrate so it can run in parallel with /
+# alongside an onboarding job without colliding.
+_hydrate_lock = threading.Lock()
+_current_hydrate: Optional[Dict[str, Any]] = None
+
+
+# Default hydrate roster includes the 10 onboarding ZIPs PLUS the
+# already-live 98004, since 98004's owner coverage may also have
+# gaps from earlier ingest runs.
+DEFAULT_HYDRATE_ROSTER: List[str] = [
+    "98004",  # Bellevue (already live, may need backfill)
+    "98039", "98040", "98033", "98006",            # Tier 1
+    "98052", "98005", "98007",                     # Tier 2
+    "98112", "98199", "98105",                     # Tier 3
+]
+
+# How many parcels per run_batch call. Keep under Railway's 5-min
+# proxy cap; 100 parcels at 1.2s each = ~2 minutes per batch with
+# parse + DB write overhead.
+BATCH_LIMIT = 100
+
+# Hard cap on batches per ZIP so a runaway loop doesn't burn forever.
+# 200 batches × 100 parcels = 20,000 parcels, more than any single
+# KC ZIP should have.
+MAX_BATCHES_PER_ZIP = 200
+
+
+def _new_hydrate_job(roster: List[str]) -> Dict[str, Any]:
+    return {
+        "started_at":    datetime.now(timezone.utc).isoformat(),
+        "completed_at":  None,
+        "status":        "running",
+        "roster":        list(roster),
+        "current_zip":   None,
+        "current_phase": None,        # 'ereal' | 'classify' | 'band'
+        # zips: { '98039': { 'ereal_batches': 4, 'parcels_fetched': 412,
+        #                     'classify': 'ok', 'band': 'ok' } }
+        "zips":          {z: {"ereal_batches": 0, "parcels_fetched": 0} for z in roster},
+        "errors":        [],
+    }
+
+
+def _hydrate_snapshot() -> Optional[Dict[str, Any]]:
+    with _hydrate_lock:
+        if _current_hydrate is None:
+            return None
+        return dict(
+            _current_hydrate,
+            zips=dict(_current_hydrate["zips"]),
+            errors=list(_current_hydrate["errors"]),
+        )
+
+
+def _hydrate_update(updates: Dict[str, Any]) -> None:
+    with _hydrate_lock:
+        if _current_hydrate is not None:
+            _current_hydrate.update(updates)
+
+
+def _hydrate_record(zip_code: str, key: str, value: Any) -> None:
+    with _hydrate_lock:
+        if _current_hydrate is None:
+            return
+        _current_hydrate["zips"].setdefault(zip_code, {})[key] = value
+
+
+def _hydrate_error(zip_code: str, phase: str, error: str) -> None:
+    with _hydrate_lock:
+        if _current_hydrate is None:
+            return
+        _current_hydrate["errors"].append({
+            "zip": zip_code, "phase": phase, "error": error,
+        })
+
+
+def _run_hydrate(roster: List[str]) -> None:
+    """For each ZIP: loop run_batch until done, then reclassify + reband."""
+    try:
+        from backend.api.db import get_supabase_client
+        from backend.harvesters.ereal_property import run_batch
+        from backend.ingest.zip_builder import cmd_classify, cmd_band
+
+        supa = get_supabase_client()
+        if supa is None:
+            _hydrate_update({
+                "status": "failed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
+            _hydrate_error("*", "init", "Supabase client not configured")
+            return
+
+        for zip_code in roster:
+            _hydrate_update({"current_zip": zip_code, "current_phase": "ereal"})
+
+            # Phase 1: loop run_batch until the ZIP returns 0 candidates.
+            # run_batch returns {fetched: N, ...}. When fetched < limit
+            # we're at the tail; we'll call once more to confirm 0.
+            batch_count = 0
+            total_fetched = 0
+            consecutive_zero = 0
+            while batch_count < MAX_BATCHES_PER_ZIP:
+                try:
+                    result = run_batch(
+                        supa=supa,
+                        zip_code=zip_code,
+                        limit=BATCH_LIMIT,
+                        ttl_days=30,
+                        force=False,
+                    )
+                    fetched = int(result.get("fetched") or 0)
+                    batch_count += 1
+                    total_fetched += fetched
+                    _hydrate_record(zip_code, "ereal_batches", batch_count)
+                    _hydrate_record(zip_code, "parcels_fetched", total_fetched)
+
+                    if fetched == 0:
+                        consecutive_zero += 1
+                        if consecutive_zero >= 2:
+                            # Two empty batches in a row — we're done with
+                            # this ZIP. (One can be a transient skip-window;
+                            # two confirms exhaustion.)
+                            break
+                    else:
+                        consecutive_zero = 0
+                except Exception as e:
+                    err = f"{type(e).__name__}: {e}"
+                    _hydrate_error(zip_code, "ereal", err)
+                    # Don't break — eReal failures are usually transient
+                    # (KC rate-limit, parser edge case). Try the next batch.
+                    batch_count += 1
+                    if batch_count >= 5 and total_fetched == 0:
+                        # If first 5 batches all error and nothing fetched,
+                        # something is structurally broken — give up on this ZIP.
+                        _hydrate_record(zip_code, "ereal_status", "failed")
+                        break
+
+            _hydrate_record(zip_code, "ereal_status", "complete")
+
+            # Phase 2: reclassify with the now-populated owner data.
+            _hydrate_update({"current_phase": "classify"})
+            try:
+                rc = cmd_classify(zip_code)
+                _hydrate_record(zip_code, "classify",
+                                "ok" if rc == 0 else f"failed (rc={rc})")
+                if rc != 0:
+                    _hydrate_error(zip_code, "classify", f"cmd returned {rc}")
+            except Exception as e:
+                _hydrate_record(zip_code, "classify", "failed")
+                _hydrate_error(zip_code, "classify",
+                               f"{type(e).__name__}: {e}")
+
+            # Phase 3: reband.
+            _hydrate_update({"current_phase": "band"})
+            try:
+                rc = cmd_band(zip_code)
+                _hydrate_record(zip_code, "band",
+                                "ok" if rc == 0 else f"failed (rc={rc})")
+                if rc != 0:
+                    _hydrate_error(zip_code, "band", f"cmd returned {rc}")
+            except Exception as e:
+                _hydrate_record(zip_code, "band", "failed")
+                _hydrate_error(zip_code, "band",
+                               f"{type(e).__name__}: {e}")
+
+        _hydrate_update({
+            "status":        "complete",
+            "completed_at":  datetime.now(timezone.utc).isoformat(),
+            "current_zip":   None,
+            "current_phase": None,
+        })
+
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+        _hydrate_update({
+            "status":       "failed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        _hydrate_error("*", "outer", err)
+
+
+class HydrateRequest(BaseModel):
+    zips: Optional[List[str]] = None
+
+
+@router.post("/hydrate-owners", dependencies=[Depends(require_admin)])
+async def hydrate_owners(
+    body: Optional[HydrateRequest] = None,
+    background_tasks: BackgroundTasks = None,
+):
+    """Run eRealProperty owner backfill across the ZIP roster, then
+    reclassify + reband each ZIP. Long-running (hours) — returns
+    immediately with job state. Poll /hydrate-owners/status.
+    """
+    global _current_hydrate
+    roster = (body.zips if body and body.zips else DEFAULT_HYDRATE_ROSTER)
+
+    with _hydrate_lock:
+        if _current_hydrate is not None and _current_hydrate.get("status") == "running":
+            raise HTTPException(409,
+                "A hydrate job is already running. Poll "
+                "/api/admin/hydrate-owners/status for progress.")
+        _current_hydrate = _new_hydrate_job(roster)
+
+    background_tasks.add_task(_run_hydrate, roster)
+
+    snap = _hydrate_snapshot()
+    return {
+        "ok": True,
+        "message": f"Owner hydration started for {len(roster)} ZIPs.",
+        "estimated_hours": round(len(roster) * 2.5, 1),  # rough — depends on ZIP size
+        "poll_url": "/api/admin/hydrate-owners/status",
+        "job": snap,
+    }
+
+
+@router.get("/hydrate-owners/status", dependencies=[Depends(require_admin)])
+async def hydrate_owners_status():
+    snap = _hydrate_snapshot()
+    if snap is None:
+        raise HTTPException(404, "No hydrate job has been started yet.")
+    return snap
