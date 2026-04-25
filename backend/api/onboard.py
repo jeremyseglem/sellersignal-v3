@@ -66,7 +66,13 @@ DEFAULT_ZIP_ROSTER: List[Dict[str, str]] = [
     {"zip": "98105", "city": "Seattle"},
 ]
 
-PIPELINE_STAGES = ["register", "ingest", "geocode", "classify", "band", "publish"]
+PIPELINE_STAGES = ["register", "ingest", "classify", "band", "publish"]
+# Skipped: geocode. KC ArcGIS parcels already arrive with LAT/LON
+# attributes (see arcgis.py:_parse_feature). cmd_geocode is a stub
+# that returns 2 unconditionally (NOT YET IMPLEMENTED), so including
+# it would fail every ZIP. When a non-KC market is added that needs
+# real geocoding, implement cmd_geocode and add 'geocode' back here
+# (or make it conditional on market_key).
 
 
 # ── Job state (module-level, single job at a time) ──────────────
@@ -131,7 +137,7 @@ def _record_stage(zip_code: str, stage: str, outcome: str, error: Optional[str] 
 def _run_stage(stage: str, zip_code: str, city: str) -> int:
     """Run one stage for one ZIP. Returns 0 on success, non-zero on failure."""
     from backend.ingest.zip_builder import (
-        cmd_register, cmd_ingest, cmd_geocode,
+        cmd_register, cmd_ingest,
         cmd_classify, cmd_band, cmd_publish,
     )
 
@@ -141,9 +147,6 @@ def _run_stage(stage: str, zip_code: str, city: str) -> int:
 
     if stage == "ingest":
         return cmd_ingest(zip_code)
-
-    if stage == "geocode":
-        return cmd_geocode(zip_code)
 
     if stage == "classify":
         return cmd_classify(zip_code)
