@@ -409,6 +409,30 @@ def eligible_for_call_now(L):
     return True
 
 
+def _coerce_n(n):
+    """Defensive coercion for the `n` parameter of select_* functions.
+
+    If a FastAPI Query default leaks through (e.g., when a briefing
+    endpoint is invoked outside of a request context, like from
+    get_briefing_summary calling get_briefing directly without
+    explicit kwargs), `n` arrives as a Query object instead of an
+    int. Comparisons like `len(picks) >= n` then raise TypeError.
+
+    This coercion makes every selector tolerant of the Query default:
+      - None       -> None (uncapped)
+      - int        -> int
+      - 0          -> None (sentinel for 'no cap', matches API contract)
+      - anything else (Query, str, etc.) -> None (safe default)
+    """
+    if n is None:
+        return None
+    if isinstance(n, int) and not isinstance(n, bool):
+        return None if n == 0 else n
+    # Anything else (Query, FieldInfo, str, etc.) — safest behavior is
+    # 'no cap' rather than crashing the whole briefing.
+    return None
+
+
 def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
     """CALL NOW picks with slot reservations AND contract enforcement.
 
@@ -428,6 +452,7 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
     n: maximum number of picks to return. Default None = no cap (return
        every contract-eligible signal). Pass an int to cap.
     """
+    n = _coerce_n(n)
     def base_filter(L):
         return (L['pin'] not in exclude_pins
                 and owner_base_key(L) not in used_owner_keys
@@ -475,6 +500,13 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
 
 def select_build_now(leads, exclude_pins, used_owner_keys, n=3):
     """3 Band 2 with tier mix: prefer 1 ultra + 1 luxury + 1 mid."""
+    # Tolerate Query / int / None — see _coerce_n. For build_now the
+    # default is 3, so when _coerce_n returns None (e.g. caller passed
+    # 0 meaning "uncapped"), we use 1000 as the practical "uncapped"
+    # ceiling so the loops below still terminate.
+    n = _coerce_n(n)
+    if n is None:
+        n = 1000
     def pool_for(lo, hi):
         return sorted(
             [L for L in leads
@@ -521,6 +553,12 @@ def select_strategic_holds(leads, exclude_pins, used_owner_keys, n=2):
     Top remaining Band 2 by (timeline_months DESC, inevitability DESC).
     These are long-cycle positioning plays, not urgent.
     """
+    # Tolerate Query / int / None — see _coerce_n. Default of 2;
+    # when _coerce_n returns None (caller passed 0 = uncapped), use
+    # 1000 as practical uncapped ceiling.
+    n = _coerce_n(n)
+    if n is None:
+        n = 1000
     b2 = sorted(
         [L for L in leads
          if L['band'] == 2
