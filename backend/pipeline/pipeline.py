@@ -50,9 +50,9 @@ def run_pipeline(
     print(f"[1/6] Building person index for {len(owners_db)} parcels...")
     person_index = build_person_index(owners_db)
     residential_pin_count = sum(1 for pin in owners_db
-                                if use_codes.get(pin, {}).get("prop_type") == "R")
+                                if use_codes.get(pin, {}).get("prop_type") in ("R", "K"))
     print(f"      Indexed {len(person_index)} parcels with natural-person owners")
-    print(f"      Residential (PropType=R): {residential_pin_count} parcels — target universe")
+    print(f"      Eligible (R+K): {residential_pin_count} parcels — target universe")
 
     # ─── STAGE 2: load deed chain + build entity activity index ──────
     print(f"[2/6] Loading deed chain from {deed_csv_path}...")

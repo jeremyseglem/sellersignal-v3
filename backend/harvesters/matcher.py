@@ -213,6 +213,81 @@ def _is_government_parcel(parcel: dict) -> bool:
     return any(p in name for p in gov_patterns)
 
 
+# ── Property-type eligibility ───────────────────────────────────────
+# KC Assessor PROPTYPE codes (kca900_proptype_parcel decode table):
+#   R - Residential   (single-family + townhouses)
+#   K - Condominium   (each unit is its own parcel)
+#   C - Commercial
+#   M - Coal/Mineral, N - Mining, T - Timber, U - Undivided, X - Exempt
+#
+# We match seller signals against R + K parcels. R covers SFH and
+# townhouses; K covers condominium units (a huge segment of the
+# luxury market — Bellevue Towers, The Bravern, Madison Park
+# waterfront condos, etc.). C/M/N/T/U/X are excluded because they
+# don't represent residential ownership transitions an agent would
+# pursue.
+_ELIGIBLE_PROP_TYPES = {'R', 'K'}
+
+
+def _is_eligible_prop_type(prop_type: Optional[str]) -> bool:
+    """True if this parcel's PROPTYPE qualifies for seller-signal
+    matching. Treats missing/empty prop_type as eligible (defensive
+    default — don't silently drop parcels because the assessor feed
+    didn't populate the field on a given row)."""
+    if not prop_type:
+        return True  # missing/null — fall through, don't drop
+    return prop_type.upper().strip() in _ELIGIBLE_PROP_TYPES
+
+
+# ── HOA / Association of Apartment Owners detection ────────────────
+# Condo developments include 'common area' parcels owned by the
+# building's HOA or AOAO. Those parcels show prop_type=K but are
+# NOT individual unit ownership — they're shared elements (lobby,
+# pool, parking, etc.). Matching probate / divorce / obituary
+# against an HOA owner_name produces false positives because the
+# entity has no real owner who could die.
+#
+# Filter out any parcel whose owner_name matches these patterns.
+# Conservative: requires the pattern as a whole word/substring,
+# avoids matching real owner names that contain similar substrings.
+import re as _re_hoa
+
+_HOA_PATTERNS = (
+    'ASSOCIATION OF APARTMENT OWNERS',
+    'CONDOMINIUM ASSOCIATION',
+    'CONDO ASSOCIATION',
+    'HOMEOWNERS ASSOCIATION',
+    'HOMEOWNER ASSOCIATION',
+    "OWNERS' ASSOCIATION",
+    'OWNERS ASSOCIATION',
+    'COMMON AREA',
+    'COMMON ELEMENT',
+)
+# Acronym patterns need word-boundary matching to avoid false
+# positives on real surnames (HOAN, COAN, AOAOMA). Implemented as
+# regex with \b boundaries.
+_HOA_ACRONYM_RE = _re_hoa.compile(
+    r'\b(AOAO|HOA|COA)\b'
+)
+
+
+def _is_hoa_parcel(parcel: dict) -> bool:
+    """True if this parcel's owner_name reads as an HOA / association
+    of apartment owners record rather than an individual owner. Used
+    to exclude condo common-area parcels from signal matching while
+    still admitting real unit owners.
+    """
+    name = (parcel.get('owner_name') or '').upper()
+    if not name:
+        return False
+    if any(pat in name for pat in _HOA_PATTERNS):
+        return True
+    # Acronym match: AOAO, HOA, COA as standalone words
+    if _HOA_ACRONYM_RE.search(name):
+        return True
+    return False
+
+
 def _load_canonical_for_pins(supa, pins: list[str]) -> dict:
     """
     Batch-fetch owner_canonical_v3 rows for a set of pins.
@@ -422,7 +497,13 @@ def _dispatch_probate(row, owners_db, use_codes):
 
     # Layer 1: decedent match
     for pin, info in owners_db.items():
-        if use_codes.get(pin, {}).get('prop_type', '') != 'R':
+        # Admit residential (R) + condominium (K). Reject anything
+        # else (commercial, exempt, etc.).
+        if not _is_eligible_prop_type(use_codes.get(pin, {}).get('prop_type', '')):
+            continue
+        # Reject condo common-area / HOA parcels — those have prop_type=K
+        # but no real owner who could appear in a probate filing.
+        if _is_hoa_parcel(info):
             continue
         owner_name = info.get('owner_name', '')
         if not owner_name:
@@ -468,7 +549,9 @@ def _dispatch_probate(row, owners_db, use_codes):
         for pin, info in owners_db.items():
             if pin in decedent_matched_pins:
                 continue  # decedent already owns this — don't shadow
-            if use_codes.get(pin, {}).get('prop_type', '') != 'R':
+            if not _is_eligible_prop_type(use_codes.get(pin, {}).get('prop_type', '')):
+                continue
+            if _is_hoa_parcel(info):
                 continue
             owner_name = info.get('owner_name', '')
             if not owner_name:
@@ -526,10 +609,13 @@ def _dispatch_tax_foreclosure(row, owners_db, use_codes):
     if pin not in owners_db:
         return []
 
-    # Residential filter: tax foreclosure on commercial parcels is not a
-    # useful seller lead for a residential-focused agent. If prop_type is
-    # not 'R', skip.
-    if use_codes.get(pin, {}).get('prop_type', '') != 'R':
+    # Property-type filter: tax foreclosure on commercial parcels is
+    # not a useful seller lead for a residential-focused agent. Admit
+    # R (residential / townhouse) and K (condo) — both are legitimate
+    # tax-foreclosure leads. Reject HOA records.
+    if not _is_eligible_prop_type(use_codes.get(pin, {}).get('prop_type', '')):
+        return []
+    if _is_hoa_parcel(owners_db.get(pin, {})):
         return []
 
     return [{

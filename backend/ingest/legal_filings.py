@@ -228,7 +228,7 @@ def match_divorce_to_parcels(
 
         for pin, info in owners_db.items():
             # Residential only
-            if use_codes.get(pin, {}).get("prop_type", "") != "R":
+            if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
                 continue
             owner_name = info.get("owner_name", "")
             if not owner_name:
@@ -348,13 +348,13 @@ def match_recorder_to_parcels(
         if not matched_pins:
             for grantor in doc.grantor_names:
                 for pin, info in owners_db.items():
-                    if use_codes.get(pin, {}).get("prop_type", "") != "R":
+                    if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
                         continue
                     if name_match(grantor, info.get("owner_name", "")):
                         matched_pins.append(pin)
 
         for pin in matched_pins:
-            if use_codes.get(pin, {}).get("prop_type", "") != "R":
+            if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
                 continue
             candidates.append({
                 "parcel_id": pin,

@@ -103,7 +103,7 @@ def search_death_inheritance_candidates(
 
         for pin, person_sets in person_index.items():
             # Residential-only filter
-            if use_codes.get(pin, {}).get("prop_type", "") != "R":
+            if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
                 continue
             for idx, ptokens in enumerate(person_sets):
                 overlap = obit_tokens & ptokens
@@ -157,7 +157,7 @@ def search_investor_disposition_candidates(
     now = _dt.utcnow()
 
     for pin, info in owners_db.items():
-        if use_codes.get(pin, {}).get("prop_type", "") != "R":
+        if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
             continue
         value = info.get("value") or 0
         if not (min_value <= value <= max_value):
@@ -248,7 +248,7 @@ def search_retirement_candidates(
         sig_tokens = set(tokens)
 
         for pin, person_sets in person_index.items():
-            if use_codes.get(pin, {}).get("prop_type", "") != "R":
+            if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
                 continue
             for idx, ptokens in enumerate(person_sets):
                 overlap = sig_tokens & ptokens
@@ -280,7 +280,7 @@ def search_pre_listing_structuring_candidates(
     now = datetime.utcnow()
 
     for pin, deeds in deed_chain_by_pin.items():
-        if use_codes.get(pin, {}).get("prop_type", "") != "R":
+        if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
             continue
         for row in deeds:
             seller = row.get("seller", "")
@@ -331,7 +331,7 @@ def search_failed_sale_attempt_candidates(
 
     candidates: list[dict] = []
     for pin, events_dicts in zillow_events_by_pin.items():
-        if use_codes.get(pin, {}).get("prop_type", "") != "R":
+        if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
             continue
         if pin not in owners_db:
             continue
@@ -406,7 +406,7 @@ def search_absentee_oos_candidates(
     """
     candidates: list[dict] = []
     for pin, info in owners_db.items():
-        if use_codes.get(pin, {}).get("prop_type", "") != "R":
+        if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
             continue
         if is_entity_owner(info.get("owner_name", "")):
             continue  # individuals only for relocation signal
@@ -458,7 +458,7 @@ def search_high_equity_long_tenure_candidates(
     """
     candidates: list[dict] = []
     for pin, info in owners_db.items():
-        if use_codes.get(pin, {}).get("prop_type", "") != "R":
+        if use_codes.get(pin, {}).get("prop_type", "") not in ("R", "K", ""):
             continue
         if is_entity_owner(info.get("owner_name", "")):
             continue
