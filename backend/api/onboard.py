@@ -545,8 +545,9 @@ def _zip_coverage(supa, zip_code: str) -> Dict[str, Any]:
     # Total parcels in the ZIP.
     total_res = (
         supa.table('parcels_v3')
-        .select('pin', count='exact', head=True)
+        .select('pin', count='exact')
         .eq('zip_code', zip_code)
+        .limit(1)
         .execute()
     )
     total = total_res.count or 0
@@ -579,9 +580,10 @@ def _zip_coverage(supa, zip_code: str) -> Dict[str, Any]:
         # Count meta rows for this chunk where fetched_at is set.
         meta_res = (
             supa.table('parcel_ereal_meta_v3')
-            .select('pin', count='exact', head=True)
+            .select('pin', count='exact')
             .in_('pin', page_pins)
             .not_.is_('fetched_at', 'null')
+            .limit(1)
             .execute()
         )
         hydrated += (meta_res.count or 0)
