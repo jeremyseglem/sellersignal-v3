@@ -124,10 +124,17 @@ export default function MapPanel({ mapData, playbook, selectedPin, onPickPin }) 
     }).addTo(map);
 
     if (bounds) {
+      // fitBounds without a maxZoom over-zooms-out on long-thin ZIPs
+      // (e.g., 98004 stretches ~6 miles north-south along Lake
+      // Washington but only ~1 mile east-west). Without a cap, Leaflet
+      // chooses a zoom that fits the long axis, which crams dots
+      // along the short axis. Cap at 13 — that's the operator-tested
+      // sweet spot where individual streets are readable and dot
+      // density doesn't smear into a single blob.
       map.fitBounds([
         [bounds.min_lat, bounds.min_lng],
         [bounds.max_lat, bounds.max_lng],
-      ], { padding: [20, 20] });
+      ], { padding: [40, 40], maxZoom: 13 });
     } else {
       map.setView([47.6101, -122.2015], 13);  // Default: Bellevue
     }
