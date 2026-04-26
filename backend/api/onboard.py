@@ -560,7 +560,7 @@ def _zip_coverage(supa, zip_code: str) -> Dict[str, Any]:
     # then for each chunk count how many have meta rows with
     # fetched_at set.
     hydrated = 0
-    PAGE_SIZE = 5000
+    PAGE_SIZE = 1000
     page = 0
     while True:
         start = page * PAGE_SIZE
@@ -591,7 +591,7 @@ def _zip_coverage(supa, zip_code: str) -> Dict[str, Any]:
         if len(page_data) < PAGE_SIZE:
             break
         page += 1
-        if page > 20:
+        if page > 100:
             break
 
     pct = round(100.0 * hydrated / total, 1) if total else 0.0

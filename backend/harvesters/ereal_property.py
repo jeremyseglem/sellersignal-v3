@@ -287,13 +287,10 @@ def run_batch(
     #
     # IMPORTANT: PostgREST has a hard cap on rows per response set
     # at the project level via PGRST_DB_MAX_ROWS (this project's cap
-    # is 5,000). `.limit(50000)` is silently capped to that ceiling.
-    # To pull all parcels for ZIPs with >5,000 rows, paginate
-    # explicitly with .range(start, end). Without this, ZIPs like
-    # Kirkland 98033 (11,895 parcels) only ever surface the first
-    # 5,000 rows — the harvester then reports 'complete' after
-    # processing the first 5,000 even though half the ZIP is unseen.
-    PAGE_SIZE = 5000
+    # is 1,000 — verified by inspecting map_data.py:_fetch_all which
+    # paginates at page_size=1000). To pull all parcels for ZIPs
+    # with >1,000 rows, paginate explicitly with .range(start, end).
+    PAGE_SIZE = 1000
     all_pins: list[str] = []
     page = 0
     while True:
@@ -313,8 +310,8 @@ def run_batch(
         if len(page_data) < PAGE_SIZE:
             break  # last page
         page += 1
-        if page > 20:    # safety cap: 100K parcels max per ZIP
-            log.warning(f"ereal: pagination exceeded 20 pages for {zip_code}; stopping")
+        if page > 100:    # safety cap: 100K parcels max per ZIP
+            log.warning(f"ereal: pagination exceeded 100 pages for {zip_code}; stopping")
             break
 
     # Same pagination needed for the meta lookup. The .in_(all_pins)
@@ -322,7 +319,7 @@ def run_batch(
     # still caps the RESPONSE at PGRST_DB_MAX_ROWS rows. Chunk the
     # lookup so each request fits under the cap.
     meta_by_pin: dict[str, dict] = {}
-    META_CHUNK = 1000   # IN list size; response will have <= chunk size rows
+    META_CHUNK = 500   # IN list size; response will have <= chunk size rows, well under 1000 cap
     for i in range(0, len(all_pins), META_CHUNK):
         chunk = all_pins[i:i + META_CHUNK]
         meta_res = (

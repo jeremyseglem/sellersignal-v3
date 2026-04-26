@@ -917,9 +917,10 @@ async def backfill_tenure(zip_code: str = Path(..., pattern=r'^\d{5}$')):
     if not supa:
         raise HTTPException(503, "Supabase not configured")
 
-    # Pull all parcel PINs in the ZIP (paginated to bypass PostgREST
-    # 5000-row response cap).
-    PAGE_SIZE = 5000
+    # Pull all parcel PINs in the ZIP. PostgREST on this project
+    # caps responses at 1,000 rows (PGRST_DB_MAX_ROWS). Paginate
+    # explicitly with .range() to get past the cap.
+    PAGE_SIZE = 1000
     all_pins = []
     page = 0
     while True:
@@ -935,13 +936,14 @@ async def backfill_tenure(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         if len(rows) < PAGE_SIZE:
             break
         page += 1
-        if page > 20:
+        if page > 100:    # 100K parcels per ZIP safety cap
             break
 
     today = date.today()
     updated = 0
     no_sales = 0
     errors = 0
+    error_samples = []  # capture first few errors for debugging
 
     # Per-parcel: pull sales, pick best, update parcel. One round-trip
     # per parcel; ~1k parcels in Medina = ~10-20 seconds total.
@@ -973,21 +975,22 @@ async def backfill_tenure(zip_code: str = Path(..., pattern=r'^\d{5}$')):
 
             tenure = round((today - sale_date).days / 365.25, 1)
 
+            # Only update real parcels_v3 columns. last_arms_length_*
+            # are computed via the parcel_last_arms_length_v3 view —
+            # they live on sales_history_v3 and shouldn't be written
+            # to the parcel directly.
             (supa.table('parcels_v3')
              .update({
                  'last_transfer_date': sale_date.isoformat(),
                  'tenure_years': tenure,
-                 # Also mirror to last_arms_length_date if this is one
-                 'last_arms_length_date': (sale_date.isoformat()
-                                           if best.get('is_arms_length') else None),
-                 'last_arms_length_price': (best.get('sale_price')
-                                            if best.get('is_arms_length') else None),
              })
              .eq('pin', pin)
              .execute())
             updated += 1
-        except Exception:
+        except Exception as e:
             errors += 1
+            if len(error_samples) < 3:
+                error_samples.append(f"{pin}: {type(e).__name__}: {str(e)[:120]}")
 
     return {
         "ok": True,
@@ -996,4 +999,5 @@ async def backfill_tenure(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         "updated_with_tenure": updated,
         "no_sales_history": no_sales,
         "errors": errors,
+        "error_samples": error_samples,
     }
