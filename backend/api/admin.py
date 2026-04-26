@@ -847,3 +847,38 @@ async def reband_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
     if rc != 0:
         raise HTTPException(500, f"Reband failed: {output}")
     return {"ok": True, "zip_code": zip_code, "log": output}
+
+
+# ─── Reclassify archetypes (re-run signal_family assignment) ─────────────────
+
+@router.post("/reclassify-archetypes/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def reclassify_archetypes_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
+    """
+    Re-run archetype classification for every parcel in the ZIP.
+
+    This sets parcels_v3.signal_family to one of the archetype labels
+    (trust_mature, individual_long_tenure, llc_investor_mature, etc.)
+    based on owner_type + tenure + value + activity patterns.
+
+    Distinct from /reclassify-owner-type (which only parses owner_name
+    into individual/llc/trust). Run AFTER reclassify-owner-type so the
+    archetype classifier has correct owner_type to read from.
+
+    Pairs with /reband — banding reads signal_family, so reband must
+    run after this for Band 0-4 to update.
+
+    Idempotent. Returns the archetype distribution.
+    """
+    from backend.ingest.zip_builder import cmd_classify
+    import io
+    import contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cmd_classify(zip_code)
+
+    output = buf.getvalue()
+    if rc != 0:
+        raise HTTPException(500, f"Reclassify-archetypes failed: {output}")
+    return {"ok": True, "zip_code": zip_code, "log": output}
