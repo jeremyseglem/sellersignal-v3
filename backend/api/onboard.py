@@ -507,7 +507,155 @@ async def hydrate_owners(
 
 @router.get("/hydrate-owners/status", dependencies=[Depends(require_admin)])
 async def hydrate_owners_status():
+    """In-memory job state if a job is running. Falls back to a
+    DB-derived snapshot when no in-memory job exists (e.g., after
+    a container restart wiped the job state but the underlying
+    work is still complete or in progress)."""
     snap = _hydrate_snapshot()
-    if snap is None:
-        raise HTTPException(404, "No hydrate job has been started yet.")
-    return snap
+    if snap is not None:
+        return snap
+    # No in-memory job. Compute coverage from the database — this
+    # is the ground truth for what eRealProperty has actually
+    # populated. Returns same general shape so consumers don't
+    # have to special-case the fallback.
+    return _db_coverage_snapshot()
+
+
+# ── DB-backed coverage status ──────────────────────────────────
+# These endpoints don't care about job state at all. They read
+# directly from parcels_v3 + parcel_ereal_meta_v3 to answer:
+# "how many parcels in ZIP X have been hydrated by eReal?"
+# Survives container restarts. Always accurate. The right way
+# to ask "where is my hydration?" once you stop trusting in-
+# memory job state.
+
+def _zip_coverage(supa, zip_code: str) -> Dict[str, Any]:
+    """Return per-ZIP coverage stats from the DB.
+
+    Two counts:
+      total      — parcels in parcels_v3 with this zip_code
+      hydrated   — parcels with a parcel_ereal_meta_v3 row whose
+                   fetched_at is non-null
+
+    Coverage % = hydrated / total. >95% is effectively complete
+    (some parcels persistently fail to fetch — KC server quirks,
+    parser edge cases — and that's tracked separately on the meta
+    table's last_error column).
+    """
+    # Total parcels in the ZIP.
+    total_res = (
+        supa.table('parcels_v3')
+        .select('pin', count='exact', head=True)
+        .eq('zip_code', zip_code)
+        .execute()
+    )
+    total = total_res.count or 0
+
+    # Hydrated parcels: parcel_ereal_meta_v3 rows joined to
+    # parcels_v3 by pin, scoped to the ZIP. PostgREST doesn't do
+    # arbitrary joins, but we can query the meta table for
+    # fetched_at IS NOT NULL and intersect by paginating the pins.
+    # Simpler approach: paginate the parcels_v3 pins for this ZIP,
+    # then for each chunk count how many have meta rows with
+    # fetched_at set.
+    hydrated = 0
+    PAGE_SIZE = 5000
+    page = 0
+    while True:
+        start = page * PAGE_SIZE
+        end   = start + PAGE_SIZE - 1
+        page_res = (
+            supa.table('parcels_v3')
+            .select('pin')
+            .eq('zip_code', zip_code)
+            .range(start, end)
+            .execute()
+        )
+        page_data = page_res.data or []
+        if not page_data:
+            break
+        page_pins = [r['pin'] for r in page_data]
+
+        # Count meta rows for this chunk where fetched_at is set.
+        meta_res = (
+            supa.table('parcel_ereal_meta_v3')
+            .select('pin', count='exact', head=True)
+            .in_('pin', page_pins)
+            .not_.is_('fetched_at', 'null')
+            .execute()
+        )
+        hydrated += (meta_res.count or 0)
+
+        if len(page_data) < PAGE_SIZE:
+            break
+        page += 1
+        if page > 20:
+            break
+
+    pct = round(100.0 * hydrated / total, 1) if total else 0.0
+    return {
+        "total":     total,
+        "hydrated":  hydrated,
+        "coverage_pct": pct,
+    }
+
+
+def _db_coverage_snapshot() -> Dict[str, Any]:
+    """DB-derived snapshot in roughly the shape the in-memory hydrate
+    job emits. Useful when the in-memory job is gone but the work
+    is still relevant."""
+    from backend.api.db import get_supabase_client
+
+    supa = get_supabase_client()
+    if supa is None:
+        return {
+            "source": "db",
+            "status": "unknown",
+            "error":  "Supabase client unavailable",
+        }
+
+    out = {}
+    for zip_code in DEFAULT_HYDRATE_ROSTER:
+        try:
+            out[zip_code] = _zip_coverage(supa, zip_code)
+        except Exception as e:
+            out[zip_code] = {"error": f"{type(e).__name__}: {e}"}
+
+    # Aggregate
+    total_p = sum((v.get("total") or 0) for v in out.values() if isinstance(v, dict))
+    total_h = sum((v.get("hydrated") or 0) for v in out.values() if isinstance(v, dict))
+    overall_pct = round(100.0 * total_h / total_p, 1) if total_p else 0.0
+
+    return {
+        "source":           "db",
+        "as_of":            datetime.now(timezone.utc).isoformat(),
+        "roster":           list(DEFAULT_HYDRATE_ROSTER),
+        "overall_total":    total_p,
+        "overall_hydrated": total_h,
+        "overall_pct":      overall_pct,
+        "zips":             out,
+    }
+
+
+@router.get("/coverage-status", dependencies=[Depends(require_admin)])
+async def coverage_status(zip_code: Optional[str] = None):
+    """DB-backed coverage stats, independent of any in-memory job.
+
+    With no query param: returns coverage for all 11 default-roster
+    ZIPs. With ?zip_code=98033: returns just that ZIP.
+
+    Reads from parcels_v3 + parcel_ereal_meta_v3 directly. Always
+    accurate; survives container restarts; doesn't depend on
+    whether a hydrate job is running."""
+    from backend.api.db import get_supabase_client
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase client unavailable")
+
+    if zip_code:
+        return {
+            "zip_code": zip_code,
+            "as_of":    datetime.now(timezone.utc).isoformat(),
+            **_zip_coverage(supa, zip_code),
+        }
+    return _db_coverage_snapshot()
