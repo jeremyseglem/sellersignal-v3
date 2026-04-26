@@ -882,3 +882,118 @@ async def reclassify_archetypes_zip(zip_code: str = Path(..., pattern=r'^\d{5}$'
     if rc != 0:
         raise HTTPException(500, f"Reclassify-archetypes failed: {output}")
     return {"ok": True, "zip_code": zip_code, "log": output}
+
+
+# ─── Backfill tenure from sales history ──────────────────────────────────────
+
+@router.post("/backfill-tenure/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def backfill_tenure(zip_code: str = Path(..., pattern=r'^\d{5}$')):
+    """
+    Compute parcels_v3.last_transfer_date and tenure_years from
+    sales_history_v3 for every parcel in the ZIP.
+
+    KC ArcGIS doesn't include transfer date. The eReal harvester
+    populates sales_history_v3, but never propagates the most recent
+    sale date back to parcels_v3. Without that, tenure_years stays
+    null on every parcel — which means the archetype classifier maps
+    everyone to early/young/active variants (Band 1) instead of
+    long_tenure/mature/aging variants (Band 2+). Result: empty BUILD
+    NOW deck.
+
+    This endpoint:
+      1. For each parcel in the ZIP, finds the most recent sale in
+         sales_history_v3 (preferring is_arms_length=true if any
+         exist, else most-recent-of-any).
+      2. Writes last_transfer_date and tenure_years to parcels_v3.
+
+    After running this, run /reclassify-archetypes and /reband to
+    let the new tenure data drive Band 2+ assignments.
+
+    Idempotent. Returns counts.
+    """
+    from datetime import date, datetime
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Pull all parcel PINs in the ZIP (paginated to bypass PostgREST
+    # 5000-row response cap).
+    PAGE_SIZE = 5000
+    all_pins = []
+    page = 0
+    while True:
+        res = (supa.table('parcels_v3')
+               .select('pin')
+               .eq('zip_code', zip_code)
+               .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+               .execute())
+        rows = res.data or []
+        if not rows:
+            break
+        all_pins.extend(r['pin'] for r in rows)
+        if len(rows) < PAGE_SIZE:
+            break
+        page += 1
+        if page > 20:
+            break
+
+    today = date.today()
+    updated = 0
+    no_sales = 0
+    errors = 0
+
+    # Per-parcel: pull sales, pick best, update parcel. One round-trip
+    # per parcel; ~1k parcels in Medina = ~10-20 seconds total.
+    for pin in all_pins:
+        try:
+            sales_res = (supa.table('sales_history_v3')
+                         .select('sale_date, is_arms_length, sale_price')
+                         .eq('pin', pin)
+                         .order('sale_date', desc=True)
+                         .execute())
+            sales = sales_res.data or []
+            if not sales:
+                no_sales += 1
+                continue
+
+            # Prefer most recent arms-length sale; fall back to
+            # most recent of any kind.
+            best = next((s for s in sales if s.get('is_arms_length')), sales[0])
+            sale_date_str = best.get('sale_date')
+            if not sale_date_str:
+                no_sales += 1
+                continue
+
+            try:
+                sale_date = datetime.fromisoformat(str(sale_date_str)[:10]).date()
+            except (ValueError, TypeError):
+                no_sales += 1
+                continue
+
+            tenure = round((today - sale_date).days / 365.25, 1)
+
+            (supa.table('parcels_v3')
+             .update({
+                 'last_transfer_date': sale_date.isoformat(),
+                 'tenure_years': tenure,
+                 # Also mirror to last_arms_length_date if this is one
+                 'last_arms_length_date': (sale_date.isoformat()
+                                           if best.get('is_arms_length') else None),
+                 'last_arms_length_price': (best.get('sale_price')
+                                            if best.get('is_arms_length') else None),
+             })
+             .eq('pin', pin)
+             .execute())
+            updated += 1
+        except Exception:
+            errors += 1
+
+    return {
+        "ok": True,
+        "zip_code": zip_code,
+        "total_parcels": len(all_pins),
+        "updated_with_tenure": updated,
+        "no_sales_history": no_sales,
+        "errors": errors,
+    }
