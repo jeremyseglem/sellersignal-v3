@@ -821,3 +821,29 @@ async def ereal_sales(pin: str = Path(..., pattern=r'^[0-9A-Z]+$')):
            .order('sale_date', desc=True)
            .execute())
     return {'pin': pin, 'sales': res.data or []}
+
+
+# ─── Reband (re-run band assignment after reclassify) ────────────────────────
+
+@router.post("/reband/{zip_code}", dependencies=[Depends(require_admin)])
+async def reband_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
+    """
+    Re-run band assignment for a ZIP. Use after reclassify-owner-type to
+    let the new owner classifications propagate into Band 0-4 priority
+    (which drives CALL NOW / BUILD NOW selection).
+
+    Idempotent. Returns the band distribution.
+    """
+    from backend.ingest.zip_builder import cmd_band
+    import io
+    import contextlib
+
+    # cmd_band prints to stdout — capture for the response
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cmd_band(zip_code)
+
+    output = buf.getvalue()
+    if rc != 0:
+        raise HTTPException(500, f"Reband failed: {output}")
+    return {"ok": True, "zip_code": zip_code, "log": output}
