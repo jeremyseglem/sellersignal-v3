@@ -1001,3 +1001,122 @@ async def backfill_tenure(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         "errors": errors,
         "error_samples": error_samples,
     }
+
+
+# ─── Seed parcels from pre-computed JSON ─────────────────────────────────────
+
+# ZIP → city mapping for the 11 KC ZIPs (10 new + 98004). seed_from_json
+# defaults to "Bellevue" but Medina/Kirkland/Redmond/Mercer Island/Seattle
+# parcels need their actual city for accurate display.
+KC_ZIP_TO_CITY = {
+    "98004": "Bellevue",
+    "98005": "Bellevue",
+    "98006": "Bellevue",
+    "98007": "Bellevue",
+    "98033": "Kirkland",
+    "98039": "Medina",
+    "98040": "Mercer Island",
+    "98052": "Redmond",
+    "98105": "Seattle",
+    "98112": "Seattle",
+    "98199": "Seattle",
+}
+
+
+@router.post("/seed-from-json/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
+    """
+    Seed parcels_v3 for a ZIP from a pre-computed owner JSON file in
+    data/seeds/. Each JSON is keyed by PIN and contains owner_name,
+    last_transfer_date, tenure_years, sale_price, address, value,
+    owner_type — derived from the King County EXTR_RPSale.csv bulk
+    export joined against the ArcGIS PIN list.
+
+    File path is determined by zip_code:
+      - 98004           -> data/seeds/wa-king-98004.json (the original baseline)
+      - 98005..98199    -> data/seeds/wa-king-{zip}-owners.json (10 new ZIPs)
+
+    Same upsert path as the original 98004 seed used. Idempotent —
+    re-running just refreshes the rows. Returns row counts and the
+    file used.
+
+    After this endpoint completes for a ZIP, run:
+      1. /reclassify-archetypes/{zip} — uses owner_type + tenure to
+         assign signal_family
+      2. /reband/{zip}                — uses signal_family to assign
+         band 0-4
+
+    These two run fast (seconds each) because all the data they need
+    is now in parcels_v3. After both, the ZIP's briefing renders
+    with real archetypes, real tenure, real Band 2+ promotion — the
+    same way 98004 has been working.
+    """
+    from pathlib import Path as PathLib
+    from backend.ingest.seed_from_json import (
+        load_parcels_from_json, upsert_parcels, stamp_ingest_complete,
+    )
+
+    # Resolve seed path. Repo root is two parents up from this file
+    # (backend/api/admin.py -> backend/ -> repo root).
+    repo_root = PathLib(__file__).resolve().parent.parent.parent
+
+    # 98004 uses the original baseline filename; new ZIPs use the
+    # generated filename pattern.
+    if zip_code == "98004":
+        seed_path = repo_root / "data" / "seeds" / "wa-king-98004.json"
+    else:
+        seed_path = repo_root / "data" / "seeds" / f"wa-king-{zip_code}-owners.json"
+
+    if not seed_path.exists():
+        raise HTTPException(404,
+            f"Seed file not found: {seed_path.name}. Available seeds live "
+            f"in data/seeds/. Add the JSON to that directory and redeploy.")
+
+    city = KC_ZIP_TO_CITY.get(zip_code, "Bellevue")
+
+    try:
+        rows = load_parcels_from_json(
+            json_path=str(seed_path),
+            zip_code=zip_code,
+            market_key="WA_KING",
+            default_state="WA",
+            default_city=city,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load seed: {type(e).__name__}: {e}")
+
+    if not rows:
+        return {
+            "ok": True,
+            "zip_code": zip_code,
+            "seed_file": seed_path.name,
+            "message": "Seed file contained no rows; nothing to upsert.",
+            "stats": {"inserted_or_updated": 0, "failed": 0, "batches": 0},
+        }
+
+    try:
+        stats = upsert_parcels(rows)
+    except Exception as e:
+        raise HTTPException(500, f"Upsert failed: {type(e).__name__}: {e}")
+
+    # Stamp coverage with the seed's parcel count so the briefing
+    # endpoint sees a consistent count.
+    try:
+        stamp_ingest_complete(zip_code, len(rows))
+    except Exception as e:
+        # Non-fatal — the data is in, the stamp is for accounting.
+        stats["stamp_warning"] = f"{type(e).__name__}: {e}"
+
+    return {
+        "ok": True,
+        "zip_code": zip_code,
+        "city": city,
+        "seed_file": seed_path.name,
+        "rows_processed": len(rows),
+        "stats": stats,
+        "next_steps": [
+            f"POST /api/admin/reclassify-archetypes/{zip_code}",
+            f"POST /api/admin/reband/{zip_code}",
+        ],
+    }
