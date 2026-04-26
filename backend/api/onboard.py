@@ -310,9 +310,11 @@ DEFAULT_HYDRATE_ROSTER: List[str] = [
 BATCH_LIMIT = 100
 
 # Hard cap on batches per ZIP so a runaway loop doesn't burn forever.
-# 200 batches × 100 parcels = 20,000 parcels, more than any single
-# KC ZIP should have.
-MAX_BATCHES_PER_ZIP = 200
+# Math: largest KC ZIP we touch is 98052 Redmond at ~15,500 parcels.
+# 100 parcels per batch = 155 batches needed. Cap at 250 to give
+# headroom for retries on transient failures without allowing
+# unbounded loops.
+MAX_BATCHES_PER_ZIP = 250
 
 
 def _new_hydrate_job(roster: List[str]) -> Dict[str, Any]:

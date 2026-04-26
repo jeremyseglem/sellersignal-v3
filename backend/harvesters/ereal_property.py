@@ -279,23 +279,54 @@ def run_batch(
     # Supabase PostgREST doesn't do arbitrary joins, so do this in two
     # passes: get all pins in zip, then filter by meta.
     #
-    # For ZIPs larger than ~10K parcels a single SELECT is still fine.
-    parcels_res = (
-        supa.table('parcels_v3')
-        .select('pin')
-        .eq('zip_code', zip_code)
-        .limit(50000)
-        .execute()
-    )
-    all_pins = [r['pin'] for r in (parcels_res.data or [])]
+    # IMPORTANT: PostgREST has a hard cap on rows per response set
+    # at the project level via PGRST_DB_MAX_ROWS (this project's cap
+    # is 5,000). `.limit(50000)` is silently capped to that ceiling.
+    # To pull all parcels for ZIPs with >5,000 rows, paginate
+    # explicitly with .range(start, end). Without this, ZIPs like
+    # Kirkland 98033 (11,895 parcels) only ever surface the first
+    # 5,000 rows — the harvester then reports 'complete' after
+    # processing the first 5,000 even though half the ZIP is unseen.
+    PAGE_SIZE = 5000
+    all_pins: list[str] = []
+    page = 0
+    while True:
+        start = page * PAGE_SIZE
+        end   = start + PAGE_SIZE - 1
+        page_res = (
+            supa.table('parcels_v3')
+            .select('pin')
+            .eq('zip_code', zip_code)
+            .range(start, end)
+            .execute()
+        )
+        page_data = page_res.data or []
+        if not page_data:
+            break
+        all_pins.extend(r['pin'] for r in page_data)
+        if len(page_data) < PAGE_SIZE:
+            break  # last page
+        page += 1
+        if page > 20:    # safety cap: 100K parcels max per ZIP
+            log.warning(f"ereal: pagination exceeded 20 pages for {zip_code}; stopping")
+            break
 
-    meta_res = (
-        supa.table('parcel_ereal_meta_v3')
-        .select('pin, fetched_at')
-        .in_('pin', all_pins)
-        .execute()
-    )
-    meta_by_pin = {r['pin']: r for r in (meta_res.data or [])}
+    # Same pagination needed for the meta lookup. The .in_(all_pins)
+    # filter limits us to whatever PIN list we send, but PostgREST
+    # still caps the RESPONSE at PGRST_DB_MAX_ROWS rows. Chunk the
+    # lookup so each request fits under the cap.
+    meta_by_pin: dict[str, dict] = {}
+    META_CHUNK = 1000   # IN list size; response will have <= chunk size rows
+    for i in range(0, len(all_pins), META_CHUNK):
+        chunk = all_pins[i:i + META_CHUNK]
+        meta_res = (
+            supa.table('parcel_ereal_meta_v3')
+            .select('pin, fetched_at')
+            .in_('pin', chunk)
+            .execute()
+        )
+        for r in (meta_res.data or []):
+            meta_by_pin[r['pin']] = r
 
     candidates: list[str] = []
     for pin in all_pins:
