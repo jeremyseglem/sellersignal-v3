@@ -168,15 +168,21 @@ def upsert_parsed(supa, pin: str, parsed: dict) -> dict:
     p = parsed.get('parcel') or {}
 
     # ── parcels_v3 refresh ──
-    # Always refresh owner_name_raw to what the assessor shows today,
-    # since names change at assessor-recording (marriage, trust, etc.).
-    # Refresh sqft / year_built only if the new value is non-null.
+    # eReal pulls owner_name_raw from the assessor's authoritative
+    # detail page (KC ArcGIS doesn't expose names per RCW 42.56.070(8)).
+    # We also derive owner_name (display form, "John Smith" not
+    # "SMITH JOHN") and owner_type (individual / llc / trust / estate /
+    # gov) inline, so the parcel row is ready for classify and band
+    # without any further enrichment step.
     parcel_update: dict = {}
     owner_raw = p.get('owner_name')
     if owner_raw:
+        # Lazy-import to avoid heavy module-init costs on every upsert
+        from backend.ingest.seed_from_json import _normalize_display_name
+        from backend.ingest.arcgis import _derive_owner_type
         parcel_update['owner_name_raw'] = owner_raw
-        # owner_name (display form) is updated by the canonicalize
-        # pipeline, not here — setting only raw.
+        parcel_update['owner_name']     = _normalize_display_name(owner_raw)
+        parcel_update['owner_type']     = _derive_owner_type(owner_raw)
     if b.get('sqft') is not None:
         parcel_update['sqft'] = b['sqft']
     if b.get('year_built') is not None:
