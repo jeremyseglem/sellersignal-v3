@@ -1213,8 +1213,9 @@ def _run_canonicalize_all(roster: list[str]) -> None:
                     dry_run=False,
                     limit=CANON_BATCH_LIMIT,
                     force=False,
-                    sleep_ms=50,
+                    sleep_ms=0,
                     verbose=False,
+                    concurrency=10,    # ~10x speedup over serial
                 )
             except Exception as e:
                 _canon_inc(zip_code, "batch_errors")
@@ -1411,4 +1412,105 @@ async def rematch_safe(confirm: bool = False):
         "match_stats":   stats,
         "note":          "98004's existing matches were preserved (no DELETE). "
                          "Identical matches re-created during the rerun are upserts.",
+    }
+
+
+# ─── Reset bogus low-confidence canonical rows ───────────────────────────────
+
+@router.post("/reset-canonical/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def reset_canonical_zip(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    only_zero_confidence: bool = True,
+):
+    """
+    Delete owner_canonical_v3 rows for a ZIP that were written as "unknown"
+    fallbacks when the Anthropic API was unavailable. After deletion, the
+    rows naturally re-queue on the next canonicalize-all run because the
+    backfiller's "already done" check looks for row existence.
+
+    Use case: API credits ran out mid-canonicalize, the canonicalizer's
+    fallback path wrote `entity_type='unknown', confidence=0.0` rows for
+    every parcel it tried to process. Those rows are useless (no parsed
+    owner data) and should be retried. This endpoint deletes them safely.
+
+    Defaults are conservative — `only_zero_confidence=true` deletes only
+    the rows that match the API-failure fallback signature (entity_type
+    'unknown' AND confidence 0.0). Pass `only_zero_confidence=false` to
+    delete ALL low-confidence rows for the ZIP (less common; more
+    aggressive).
+
+    Returns count of rows deleted.
+    """
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Find target rows. We need to scope to this ZIP — but
+    # owner_canonical_v3 has no zip_code column. Join via parcels_v3.
+
+    # Step 1: pull all PINs in this ZIP (paginated; PostgREST caps at 1000).
+    all_pins = []
+    page_size = 1000
+    page = 0
+    while True:
+        res = (supa.table('parcels_v3')
+               .select('pin')
+               .eq('zip_code', zip_code)
+               .range(page * page_size, (page + 1) * page_size - 1)
+               .execute())
+        rows = res.data or []
+        if not rows:
+            break
+        all_pins.extend(r['pin'] for r in rows)
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 50:
+            break
+
+    if not all_pins:
+        return {"ok": True, "zip_code": zip_code, "deleted": 0,
+                "note": "No parcels found in this ZIP."}
+
+    # Step 2: find canonical rows matching the bogus signature.
+    # Chunk the IN list to keep response sizes under PostgREST cap.
+    target_pins = []
+    chunk = 500
+    for i in range(0, len(all_pins), chunk):
+        pins_chunk = all_pins[i:i + chunk]
+        q = (supa.table('owner_canonical_v3')
+             .select('pin, entity_type, confidence')
+             .in_('pin', pins_chunk))
+        if only_zero_confidence:
+            q = q.eq('entity_type', 'unknown').eq('confidence', 0.0)
+        else:
+            q = q.lt('confidence', 0.5)
+        res = q.execute()
+        for r in (res.data or []):
+            target_pins.append(r['pin'])
+
+    if not target_pins:
+        return {"ok": True, "zip_code": zip_code, "deleted": 0,
+                "note": "No bogus low-confidence rows found."}
+
+    # Step 3: delete them. Chunk the DELETE too.
+    deleted = 0
+    for i in range(0, len(target_pins), chunk):
+        pins_chunk = target_pins[i:i + chunk]
+        (supa.table('owner_canonical_v3')
+         .delete()
+         .in_('pin', pins_chunk)
+         .execute())
+        deleted += len(pins_chunk)
+
+    return {
+        "ok": True,
+        "zip_code": zip_code,
+        "parcels_in_zip": len(all_pins),
+        "matched_for_deletion": len(target_pins),
+        "deleted": deleted,
+        "filter": ("entity_type=unknown AND confidence=0"
+                   if only_zero_confidence else "confidence<0.5"),
+        "note": "These PINs will be re-queued on the next canonicalize-all run.",
     }

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from backend.api.db import get_supabase_client
@@ -30,6 +31,13 @@ from backend.ingest.owner_canonicalizer import (
 
 HAIKU_COST_IN_PER_MTOK = 1.0
 HAIKU_COST_OUT_PER_MTOK = 5.0
+
+
+def _process_one(pin: str, raw: str) -> tuple[str, str, dict]:
+    """Threadpool worker: canonicalize one parcel. Returns (pin, raw, result).
+    Each call is its own Anthropic API request — the SDK is thread-safe so
+    we can safely fan out without coordination."""
+    return pin, raw, canonicalize_owner_name(raw)
 
 
 def _fetch_all_parcels(supa, zip_code: str, page: int = 1000) -> list[dict]:
@@ -74,7 +82,8 @@ def _fetch_existing_pins(supa, zip_code: str, page: int = 1000) -> set[str]:
 
 def backfill_zip(zip_code: str, dry_run: bool = False,
                  limit: Optional[int] = None, force: bool = False,
-                 sleep_ms: int = 50, verbose: bool = True) -> dict:
+                 sleep_ms: int = 50, verbose: bool = True,
+                 concurrency: int = 10) -> dict:
     """
     Programmatic entry point for canonicalize backfill.
 
@@ -148,39 +157,82 @@ def backfill_zip(zip_code: str, dry_run: bool = False,
     low_conf: list[dict] = []
     errors: list[dict] = []
     start = time.time()
-    sleep_s = max(0, sleep_ms) / 1000.0
+    # sleep_ms is now ignored when concurrency > 1 — the threadpool naturally
+    # spaces calls across workers; sleeping serially would defeat the
+    # concurrency benefit.
+    log(f"[backfill] running with concurrency={concurrency}")
 
-    for i, p in enumerate(parcels, 1):
-        pin = p['pin']
-        raw = p['owner_name'] or ''
-        result = canonicalize_owner_name(raw)
+    if concurrency <= 1:
+        # Original serial path (kept for back-compat / debugging).
+        sleep_s = max(0, sleep_ms) / 1000.0
+        for i, p in enumerate(parcels, 1):
+            pin = p['pin']
+            raw = p['owner_name'] or ''
+            result = canonicalize_owner_name(raw)
 
-        total_tokens_in += result.get('_tokens_in', 0) or 0
-        total_tokens_out += result.get('_tokens_out', 0) or 0
-        if '_error' in result:
-            errors.append({'pin': pin, 'msg': result['_error']})
+            total_tokens_in += result.get('_tokens_in', 0) or 0
+            total_tokens_out += result.get('_tokens_out', 0) or 0
+            if '_error' in result:
+                errors.append({'pin': pin, 'msg': result['_error']})
 
-        if result.get('confidence', 0) < 0.5:
-            low_conf.append({'pin': pin, 'raw': raw,
-                             'confidence': result.get('confidence', 0)})
+            if result.get('confidence', 0) < 0.5:
+                low_conf.append({'pin': pin, 'raw': raw,
+                                 'confidence': result.get('confidence', 0)})
 
-        try:
-            upsert_canonical(supa, pin, result)
-        except Exception as e:
-            errors.append({'pin': pin, 'msg': f'upsert: {e}'})
+            try:
+                upsert_canonical(supa, pin, result)
+            except Exception as e:
+                errors.append({'pin': pin, 'msg': f'upsert: {e}'})
 
-        if i % 50 == 0 or i == len(parcels):
-            elapsed = time.time() - start
-            rate = i / max(elapsed, 0.001)
-            eta = (len(parcels) - i) / max(rate, 0.001)
-            cost = (total_tokens_in * HAIKU_COST_IN_PER_MTOK +
-                    total_tokens_out * HAIKU_COST_OUT_PER_MTOK) / 1_000_000
-            log(f"  [{i}/{len(parcels)}] rate={rate:.1f}/s "
-                f"eta={eta:.0f}s cost=${cost:.4f} "
-                f"low_conf={len(low_conf)} err={len(errors)}")
+            if i % 50 == 0 or i == len(parcels):
+                elapsed = time.time() - start
+                rate = i / max(elapsed, 0.001)
+                eta = (len(parcels) - i) / max(rate, 0.001)
+                log(f"[backfill] {i}/{len(parcels)} "
+                    f"({rate:.1f}/s, ETA {eta:.0f}s)")
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+    else:
+        # Threadpool path: fan out to N concurrent Haiku calls. Anthropic
+        # SDK is thread-safe; each thread holds its own HTTP connection.
+        # Upserts happen in the main thread (sequential) to keep Supabase
+        # client usage simple.
+        completed = 0
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            future_to_parcel = {
+                pool.submit(_process_one, p['pin'], p['owner_name'] or ''): p
+                for p in parcels
+            }
+            for fut in as_completed(future_to_parcel):
+                completed += 1
+                try:
+                    pin, raw, result = fut.result()
+                except Exception as e:
+                    p = future_to_parcel[fut]
+                    errors.append({'pin': p['pin'],
+                                   'msg': f'thread: {type(e).__name__}: {e}'})
+                    continue
 
-        if sleep_s:
-            time.sleep(sleep_s)
+                total_tokens_in += result.get('_tokens_in', 0) or 0
+                total_tokens_out += result.get('_tokens_out', 0) or 0
+                if '_error' in result:
+                    errors.append({'pin': pin, 'msg': result['_error']})
+
+                if result.get('confidence', 0) < 0.5:
+                    low_conf.append({'pin': pin, 'raw': raw,
+                                     'confidence': result.get('confidence', 0)})
+
+                try:
+                    upsert_canonical(supa, pin, result)
+                except Exception as e:
+                    errors.append({'pin': pin, 'msg': f'upsert: {e}'})
+
+                if completed % 50 == 0 or completed == len(parcels):
+                    elapsed = time.time() - start
+                    rate = completed / max(elapsed, 0.001)
+                    eta = (len(parcels) - completed) / max(rate, 0.001)
+                    log(f"[backfill] {completed}/{len(parcels)} "
+                        f"({rate:.1f}/s, ETA {eta:.0f}s)")
 
     elapsed = time.time() - start
     cost = (total_tokens_in * HAIKU_COST_IN_PER_MTOK +
