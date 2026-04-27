@@ -210,7 +210,9 @@ function BriefingBody() {
               )}
             </div>
           )}
-          {stats && <StatsRow stats={stats} />}
+          {(briefing || stats) && (
+            <StatsRow stats={stats} briefing={briefing} mapData={mapData} />
+          )}
         </header>
 
         {/* Search + filter + sort */}
@@ -331,13 +333,61 @@ function BriefingBody() {
   );
 }
 
-function StatsRow({ stats }) {
+function StatsRow({ stats, briefing, mapData }) {
+  // The briefing endpoint returns live, accurate counts in briefing.stats
+  // (build_now_count, call_now_count, strategic_holds_count). Use those
+  // as the source of truth — they're computed from the just-built playbook.
+  // The coverage endpoint's stats are persisted in zip_coverage_v3 and
+  // can drift if the briefing has been re-classified since the last
+  // coverage refresh, so we only use coverage for fields the briefing
+  // doesn't populate (median_value, city/state).
+  const bs = briefing?.stats || {};
+
+  // Median value: the coverage endpoint sometimes reports 0 even when
+  // parcels have real values (computation lags). If coverage gives us
+  // a real number, use it; otherwise compute from the map data we
+  // already loaded for the same ZIP.
+  let median = stats?.median_value;
+  if ((!median || median === 0) && mapData?.parcels?.length) {
+    const values = mapData.parcels
+      .map(p => p.value || p.total_value || 0)
+      .filter(v => v > 0)
+      .sort((a, b) => a - b);
+    if (values.length) {
+      median = values[Math.floor(values.length / 2)];
+    }
+  }
+
+  // Parcel count: prefer briefing.stats.total_parcels, fall back to
+  // coverage parcel_count, then to mapData length.
+  const parcels = bs.total_parcels
+                ?? stats?.parcel_count
+                ?? mapData?.parcels?.length
+                ?? '—';
+
+  // "Scored" is the count of parcels with any banding (Band 1 or higher).
+  // Originally meant `investigated_count` (SerpAPI), but those are deprecated.
+  // Now: count from map data which has the live band per parcel.
+  let scoredCount = bs.scored_count ?? bs.investigated_count;
+  if (!scoredCount && mapData?.parcels?.length) {
+    scoredCount = mapData.parcels.filter(p => (p.band ?? 0) >= 1).length;
+  }
+  if (!scoredCount) scoredCount = stats?.investigated_count ?? '—';
+
   const items = [
-    { label: 'Parcels',    value: stats.parcel_count?.toLocaleString?.() || stats.parcel_count || '—' },
-    { label: 'Median',     value: formatValue(stats.median_value) },
-    { label: 'Scored',     value: stats.investigated_count ?? '—' },
-    { label: 'Call now',   value: stats.call_now_count ?? '—' },
-    { label: 'Build now',  value: stats.build_now_count ?? '—' },
+    { label: 'Parcels',    value: typeof parcels === 'number'
+                                  ? parcels.toLocaleString()
+                                  : parcels },
+    { label: 'Median',     value: formatValue(median) },
+    { label: 'Scored',     value: typeof scoredCount === 'number'
+                                  ? scoredCount.toLocaleString()
+                                  : scoredCount },
+    { label: 'Call now',   value: bs.call_now_count
+                                  ?? stats?.call_now_count
+                                  ?? '—' },
+    { label: 'Build now',  value: bs.build_now_count
+                                  ?? stats?.build_now_count
+                                  ?? '—' },
   ];
   return (
     <div style={{
