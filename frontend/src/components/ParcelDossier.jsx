@@ -26,22 +26,24 @@ function formatDate(iso) {
 }
 
 // ───────────────────────────────────────────────────────────────────
-// ContactBlock: actionable mailing-address advice for the agent.
+// ContactBlock: minimal, honest mailing-address indicator.
 //
-// KC assessor data redacts street-level mailing addresses per RCW
-// 42.56.070(8) — we have city/state but not street. The previous copy
-// said "Auto-resolution coming in next release · beta" which was
-// misleading: this is a permanent legal constraint, not a temporary
-// gap. The new copy turns the limitation into actionable advice.
+// KC assessor data redacts street-level mailing addresses on the bulk
+// parcel feed per RCW 42.56.070(8). We have city/state but not street.
+// Until we integrate a skip-trace pipeline (or surface addresses from
+// other public-record sources like Superior Court probate filings),
+// the right move is to surface what we DO have without offloading the
+// "go skip-trace this yourself" task to the agent.
 //
 // Three states:
 //   1. Owner-occupied (mail goes to the property itself)
-//        → Direct mail to property address.
+//        → "Direct mail to property address."
 //   2. Out-of-area owner (mails to different city/state)
-//        → Show the city/state and tell agent how to get the street
-//          address (skip-trace via paid service).
-//   3. Unknown (no mailing data at all)
-//        → Same skip-trace recommendation but generic.
+//        → "Mails to: <city, state>"
+//   3. Unknown / no mailing data
+//        → render nothing (the dossier headline already shows the
+//          owner identity; an empty Contact slot is cleaner than a
+//          line that says we don't know).
 // ───────────────────────────────────────────────────────────────────
 function ContactBlock({ ownerCity, ownerState, propertyCity, propertyState }) {
   const oc = (ownerCity || '').trim();
@@ -71,28 +73,15 @@ function ContactBlock({ ownerCity, ownerState, propertyCity, propertyState }) {
 
   if (hasMailingArea) {
     return (
-      <div>
-        <div style={subtleStyle}>
-          Mails to: {oc}{os ? `, ${os}` : ''}
-        </div>
-        <div style={{ ...subtleStyle, marginTop: 4, fontStyle: 'italic' }}>
-          Street address: skip-trace via TLO, BeenVerified, or Lexis.
-        </div>
+      <div style={subtleStyle}>
+        Mails to: {oc}{os ? `, ${os}` : ''}
       </div>
     );
   }
 
-  // Unknown — neither owner-occupied confirmation nor a mailing city
-  return (
-    <div>
-      <div style={subtleStyle}>
-        Mailing address not in public record.
-      </div>
-      <div style={{ ...subtleStyle, marginTop: 4, fontStyle: 'italic' }}>
-        Skip-trace via TLO, BeenVerified, or Lexis to obtain.
-      </div>
-    </div>
-  );
+  // No mailing data — render nothing. An empty Contact slot is
+  // cleaner than a line that admits we don't know.
+  return null;
 }
 
 // ownerTypeLabel + isSellerTargetType imported from ../lib/ownerType
