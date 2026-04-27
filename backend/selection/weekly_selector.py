@@ -73,7 +73,7 @@ COPY_TEMPLATES = {
         'action':    "Identify connector within 2 weeks; map estate attorneys; do not cold call.",
     },
     ('silent_transition', None): {
-        'happening': "Long individual tenure. Quiet ownership pattern.",
+        'happening': "Long-tenure owner. No selling signals yet.",
         'why':       "Transition likely private, not MLS-driven.",
         'action':    "Work neighbor intros within 30 days; no mass mail; target one connection per quarter.",
     },

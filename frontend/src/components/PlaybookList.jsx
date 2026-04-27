@@ -4,7 +4,7 @@ import { ownerTypeLabel } from '../lib/ownerType';
 const SECTIONS = [
   { key: 'call_now',        label: 'CALL NOW',         color: 'var(--call-now)' },
   { key: 'build_now',       label: 'BUILD NOW',        color: 'var(--build-now)' },
-  { key: 'strategic_holds', label: 'STRATEGIC HOLDS',  color: 'var(--hold)' },
+  { key: 'strategic_holds', label: 'WATCH LIST',  color: 'var(--hold)' },
 ];
 
 function formatValue(v) {

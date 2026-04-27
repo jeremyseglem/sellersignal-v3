@@ -25,6 +25,76 @@ function formatDate(iso) {
   } catch { return iso; }
 }
 
+// ───────────────────────────────────────────────────────────────────
+// ContactBlock: actionable mailing-address advice for the agent.
+//
+// KC assessor data redacts street-level mailing addresses per RCW
+// 42.56.070(8) — we have city/state but not street. The previous copy
+// said "Auto-resolution coming in next release · beta" which was
+// misleading: this is a permanent legal constraint, not a temporary
+// gap. The new copy turns the limitation into actionable advice.
+//
+// Three states:
+//   1. Owner-occupied (mail goes to the property itself)
+//        → Direct mail to property address.
+//   2. Out-of-area owner (mails to different city/state)
+//        → Show the city/state and tell agent how to get the street
+//          address (skip-trace via paid service).
+//   3. Unknown (no mailing data at all)
+//        → Same skip-trace recommendation but generic.
+// ───────────────────────────────────────────────────────────────────
+function ContactBlock({ ownerCity, ownerState, propertyCity, propertyState }) {
+  const oc = (ownerCity || '').trim();
+  const os = (ownerState || '').trim();
+  const pc = (propertyCity || '').trim().toUpperCase();
+  const ps = (propertyState || '').trim().toUpperCase();
+
+  const sameAsProperty = oc && os
+    && oc.toUpperCase() === pc
+    && os.toUpperCase() === ps;
+
+  const hasMailingArea = oc && os && !sameAsProperty;
+
+  const subtleStyle = {
+    color: 'var(--text-tertiary)',
+    fontSize: 12,
+    lineHeight: 1.5,
+  };
+
+  if (sameAsProperty) {
+    return (
+      <div style={subtleStyle}>
+        Owner-occupied — direct mail to property address.
+      </div>
+    );
+  }
+
+  if (hasMailingArea) {
+    return (
+      <div>
+        <div style={subtleStyle}>
+          Mails to: {oc}{os ? `, ${os}` : ''}
+        </div>
+        <div style={{ ...subtleStyle, marginTop: 4, fontStyle: 'italic' }}>
+          Street address: skip-trace via TLO, BeenVerified, or Lexis.
+        </div>
+      </div>
+    );
+  }
+
+  // Unknown — neither owner-occupied confirmation nor a mailing city
+  return (
+    <div>
+      <div style={subtleStyle}>
+        Mailing address not in public record.
+      </div>
+      <div style={{ ...subtleStyle, marginTop: 4, fontStyle: 'italic' }}>
+        Skip-trace via TLO, BeenVerified, or Lexis to obtain.
+      </div>
+    </div>
+  );
+}
+
 // ownerTypeLabel + isSellerTargetType imported from ../lib/ownerType
 // (moved out so PlaybookList can share the same conversion and the
 // shared helpers can enumerate every backend category: individual,
@@ -1185,6 +1255,13 @@ function _buildProbateCard(match, parcel) {
     prRoleLabel,
     prClassLabel,
     otherParties,
+    // Mailing context for ContactBlock — surfaced from parcel so
+    // OperatorProbateCard can render the same actionable advice as
+    // the Build Now card path.
+    ownerCity: parcel?.owner_city,
+    ownerState: parcel?.owner_state,
+    propertyCity: parcel?.city,
+    propertyState: parcel?.state,
   };
 }
 
@@ -1500,28 +1577,20 @@ function OperatorBuildNowCard({ signalFamily, archetype, copy, parcel, parcelSta
 
       {whyNowText && section('Why now', whyNowText, 'why')}
 
-      {/* Contact block: same beta treatment as probate Variant A —
-          honest 'address pending' state with the upcoming-feature
-          label. Only renders for families where letter outreach is
-          the appropriate channel. trust_aging and family_event_cluster
-          skip this because the right move there is relational
-          (estate attorney connector, obit verification) rather than
-          a cold letter. */}
+      {/* Contact block: shows actionable mailing-address advice based
+          on what we have from public records. Only renders for families
+          where letter outreach is the appropriate channel. trust_aging
+          and family_event_cluster skip this because the right move
+          there is relational (estate attorney connector, obit
+          verification) rather than a cold letter. */}
       {config.showsContact && section(
         'Contact',
-        <div>
-          <div style={{ color: 'var(--text-tertiary)' }}>
-            Mailing address: not yet resolved
-          </div>
-          <div style={{
-            marginTop: 4,
-            fontSize: 11,
-            color: 'var(--text-tertiary)',
-            fontStyle: 'italic',
-          }}>
-            Auto-resolution coming in next release · beta
-          </div>
-        </div>,
+        <ContactBlock
+          ownerCity={parcel?.owner_city}
+          ownerState={parcel?.owner_state}
+          propertyCity={parcel?.city}
+          propertyState={parcel?.state}
+        />,
         'contact'
       )}
 
@@ -1626,19 +1695,12 @@ function OperatorProbateCard({ card }) {
         {contextLine}
 
         {section('Contact',
-          <div>
-            <div style={{ color: 'var(--text-tertiary)' }}>
-              Mailing address: not yet resolved
-            </div>
-            <div style={{
-              marginTop: 4,
-              fontSize: 11,
-              color: 'var(--text-tertiary)',
-              fontStyle: 'italic',
-            }}>
-              Auto-resolution coming in next release · beta
-            </div>
-          </div>,
+          <ContactBlock
+            ownerCity={card.ownerCity}
+            ownerState={card.ownerState}
+            propertyCity={card.propertyCity}
+            propertyState={card.propertyState}
+          />,
           'contact'
         )}
 
