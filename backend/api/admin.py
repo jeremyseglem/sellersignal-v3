@@ -16,7 +16,7 @@ Endpoints:
   POST /api/admin/legal-filings/upload           — (placeholder, not yet wired)
 """
 import os
-from fastapi import APIRouter, HTTPException, Header, Depends, Path
+from fastapi import APIRouter, HTTPException, Header, Depends, Path, BackgroundTasks
 from typing import Optional
 
 from backend.api.db import get_supabase_client
@@ -1119,4 +1119,223 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
             f"POST /api/admin/reclassify-archetypes/{zip_code}",
             f"POST /api/admin/reband/{zip_code}",
         ],
+    }
+
+
+# ─── Canonicalize-all: long-running multi-ZIP orchestrator ───────────────────
+# Wraps backfill_zip in a background task that loops through every ZIP needing
+# canonicalization, in 500-parcel batches, persisting progress to a module-
+# level state dict that the status endpoint reads.
+#
+# Why not a single curl per ZIP? The Haiku rate limit caps us at ~50 req/min,
+# so 64K parcels = 21 hours of wall time. Doing this with a synchronous HTTP
+# call would hit Railway's edge-proxy 5-minute timeout instantly. The /backfill
+# endpoint exists exactly for this case.
+
+import asyncio
+import threading
+from datetime import datetime, timezone
+
+_canon_lock = threading.Lock()
+_canon_job: Optional[dict] = None
+
+DEFAULT_CANON_ROSTER = [
+    "98005", "98006", "98007", "98033", "98040",
+    "98052", "98105", "98112", "98199", "98039",  # 98039 last as a no-op (already done)
+]
+CANON_BATCH_LIMIT = 500
+
+
+def _canon_snapshot() -> Optional[dict]:
+    with _canon_lock:
+        if _canon_job is None:
+            return None
+        return dict(_canon_job, zips=dict(_canon_job["zips"]),
+                    errors=list(_canon_job["errors"]))
+
+
+def _canon_update(updates: dict) -> None:
+    with _canon_lock:
+        if _canon_job is not None:
+            _canon_job.update(updates)
+
+
+def _canon_set_zip(zip_code: str, key: str, value) -> None:
+    with _canon_lock:
+        if _canon_job is None:
+            return
+        _canon_job["zips"].setdefault(zip_code, {})[key] = value
+
+
+def _canon_inc(zip_code: str, key: str, delta: int = 1) -> None:
+    with _canon_lock:
+        if _canon_job is None:
+            return
+        z = _canon_job["zips"].setdefault(zip_code, {})
+        z[key] = (z.get(key) or 0) + delta
+
+
+def _run_canonicalize_all(roster: list[str]) -> None:
+    """Background task: for each ZIP, loop backfill_zip in 500-parcel
+    batches until done. Idempotent — backfill_zip skips already-canonicalized
+    parcels. Survives transient errors (logs and continues)."""
+    try:
+        from backend.ingest.backfill_owner_canonical import backfill_zip
+    except Exception as e:
+        _canon_update({
+            "status": "failed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        with _canon_lock:
+            if _canon_job is not None:
+                _canon_job["errors"].append({
+                    "scope": "outer",
+                    "error": f"import failed: {type(e).__name__}: {e}",
+                })
+        return
+
+    for zip_code in roster:
+        with _canon_lock:
+            if _canon_job is None:
+                return
+            _canon_job["current_zip"] = zip_code
+
+        # Loop until backfill_zip reports zero processed in a call,
+        # which means everything's already canonicalized for this ZIP.
+        # Cap at 50 batches per ZIP (= 25,000 parcels — more than any
+        # single ZIP we have).
+        zip_total_processed = 0
+        zip_total_cost = 0.0
+        for batch_n in range(50):
+            try:
+                stats = backfill_zip(
+                    zip_code=zip_code,
+                    dry_run=False,
+                    limit=CANON_BATCH_LIMIT,
+                    force=False,
+                    sleep_ms=50,
+                    verbose=False,
+                )
+            except Exception as e:
+                _canon_inc(zip_code, "batch_errors")
+                with _canon_lock:
+                    if _canon_job is not None:
+                        _canon_job["errors"].append({
+                            "scope": zip_code,
+                            "batch": batch_n,
+                            "error": f"{type(e).__name__}: {str(e)[:200]}",
+                        })
+                # Don't break — try next batch, transient errors happen.
+                continue
+
+            processed = stats.get("processed") or 0
+            zip_total_processed += processed
+            zip_total_cost += stats.get("cost_usd") or 0.0
+
+            _canon_set_zip(zip_code, "batches_run", batch_n + 1)
+            _canon_set_zip(zip_code, "processed", zip_total_processed)
+            _canon_set_zip(zip_code, "cost_usd", round(zip_total_cost, 4))
+            _canon_set_zip(zip_code, "low_conf",
+                           (stats.get("low_conf") or 0)
+                           + (_canon_job["zips"].get(zip_code, {}).get("low_conf") or 0)
+                           if _canon_job is not None else 0)
+
+            if processed == 0:
+                # Already-done state: backfill_zip skipped everything.
+                # ZIP is fully canonicalized. Move on.
+                _canon_set_zip(zip_code, "status", "complete")
+                break
+        else:
+            # 50 batches without a zero-result; bail with a flag.
+            _canon_set_zip(zip_code, "status", "max_batches_hit")
+
+    _canon_update({
+        "status":       "complete",
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "current_zip":  None,
+    })
+
+
+@router.post("/canonicalize-all", dependencies=[Depends(require_admin)])
+async def canonicalize_all(background_tasks: BackgroundTasks):
+    """
+    Long-running multi-ZIP canonicalize. Loops the roster in 500-parcel
+    batches and persists progress so a slow run doesn't hit the Railway
+    edge-proxy timeout. Call once, poll /canonicalize-all/status to
+    track. Idempotent — re-running picks up where the prior run left off.
+    """
+    global _canon_job
+
+    with _canon_lock:
+        if _canon_job is not None and _canon_job.get("status") == "running":
+            raise HTTPException(409,
+                "A canonicalize-all job is already running. Poll "
+                "/api/admin/canonicalize-all/status for progress.")
+        _canon_job = {
+            "started_at":   datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            "status":       "running",
+            "roster":       list(DEFAULT_CANON_ROSTER),
+            "current_zip":  None,
+            "zips":         {z: {"batches_run": 0, "processed": 0,
+                                  "cost_usd": 0.0, "low_conf": 0}
+                              for z in DEFAULT_CANON_ROSTER},
+            "errors":       [],
+        }
+
+    background_tasks.add_task(_run_canonicalize_all, list(DEFAULT_CANON_ROSTER))
+
+    return {
+        "ok":               True,
+        "message":          f"Canonicalize-all started for {len(DEFAULT_CANON_ROSTER)} ZIPs.",
+        "estimated_cost":   "~$32 USD (Haiku 4.5 tokens, ~$0.0005/parcel × ~64K parcels)",
+        "estimated_hours":  "20-25 (rate-limited at ~50 req/min)",
+        "poll_url":         "/api/admin/canonicalize-all/status",
+        "job":              _canon_snapshot(),
+    }
+
+
+@router.get("/canonicalize-all/status", dependencies=[Depends(require_admin)])
+async def canonicalize_all_status():
+    """In-memory job state. Falls back to a per-ZIP coverage summary
+    from canonicalize/{zip}/status if no in-memory job exists."""
+    snap = _canon_snapshot()
+    if snap is not None:
+        return snap
+
+    # No in-memory job — derive from canonicalize/{zip}/status data.
+    # Same pattern as hydrate_owners_status: survive container restarts
+    # by reading ground truth from owner_canonical_v3.
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    out = {}
+    for z in DEFAULT_CANON_ROSTER:
+        try:
+            cov = (supa.table('zip_coverage_v3')
+                   .select('parcel_count')
+                   .eq('zip_code', z)
+                   .maybe_single()
+                   .execute())
+            total = (cov.data or {}).get('parcel_count') or 0
+            cnt = (supa.table('owner_canonical_v3')
+                   .select('pin', count='exact')
+                   .eq('zip_code', z)
+                   .limit(1)
+                   .execute())
+            canonicalized = cnt.count or 0
+            out[z] = {
+                "total":        total,
+                "canonicalized": canonicalized,
+                "pct":          round(100.0 * canonicalized / total, 1) if total else 0,
+            }
+        except Exception as e:
+            out[z] = {"error": f"{type(e).__name__}: {e}"}
+
+    return {
+        "source":  "db",
+        "as_of":   datetime.now(timezone.utc).isoformat(),
+        "roster":  DEFAULT_CANON_ROSTER,
+        "zips":    out,
     }
