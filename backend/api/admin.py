@@ -1339,3 +1339,76 @@ async def canonicalize_all_status():
         "roster":  DEFAULT_CANON_ROSTER,
         "zips":    out,
     }
+
+
+# ─── Safe rematch: reset matched_at, re-run matcher all-ZIPs ─────────────────
+
+@router.post("/rematch-safe", dependencies=[Depends(require_admin)])
+async def rematch_safe(confirm: bool = False):
+    """
+    SAFE rematch: resets raw_signals_v3.matched_at to NULL for already-
+    processed signals, then runs the matcher with zip_filter=None so it
+    writes matches for ALL 11 covered ZIPs.
+
+    DOES NOT DELETE existing match rows. Existing matches (especially
+    98004's 309-match baseline) remain intact during the rerun. The
+    matcher uses .upsert() semantics so re-creating an identical match
+    is a no-op.
+
+    Use case: new ZIPs were canonicalized after the matcher last ran,
+    and we want existing raw_signals to be re-evaluated against the
+    expanded canonicalized-owner pool.
+
+    Pass ?confirm=true to execute.
+    """
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This resets matched_at on every processed signal and triggers "
+            "a full rematch. Existing match rows are preserved (no DELETE). "
+            "Pass ?confirm=true to proceed.",
+        )
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # 1. Reset matched_at to NULL on every signal that has been processed.
+    #    This is the only mutation. Existing raw_signal_matches_v3 rows
+    #    are NOT touched.
+    page = 1000
+    reset_count = 0
+    while True:
+        rows = (supa.table('raw_signals_v3')
+                .select('id')
+                .not_.is_('matched_at', 'null')
+                .range(0, page - 1)
+                .execute()).data or []
+        if not rows:
+            break
+        ids = [r['id'] for r in rows]
+        (supa.table('raw_signals_v3')
+         .update({'matched_at': None})
+         .in_('id', ids)
+         .execute())
+        reset_count += len(ids)
+        if len(rows) < page:
+            break
+
+    # 2. Run the matcher with zip_filter=None so it scopes matches
+    #    across ALL covered ZIPs, not just one.
+    from backend.harvesters import matcher
+    stats = matcher.process_unmatched(
+        supa,
+        zip_filter=None,
+        batch_size=100,
+        max_batches=500,
+    )
+
+    return {
+        "ok":            True,
+        "signals_reset": reset_count,
+        "match_stats":   stats,
+        "note":          "98004's existing matches were preserved (no DELETE). "
+                         "Identical matches re-created during the rerun are upserts.",
+    }
