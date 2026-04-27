@@ -9,6 +9,7 @@ import {
 import MapPanel from '../components/MapPanel.jsx';
 import PlaybookList from '../components/PlaybookList.jsx';
 import ParcelDossier from '../components/ParcelDossier.jsx';
+import ThisWeekBlock from '../components/ThisWeekBlock.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 
 function formatValue(v) {
@@ -214,6 +215,20 @@ function BriefingBody() {
             <StatsRow stats={stats} briefing={briefing} mapData={mapData} />
           )}
         </header>
+
+        {/* Action-first executive summary. Lands directly under the
+            header so it's the first thing the agent reads. The full
+            playbook decks remain below for context, but this block
+            answers "what do I do RIGHT NOW" before exploration begins.
+            Renders nothing when there are no Call Now leads. */}
+        {briefing && (
+          <ThisWeekBlock
+            playbook={briefing.playbook}
+            zip={zip}
+            onPickLead={handlePickLead}
+            max={5}
+          />
+        )}
 
         {/* Search + filter + sort */}
         {briefing && (
