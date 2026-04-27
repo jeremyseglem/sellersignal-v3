@@ -51,13 +51,11 @@ def _load_parcel_and_investigation(supa, pin: str) -> tuple[dict, dict]:
                .maybe_single().execute())
         investigation = scr.data if scr else None
 
-    if not investigation:
-        raise HTTPException(
-            409,
-            f"Parcel {pin} has not been investigated yet — Deep Signal "
-            "requires verified research to ground its output"
-        )
-
+    # No 409 here — synthesis works on parcel data alone when no
+    # investigation row exists. Output will be thinner (structural
+    # cohort + ownership only), but useful instead of a hard fail.
+    # generate_deep_signal() and _build_research_block() both handle
+    # `None` defensively (`(investigation or {}).get(...)`).
     return parcel, investigation
 
 

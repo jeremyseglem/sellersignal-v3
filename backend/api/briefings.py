@@ -412,13 +412,14 @@ async def get_briefing(
 
         call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys,
                                              n=cn_n)
-        # build_now defaults to 8 (family- and tier-diverse selection).
-        # Live API caps at this default unless the client passes an
-        # explicit limit. Strategic holds remain uncapped (n=1000)
-        # because they're a long-cycle reference list rather than a
-        # weekly action set.
+        # Build Now and Strategic Holds are uncapped by default. Both are
+        # reference lists — Build Now is the agent's working pipeline (3-6
+        # month horizon), Holds is the longer-cycle territory view. The
+        # client can pass an explicit limit to truncate. Previously Build
+        # Now had a hidden default cap of 8 which made the funnel look
+        # inverted (Call Now bigger than Build Now in some ZIPs).
         build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
-                                               n=bn_n if bn_n is not None else 8)
+                                               n=bn_n)
         hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
                                                     n=hd_n if hd_n is not None else 1000)
 

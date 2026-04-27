@@ -365,29 +365,31 @@ function StatsRow({ stats, briefing, mapData }) {
                 ?? mapData?.parcels?.length
                 ?? '—';
 
-  // "Scored" is the count of parcels with any banding (Band 1 or higher).
-  // Originally meant `investigated_count` (SerpAPI), but those are deprecated.
-  // Now: count from map data which has the live band per parcel.
-  let scoredCount = bs.scored_count ?? bs.investigated_count;
-  if (!scoredCount && mapData?.parcels?.length) {
-    scoredCount = mapData.parcels.filter(p => (p.band ?? 0) >= 1).length;
-  }
-  if (!scoredCount) scoredCount = stats?.investigated_count ?? '—';
+  // Watch list (a.k.a. strategic_holds) — the longer-horizon working
+  // pipeline. Previously this slot showed "Scored" (count of parcels
+  // with any banding), which was a holdover from when SerpAPI runs
+  // populated investigated_count. "Scored" wasn't actionable for an
+  // agent. Watch list count IS actionable: it's the size of the
+  // territory the agent should be cultivating beyond Call Now /
+  // Build Now.
+  const watchListCount = bs.strategic_holds_count
+                       ?? stats?.strategic_holds_count
+                       ?? '—';
 
   const items = [
     { label: 'Parcels',    value: typeof parcels === 'number'
                                   ? parcels.toLocaleString()
                                   : parcels },
     { label: 'Median',     value: formatValue(median) },
-    { label: 'Scored',     value: typeof scoredCount === 'number'
-                                  ? scoredCount.toLocaleString()
-                                  : scoredCount },
     { label: 'Call now',   value: bs.call_now_count
                                   ?? stats?.call_now_count
                                   ?? '—' },
     { label: 'Build now',  value: bs.build_now_count
                                   ?? stats?.build_now_count
                                   ?? '—' },
+    { label: 'Watch list', value: typeof watchListCount === 'number'
+                                  ? watchListCount.toLocaleString()
+                                  : watchListCount },
   ];
   return (
     <div style={{
