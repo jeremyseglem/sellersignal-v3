@@ -386,8 +386,76 @@ def _has_blocker_flag(L):
     return False
 
 
+# Contact-status values that block Call Now eligibility for court-record
+# signals (probate, divorce). Only `family_pr_identified` is fully
+# actionable — a family member has been formally appointed (or named as
+# petitioner, the likely incoming PR) and is the right human to call.
+# Everything else means there's nobody actionable yet:
+#   - no_pr_yet:               case open, no PR appointed
+#   - parties_not_scraped:     parties not yet harvested from the docket
+#   - unworkable_pr:           PR is corporate/attorney — won't sell direct
+#   - pr_unknown_classification: PR exists but classification ambiguous
+# These leads are NOT deleted — they remain Build Now or Strategic Holds
+# candidates. They just can't ride the call_now slot until they convert.
+_NON_ACTIONABLE_CONTACT_STATUSES = frozenset({
+    'no_pr_yet',
+    'parties_not_scraped',
+    'unworkable_pr',
+    'pr_unknown_classification',
+})
+
+
+def _has_actionable_contact_status(L):
+    """Contract rule 6: when a probate (or other court-record) match is
+    the source of the lead's pressure, the case must have a family-
+    classified personal representative or petitioner identified.
+
+    Without this rule, a probate filing for a deceased homeowner with
+    no PR yet appointed promotes to Call Now (because owner_name is
+    non-null), while the dossier correctly tells the agent "Wait — no
+    decision-maker yet." The agent sees a Call Now lead they can't
+    actually call. This rule fixes that contradiction by deferring such
+    leads to Build Now / Strategic Holds until the PR is named.
+
+    Non-court-record signals (obituary alone, tax_foreclosure,
+    investor disposition, etc.) carry contact_status='not_applicable'
+    or no contact_status at all — those leads pass this rule.
+    """
+    inv = L.get('investigation') or {}
+    matches = inv.get('harvester_matches') or []
+
+    # If no harvester matches, the lead is here on structural pressure
+    # alone (signal_family-only) — this rule doesn't apply. Defer to
+    # other contract rules.
+    if not matches:
+        return True
+
+    # Among the matches that fired, find the strongest ones — typically
+    # the strict-strength match drives the pressure. If ALL strict
+    # matches have non-actionable contact_status, the lead is not Call
+    # Now eligible. If at least one strict match is actionable, the
+    # lead can still ride that match.
+    strict_matches = [m for m in matches if m.get('match_strength') == 'strict']
+    relevant = strict_matches if strict_matches else matches
+
+    # Court-record matches are the only ones that carry contact_status
+    # values from this rule's vocabulary. Filter to those — if none of
+    # the relevant matches are court-record, this rule passes.
+    court = [m for m in relevant if m.get('contact_status')
+             and m.get('contact_status') != 'not_applicable']
+    if not court:
+        return True
+
+    # If ANY court-record match has actionable contact_status, the lead
+    # is eligible. The agent has a real human to call on at least one
+    # case. (E.g., one probate filing with PR appointed alongside one
+    # without — call the appointed one.)
+    return any(m.get('contact_status') == 'family_pr_identified'
+               for m in court)
+
+
 def eligible_for_call_now(L):
-    """Enforce the 5-rule CALL NOW contract on a lead.
+    """Enforce the 6-rule CALL NOW contract on a lead.
 
     Returns True only if every rule passes. Returns False otherwise —
     the lead is NOT deleted from the inventory, just blocked from
@@ -405,6 +473,9 @@ def eligible_for_call_now(L):
         return False
     # Rule 5: no active blocker
     if _has_blocker_flag(L):
+        return False
+    # Rule 6: court-record contact_status must be actionable
+    if not _has_actionable_contact_status(L):
         return False
     return True
 

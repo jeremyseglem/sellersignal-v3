@@ -259,6 +259,86 @@ async def get_briefing(
             if overlay is not None:
                 overlay_by_pin[pin] = overlay
 
+        # ── Enrich harvester_matches with contact_status ──
+        # For probate-style court filings (signal_type='probate' with a
+        # document_ref pointing to KC Superior Court), look up scraped
+        # case parties and compute the contact_status routing bit. This
+        # mirrors the per-parcel enrichment in api/parcels.py so the
+        # selector can consult the same routing bit the dossier shows.
+        # Without this step, the selector promotes Lee Norris to Call Now
+        # (owner_name is non-null) while the dossier correctly says "Wait
+        # — no decision-maker yet" — a contradiction visible to the agent.
+        court_case_refs: list = []
+        for overlay in overlay_by_pin.values():
+            for m in overlay.get('harvester_matches', []) or []:
+                ref = m.get('document_ref')
+                src = m.get('source_type')
+                if ref and src == 'kc_superior_court':
+                    court_case_refs.append(ref)
+        court_case_refs = list({c for c in court_case_refs if c})
+
+        parties_by_case: dict = {}
+        if court_case_refs:
+            try:
+                # Chunked fetch in case the list grows beyond the in-clause
+                # comfortable size. KC Superior Court probate volume is low
+                # enough that this typically stays in one chunk.
+                CHUNK_C = 200
+                for i in range(0, len(court_case_refs), CHUNK_C):
+                    chunk = court_case_refs[i:i + CHUNK_C]
+                    pres = (supa.table('case_parties_v3')
+                            .select('case_number, role, name_raw, '
+                                    'name_last, name_first, name_middle, '
+                                    'represented_by, pr_classification')
+                            .in_('case_number', chunk)
+                            .execute())
+                    for p in (pres.data or []):
+                        parties_by_case.setdefault(p['case_number'], []).append(p)
+            except Exception:
+                # case_parties_v3 may not exist in some environments. Fall
+                # through with an empty dict — every probate match will be
+                # tagged contact_status='parties_not_scraped' which the
+                # selector correctly treats as non-Call-Now.
+                parties_by_case = {}
+
+        # Apply contact_status to each match in every overlay
+        for overlay in overlay_by_pin.values():
+            for m in overlay.get('harvester_matches', []) or []:
+                ref = m.get('document_ref')
+                src = m.get('source_type')
+                if not ref or src != 'kc_superior_court':
+                    m['contact_status'] = 'not_applicable'
+                    continue
+
+                case_parties = parties_by_case.get(ref, [])
+
+                # Priority: formal personal_representative > petitioner >
+                # nothing. Same logic as parcels.py — a petitioner is
+                # treated as the likely incoming PR.
+                personal_rep = None
+                for p in case_parties:
+                    if p.get('role') == 'personal_representative':
+                        personal_rep = p
+                        break
+                if not personal_rep:
+                    for p in case_parties:
+                        if p.get('role') == 'petitioner':
+                            personal_rep = p
+                            break
+
+                if personal_rep:
+                    cls = personal_rep.get('pr_classification')
+                    if cls == 'family':
+                        m['contact_status'] = 'family_pr_identified'
+                    elif cls in ('corporate', 'attorney'):
+                        m['contact_status'] = 'unworkable_pr'
+                    else:
+                        m['contact_status'] = 'pr_unknown_classification'
+                elif case_parties:
+                    m['contact_status'] = 'no_pr_yet'
+                else:
+                    m['contact_status'] = 'parties_not_scraped'
+
         # Merge with any existing SerpAPI-era investigation for the same pin
         for pin, overlay in overlay_by_pin.items():
             existing = None

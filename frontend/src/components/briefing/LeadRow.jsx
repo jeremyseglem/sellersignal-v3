@@ -26,13 +26,27 @@ import { useState } from 'react';
  *   index      — 1-based row number for the list. Pass null/undefined to hide.
  *   selected   — boolean, true when this lead's dossier is currently open
  *   accent     — CSS color string for the selected-state left border
+ *   muted      — boolean, true to render with reduced visual weight. Used
+ *                for overflow Call Now leads beyond the top 5 — they're
+ *                still actionable but the top 5 should read as the focal
+ *                point. Smaller name font, lighter color, no number prefix.
  *   onClick    — handler invoked with no args; parent already knows the pin
  */
-export default function LeadRow({ lead, index, selected, accent, onClick }) {
+export default function LeadRow({ lead, index, selected, accent, muted = false, onClick }) {
   const [hovered, setHovered] = useState(false);
 
   const name = lead.owner_name || lead.address || 'Unknown owner';
   const hint = buildSignalHint(lead);
+
+  // Visual weight tuning. Top 5 leads use the prominent treatment;
+  // muted leads (overflow beyond the top 5) read as the same shape
+  // but quieter — they're still actionable, but the top 5 is the
+  // focal point.
+  const nameSize     = muted ? 14   : 16;
+  const nameWeight   = muted ? 400  : 500;
+  const nameColor    = muted ? 'var(--text-secondary)' : 'var(--text)';
+  const rowPaddingY  = muted ? '8px'  : '12px';
+  const hintSize     = muted ? 12   : 13;
 
   return (
     <li
@@ -49,7 +63,7 @@ export default function LeadRow({ lead, index, selected, accent, onClick }) {
       onMouseLeave={() => setHovered(false)}
       style={{
         listStyle: 'none',
-        padding: '12px 14px 12px 16px',
+        padding: `${rowPaddingY} 14px ${rowPaddingY} 16px`,
         margin: '2px 0',
         cursor: 'pointer',
         borderRadius: 'var(--radius-md)',
@@ -85,9 +99,9 @@ export default function LeadRow({ lead, index, selected, accent, onClick }) {
           )}
           <span style={{
             fontFamily: 'var(--font-display)',
-            fontSize: 16,
-            fontWeight: 500,
-            color: 'var(--text)',
+            fontSize: nameSize,
+            fontWeight: nameWeight,
+            color: nameColor,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -111,7 +125,7 @@ export default function LeadRow({ lead, index, selected, accent, onClick }) {
         <div style={{
           fontFamily: 'var(--font-serif)',
           fontStyle: 'italic',
-          fontSize: 13,
+          fontSize: hintSize,
           color: 'var(--text-secondary)',
           marginTop: 3,
           marginLeft: index != null ? 28 : 0,

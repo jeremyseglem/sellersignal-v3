@@ -229,7 +229,6 @@ function BriefingBody() {
                 leads={actionLeads}
                 selectedPin={selectedPin}
                 onPickLead={handlePickLead}
-                max={5}
               />
               <PipelineList
                 buildNowLeads={pipelineLeads.buildNow}
