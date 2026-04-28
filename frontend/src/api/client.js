@@ -5,6 +5,8 @@
  * In production, frontend is served from the same origin as the backend.
  */
 
+import { getAccessToken } from '../lib/supabase.js';
+
 const API_BASE = '/api';
 
 async function request(path, options = {}) {
@@ -29,6 +31,31 @@ async function request(path, options = {}) {
   }
 
   return resp.json();
+}
+
+/**
+ * authedRequest — same as request() but auto-attaches the Supabase
+ * access token as a Bearer header. Used for endpoints that require
+ * authentication (lead interactions, profile, etc.). If the user
+ * isn't signed in, throws an error with status=401 BEFORE making
+ * the fetch call so the caller can handle "needs auth" cleanly
+ * (e.g., open the conversion modal in cold-visitor mode).
+ */
+async function authedRequest(path, options = {}) {
+  const token = await getAccessToken();
+  if (!token) {
+    const err = new Error('Not signed in');
+    err.status = 401;
+    err.detail = { message: 'Authentication required' };
+    throw err;
+  }
+  return request(path, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+  });
 }
 
 // ── Coverage ───────────────────────────────────────────────────────
@@ -99,4 +126,36 @@ export const deepSignal = {
 export const health = {
   check: () => request('/health'),
   status: () => request('/status'),
+};
+
+// ── Lead Interactions (Lead Memory) ────────────────────────────────
+// Per-agent event log: working / not_relevant / sent_to_crm + outcomes.
+// All endpoints require auth — calls throw 401 in cold-visitor mode
+// before the fetch fires, which the dossier handles by routing to
+// the conversion modal.
+
+export const leadInteractions = {
+  /**
+   * Log a new event for the current agent.
+   * @param {{pin: string, zip_code: string, event_type: string, event_data?: object}} body
+   */
+  log: (body) => authedRequest('/lead-interactions', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  /**
+   * Full event history for one parcel from the current agent.
+   * Returns {pin, events: [{event_type, event_data, created_at, ...}, ...]}
+   * — newest first.
+   */
+  byPin: (pin) => authedRequest(`/lead-interactions/by-pin/${pin}`),
+
+  /**
+   * Per-pin current status map for a whole ZIP. Returns
+   * {zip_code, statuses: {pin: {status, status_at, event_data}}}.
+   * Reads from lead_status_v3 view — only includes pins with at
+   * least one status-changing event from this agent.
+   */
+  byZip: (zip) => authedRequest(`/lead-interactions/by-zip/${zip}`),
 };

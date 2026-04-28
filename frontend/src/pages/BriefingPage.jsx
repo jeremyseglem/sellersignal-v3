@@ -7,7 +7,7 @@ import {
   coverage as coverageApi,
 } from '../api/client.js';
 import MapPanel from '../components/MapPanel.jsx';
-import ParcelDossier from '../components/ParcelDossier.jsx';
+import ParcelDossier from '../components/ParcelDossierV2.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import BriefingHeader from '../components/briefing/BriefingHeader.jsx';
 import ActionList from '../components/briefing/ActionList.jsx';

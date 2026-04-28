@@ -24,6 +24,7 @@ from backend.api import (
     harvest,
     profile,
     onboard,
+    lead_interactions,
 )
 
 
@@ -109,6 +110,7 @@ app.include_router(admin.router,          prefix="/api/admin",       tags=["admi
 app.include_router(deep_signal.router,    prefix="/api/deep-signal", tags=["deep-signal"])
 app.include_router(harvest.router,        prefix="/api/harvest",     tags=["harvest"])
 app.include_router(profile.router,        prefix="/api/profile",     tags=["profile"])
+app.include_router(lead_interactions.router, prefix="/api/lead-interactions", tags=["lead-interactions"])
 # Onboarding endpoint is logically an admin operation; mount under
 # /api/admin so all privileged endpoints share a path prefix.
 app.include_router(onboard.router,        prefix="/api/admin",       tags=["admin"])

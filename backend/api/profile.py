@@ -22,6 +22,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from backend.api.db import get_supabase_client
+from backend.api.auth import user_from_authorization as _user_from_authorization
 
 
 router = APIRouter()
@@ -29,24 +30,10 @@ router = APIRouter()
 
 # ── Auth helper ─────────────────────────────────────────────────
 # Pulls the current user from a 'Authorization: Bearer <jwt>' header.
-# Returns the user dict or raises 401. Cached by the supabase client
-# internally so calling this repeatedly inside one request is cheap.
-
-def _user_from_authorization(authorization: Optional[str]):
-    if not authorization or not authorization.lower().startswith('bearer '):
-        raise HTTPException(401, 'Missing or malformed Authorization header')
-    token = authorization.split(' ', 1)[1].strip()
-    supa = get_supabase_client()
-    if not supa:
-        raise HTTPException(503, 'Supabase unavailable')
-    try:
-        result = supa.auth.get_user(token)
-    except Exception as e:
-        raise HTTPException(401, f'Auth verification failed: {e}')
-    user = getattr(result, 'user', None)
-    if user is None:
-        raise HTTPException(401, 'Invalid session')
-    return user
+# Returns the user dict or raises 401. The implementation lives in
+# backend/api/auth.py so api/lead_interactions.py and other future
+# routers can share it. Locally we keep the underscore-prefixed
+# alias to preserve the existing internal references.
 
 
 # ── Models ──────────────────────────────────────────────────────
