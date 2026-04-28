@@ -412,14 +412,16 @@ async def get_briefing(
 
         call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys,
                                              n=cn_n)
-        # Build Now and Strategic Holds are uncapped by default. Both are
-        # reference lists — Build Now is the agent's working pipeline (3-6
-        # month horizon), Holds is the longer-cycle territory view. The
-        # client can pass an explicit limit to truncate. Previously Build
-        # Now had a hidden default cap of 8 which made the funnel look
-        # inverted (Call Now bigger than Build Now in some ZIPs).
+        # Build Now defaults to a cap of 100. The earlier Round 1 fix
+        # removed an artificial 8-cap, but uncapped (n=None → 1000) made
+        # Build Now eat the entire Band 2 pool, leaving Strategic Holds
+        # at zero in every ZIP. 100 is the goldilocks number: large
+        # enough to feel like a real pipeline (vs. the prior 8), small
+        # enough to leave the long-horizon Band 2 leftovers for Holds /
+        # Watch List, and curated enough to feel intentional rather
+        # than a list dump.
         build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
-                                               n=bn_n)
+                                               n=bn_n if bn_n is not None else 100)
         hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
                                                     n=hd_n if hd_n is not None else 1000)
 

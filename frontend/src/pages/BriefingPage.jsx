@@ -7,27 +7,12 @@ import {
   coverage as coverageApi,
 } from '../api/client.js';
 import MapPanel from '../components/MapPanel.jsx';
-import PlaybookList from '../components/PlaybookList.jsx';
 import ParcelDossier from '../components/ParcelDossier.jsx';
-import ThisWeekBlock from '../components/ThisWeekBlock.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
-
-function formatValue(v) {
-  if (!v) return '—';
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 1_000)     return `$${Math.round(v / 1_000)}K`;
-  return `$${v}`;
-}
-
-function formatRelative(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (isNaN(d)) return iso;
-  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (mins < 60)        return `${mins}m ago`;
-  if (mins < 60 * 24)   return `${Math.floor(mins / 60)}h ago`;
-  return `${Math.floor(mins / 60 / 24)}d ago`;
-}
+import BriefingHeader from '../components/briefing/BriefingHeader.jsx';
+import ActionList from '../components/briefing/ActionList.jsx';
+import PipelineList from '../components/briefing/PipelineList.jsx';
+import MapExplorePanel from '../components/briefing/MapExplorePanel.jsx';
 
 const FILTER_OPTIONS = [
   { key: 'all',        label: 'All',        matches: () => true },
@@ -119,7 +104,10 @@ function BriefingBody() {
 
   const handlePickLead = (pin) => setSelectedPin(pin);
 
-  // Apply search + filter + sort to each section
+  // Apply search + filter + sort to each section. Filtered output
+  // feeds the map (so pin highlights match what the agent searches),
+  // not the briefing left panel — the action list is intentionally
+  // unfiltered so search doesn't accidentally hide a Call Now.
   const filteredPlaybook = useMemo(() => {
     if (!briefing?.playbook) return null;
     const activeFilter = FILTER_OPTIONS.find((o) => o.key === filterKey) || FILTER_OPTIONS[0];
@@ -135,6 +123,30 @@ function BriefingBody() {
       strategic_holds: processSection(briefing.playbook.strategic_holds),
     };
   }, [briefing, searchQuery, filterKey, sortKey]);
+
+  // ── Derived values for the new briefing components ──
+  // Action list shows up to 5 Call Now leads, unfiltered. Pipeline
+  // shows the Build Now + Strategic Holds merge — also unfiltered,
+  // because filtering belongs to exploration mode (the map controls).
+  const actionLeads = briefing?.playbook?.call_now || [];
+  const pipelineLeads = {
+    buildNow: briefing?.playbook?.build_now || [],
+    holds:    briefing?.playbook?.strategic_holds || [],
+  };
+
+  // Header counts use the briefing's own stats (computed from the
+  // just-built playbook, so they always agree with the lists below).
+  // Coverage stats are a fallback for parcel count when briefing.stats
+  // doesn't carry it.
+  const actionCount   = Math.min(actionLeads.length, 5);
+  const pipelineCount =
+      (briefing?.stats?.build_now_count ?? pipelineLeads.buildNow.length)
+    + (briefing?.stats?.strategic_holds_count ?? pipelineLeads.holds.length);
+  const parcelCount   =
+      briefing?.stats?.total_parcels
+   ?? stats?.parcel_count
+   ?? mapData?.parcels?.length
+   ?? 0;
 
   if (error) {
     return (
@@ -159,7 +171,7 @@ function BriefingBody() {
       height: 'calc(100vh - 56px)',
       overflow: 'hidden',
     }}>
-      {/* ── Left panel ── */}
+      {/* ── Left panel: action-first briefing ── */}
       <aside style={{
         background: 'var(--bg-card)',
         borderRight: '1px solid var(--border)',
@@ -167,155 +179,70 @@ function BriefingBody() {
         flexDirection: 'column',
         overflow: 'hidden',
       }}>
-        <header style={{
-          padding: 'var(--space-lg)',
-          borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
-        }}>
-          <Link to="/territories" style={{
-            color: 'var(--text-tertiary)',
-            textDecoration: 'none',
-            fontSize: 12,
-            fontWeight: 500,
-            letterSpacing: '0.05em',
-            textTransform: 'uppercase',
-          }}>
-            ← Territories
-          </Link>
-          <h1 style={{
-            fontFamily: 'var(--font-display)',
-            fontSize: 26,
-            fontWeight: 600,
-            color: 'var(--text)',
-            marginTop: 'var(--space-xs)',
-            lineHeight: 1.15,
-          }}>
-            ZIP {zip}{stats?.city ? ` · ${stats.city}, ${stats.state}` : ''}
-          </h1>
-          {briefing && (
-            <div style={{
+        <BriefingHeader
+          zip={zip}
+          actionCount={actionCount}
+          pipelineCount={pipelineCount}
+          parcelCount={parcelCount}
+          city={stats?.city}
+          state={stats?.state}
+          weekOf={briefing?.week_of}
+        />
+
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {!briefing && (
+            <p style={{
+              padding: 'var(--space-lg)',
+              color: 'var(--text-tertiary)',
               fontFamily: 'var(--font-serif)',
               fontStyle: 'italic',
-              color: 'var(--text-secondary)',
-              fontSize: 13,
-              marginTop: 4,
             }}>
-              Week of {briefing.week_of}
-              {stats?.last_refresh && (
-                <>
-                  {' · '}
-                  <span style={{ fontStyle: 'normal', color: 'var(--text-tertiary)', fontSize: 11 }}>
-                    refreshed {formatRelative(stats.last_refresh)}
-                  </span>
-                </>
-              )}
-            </div>
+              Loading briefing…
+            </p>
           )}
-          {(briefing || stats) && (
-            <StatsRow stats={stats} briefing={briefing} mapData={mapData} />
-          )}
-        </header>
 
-        {/* Action-first executive summary. Lands directly under the
-            header so it's the first thing the agent reads. The full
-            playbook decks remain below for context, but this block
-            answers "what do I do RIGHT NOW" before exploration begins.
-            Renders nothing when there are no Call Now leads. */}
-        {briefing && (
-          <ThisWeekBlock
-            playbook={briefing.playbook}
-            zip={zip}
-            onPickLead={handlePickLead}
-            max={5}
-          />
-        )}
-
-        {/* Search + filter + sort */}
-        {briefing && (
-          <div style={{
-            padding: 'var(--space-md) var(--space-lg)',
-            borderBottom: '1px solid var(--border)',
-            background: 'var(--bg)',
-            flexShrink: 0,
-          }}>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by address, owner, or PIN"
-              style={{
-                width: '100%',
-                padding: '7px 10px',
-                fontSize: 13,
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-md)',
-                background: 'var(--bg-card)',
-                color: 'var(--text)',
-                fontFamily: 'var(--font-sans)',
-                boxSizing: 'border-box',
-              }}
-            />
+          {briefing && actionLeads.length === 0 && (
             <div style={{
-              display: 'flex',
-              gap: 6,
-              marginTop: 'var(--space-sm)',
-              flexWrap: 'wrap',
+              padding: 'var(--space-lg)',
+              fontFamily: 'var(--font-serif)',
+              color: 'var(--text-secondary)',
             }}>
-              {FILTER_OPTIONS.map((f) => (
-                <button
-                  key={f.key}
-                  onClick={() => setFilterKey(f.key)}
-                  style={{
-                    padding: '4px 10px',
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: '0.03em',
-                    borderRadius: 999,
-                    border: `1px solid ${filterKey === f.key ? 'var(--accent)' : 'var(--border)'}`,
-                    background: filterKey === f.key ? 'var(--accent)' : 'transparent',
-                    color: filterKey === f.key ? 'var(--bg-card)' : 'var(--text-secondary)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {f.label}
-                </button>
-              ))}
+              <p style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 16,
+                fontWeight: 600,
+                color: 'var(--text)',
+                marginBottom: 6,
+              }}>
+                No active leads this week
+              </p>
+              <p style={{ fontSize: 13, fontStyle: 'italic', lineHeight: 1.5 }}>
+                The briefing refreshes weekly. Or explore the territory on
+                the map — the pipeline is still building.
+              </p>
             </div>
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value)}
-              style={{
-                marginTop: 'var(--space-sm)',
-                width: '100%',
-                padding: '6px 8px',
-                fontSize: 12,
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-md)',
-                background: 'var(--bg-card)',
-                color: 'var(--text-secondary)',
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
-              {SORT_OPTIONS.map((s) => (
-                <option key={s.key} value={s.key}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-        )}
+          )}
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-md)' }}>
-          {!briefing && <p style={{ color: 'var(--text-tertiary)' }}>Loading playbook…</p>}
-          {briefing && filteredPlaybook && (
-            <PlaybookList
-              playbook={filteredPlaybook}
-              selectedPin={selectedPin}
-              onPickLead={handlePickLead}
-            />
+          {briefing && (
+            <>
+              <ActionList
+                leads={actionLeads}
+                selectedPin={selectedPin}
+                onPickLead={handlePickLead}
+                max={5}
+              />
+              <PipelineList
+                buildNowLeads={pipelineLeads.buildNow}
+                holdLeads={pipelineLeads.holds}
+                selectedPin={selectedPin}
+                onPickLead={handlePickLead}
+              />
+            </>
           )}
         </div>
       </aside>
 
-      {/* ── Right: map + dossier ── */}
+      {/* ── Right: map + exploration controls + dossier ── */}
       <main style={{ position: 'relative', background: 'var(--bg)' }}>
         {!mapData && (
           <div style={{
@@ -325,6 +252,8 @@ function BriefingBody() {
             alignItems: 'center',
             justifyContent: 'center',
             color: 'var(--text-tertiary)',
+            fontFamily: 'var(--font-serif)',
+            fontStyle: 'italic',
           }}>
             Loading territory map…
           </div>
@@ -332,11 +261,28 @@ function BriefingBody() {
         {mapData && (
           <MapPanel
             mapData={mapData}
-            playbook={briefing?.playbook}
+            playbook={filteredPlaybook || briefing?.playbook}
             selectedPin={selectedPin}
             onPickPin={handlePickLead}
           />
         )}
+
+        {/* Exploration controls overlaid on the map. Hidden until
+            the briefing has loaded so the controls don't appear
+            against an empty map. */}
+        {briefing && (
+          <MapExplorePanel
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            filterKey={filterKey}
+            onFilterChange={setFilterKey}
+            sortKey={sortKey}
+            onSortChange={setSortKey}
+            filterOptions={FILTER_OPTIONS}
+            sortOptions={SORT_OPTIONS}
+          />
+        )}
+
         {selectedPin && dossier && (
           <ParcelDossier
             dossier={dossier}
@@ -344,99 +290,6 @@ function BriefingBody() {
           />
         )}
       </main>
-    </div>
-  );
-}
-
-function StatsRow({ stats, briefing, mapData }) {
-  // The briefing endpoint returns live, accurate counts in briefing.stats
-  // (build_now_count, call_now_count, strategic_holds_count). Use those
-  // as the source of truth — they're computed from the just-built playbook.
-  // The coverage endpoint's stats are persisted in zip_coverage_v3 and
-  // can drift if the briefing has been re-classified since the last
-  // coverage refresh, so we only use coverage for fields the briefing
-  // doesn't populate (median_value, city/state).
-  const bs = briefing?.stats || {};
-
-  // Median value: the coverage endpoint sometimes reports 0 even when
-  // parcels have real values (computation lags). If coverage gives us
-  // a real number, use it; otherwise compute from the map data we
-  // already loaded for the same ZIP.
-  let median = stats?.median_value;
-  if ((!median || median === 0) && mapData?.parcels?.length) {
-    const values = mapData.parcels
-      .map(p => p.value || p.total_value || 0)
-      .filter(v => v > 0)
-      .sort((a, b) => a - b);
-    if (values.length) {
-      median = values[Math.floor(values.length / 2)];
-    }
-  }
-
-  // Parcel count: prefer briefing.stats.total_parcels, fall back to
-  // coverage parcel_count, then to mapData length.
-  const parcels = bs.total_parcels
-                ?? stats?.parcel_count
-                ?? mapData?.parcels?.length
-                ?? '—';
-
-  // Watch list (a.k.a. strategic_holds) — the longer-horizon working
-  // pipeline. Previously this slot showed "Scored" (count of parcels
-  // with any banding), which was a holdover from when SerpAPI runs
-  // populated investigated_count. "Scored" wasn't actionable for an
-  // agent. Watch list count IS actionable: it's the size of the
-  // territory the agent should be cultivating beyond Call Now /
-  // Build Now.
-  const watchListCount = bs.strategic_holds_count
-                       ?? stats?.strategic_holds_count
-                       ?? '—';
-
-  const items = [
-    { label: 'Parcels',    value: typeof parcels === 'number'
-                                  ? parcels.toLocaleString()
-                                  : parcels },
-    { label: 'Median',     value: formatValue(median) },
-    { label: 'Call now',   value: bs.call_now_count
-                                  ?? stats?.call_now_count
-                                  ?? '—' },
-    { label: 'Build now',  value: bs.build_now_count
-                                  ?? stats?.build_now_count
-                                  ?? '—' },
-    { label: 'Watch list', value: typeof watchListCount === 'number'
-                                  ? watchListCount.toLocaleString()
-                                  : watchListCount },
-  ];
-  return (
-    <div style={{
-      marginTop: 'var(--space-md)',
-      display: 'grid',
-      gridTemplateColumns: 'repeat(5, 1fr)',
-      gap: 4,
-      paddingTop: 'var(--space-sm)',
-      borderTop: '1px solid var(--border)',
-    }}>
-      {items.map((it) => (
-        <div key={it.label}>
-          <div style={{
-            fontSize: 9,
-            color: 'var(--text-tertiary)',
-            fontWeight: 600,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-          }}>
-            {it.label}
-          </div>
-          <div style={{
-            fontFamily: 'var(--font-display)',
-            fontSize: 14,
-            fontWeight: 600,
-            color: 'var(--text)',
-            marginTop: 2,
-          }}>
-            {it.value}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }

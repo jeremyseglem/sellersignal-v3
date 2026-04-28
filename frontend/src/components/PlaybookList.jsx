@@ -1,3 +1,19 @@
+/**
+ * PlaybookList — DEPRECATED as of Slice B.
+ *
+ * Replaced by the action-first briefing components in
+ * `components/briefing/` (BriefingHeader, ActionList, PipelineList,
+ * LeadRow). The new components implement the v4 spec's two-mode UX
+ * (briefing + exploration) instead of the three-deck CALL NOW /
+ * BUILD NOW / WATCH LIST layout this file rendered.
+ *
+ * Kept in tree as a one-line revert path: if Slice B exposes an
+ * unforeseen issue in production, swapping the import in BriefingPage
+ * back from {ActionList, PipelineList} to PlaybookList restores the
+ * prior shipping UI.
+ *
+ * Will be deleted in Slice C once the new components are stable.
+ */
 import { useState } from 'react';
 import { ownerTypeLabel } from '../lib/ownerType';
 
