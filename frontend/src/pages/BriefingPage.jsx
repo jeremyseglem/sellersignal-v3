@@ -138,10 +138,19 @@ function BriefingBody() {
   // just-built playbook, so they always agree with the lists below).
   // Coverage stats are a fallback for parcel count when briefing.stats
   // doesn't carry it.
+  //
+  // Build Now and Strategic Holds are tracked separately rather than
+  // summed: the oracle line above the action list only mentions the
+  // pipeline count ("100 more in pipeline"), while the Pipeline
+  // section header shows both ("100 in pipeline · 893 on watch list").
+  // Combining them in the oracle would force a single label that fits
+  // neither bucket — Build Now is active pipeline, Holds are watch
+  // list, and "X more building" reads as jargon to a cold visitor.
   const actionCount   = Math.min(actionLeads.length, 5);
-  const pipelineCount =
-      (briefing?.stats?.build_now_count ?? pipelineLeads.buildNow.length)
-    + (briefing?.stats?.strategic_holds_count ?? pipelineLeads.holds.length);
+  const buildNowCount =
+      briefing?.stats?.build_now_count ?? pipelineLeads.buildNow.length;
+  const holdsCount    =
+      briefing?.stats?.strategic_holds_count ?? pipelineLeads.holds.length;
   const parcelCount   =
       briefing?.stats?.total_parcels
    ?? stats?.parcel_count
@@ -182,7 +191,7 @@ function BriefingBody() {
         <BriefingHeader
           zip={zip}
           actionCount={actionCount}
-          pipelineCount={pipelineCount}
+          buildNowCount={buildNowCount}
           parcelCount={parcelCount}
           city={stats?.city}
           state={stats?.state}

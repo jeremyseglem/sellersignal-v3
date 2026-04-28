@@ -41,11 +41,36 @@ export default function PipelineList({
 
   if (merged.length === 0) return null;
 
+  // Display the underlying counts from the unmerged arrays so the
+  // header matches what the agent sees referenced from the oracle
+  // line above. Dedupe doesn't change these much in practice
+  // (Build Now and Holds are mostly disjoint), but we render the
+  // raw counts because that's what the agent's mental model expects.
+  const buildCount = (buildNowLeads || []).length;
+  const holdCount  = (holdLeads || []).length;
+
+  // Header parts. Both are conditional — a small ZIP could have only
+  // pipeline or only watch-list leads. Render whichever exists.
+  const headerParts = [];
+  if (buildCount > 0) {
+    headerParts.push(`${buildCount.toLocaleString()} IN PIPELINE`);
+  }
+  if (holdCount > 0) {
+    headerParts.push(`${holdCount.toLocaleString()} ON WATCH LIST`);
+  }
+
   return (
     <section
-      aria-label="More likely sellers in the pipeline"
+      aria-label="Pipeline and watch list"
       style={{ padding: 'var(--space-md) var(--space-lg) var(--space-xl)' }}
     >
+      {/* Header: shows both counts without overclaim. The prior
+          version read "N more likely sellers / Working pipeline" —
+          which was both jargon-y ("Working pipeline" repeats itself
+          since "pipeline" already implies working) and overclaim-y
+          ("more likely sellers" projects intent onto leads that are
+          structural, not event-driven). The honest split is to name
+          each tier directly. */}
       <div style={{
         fontFamily: 'var(--font-sans)',
         fontSize: 11,
@@ -53,18 +78,9 @@ export default function PipelineList({
         letterSpacing: '0.12em',
         textTransform: 'uppercase',
         color: 'var(--text)',
-      }}>
-        {merged.length} more likely {merged.length === 1 ? 'seller' : 'sellers'}
-      </div>
-      <div style={{
-        fontFamily: 'var(--font-serif)',
-        fontStyle: 'italic',
-        fontSize: 12,
-        color: 'var(--text-tertiary)',
-        marginTop: 4,
         marginBottom: 'var(--space-sm)',
       }}>
-        Working pipeline
+        {headerParts.join(' · ')}
       </div>
 
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>

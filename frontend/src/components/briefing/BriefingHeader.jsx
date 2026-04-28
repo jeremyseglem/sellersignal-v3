@@ -16,7 +16,10 @@ import { Link } from 'react-router-dom';
  * Props:
  *   zip               — ZIP code string ("98004")
  *   actionCount       — count of leads in the action list (typically 5)
- *   pipelineCount     — count of leads building in the pipeline
+ *   buildNowCount     — count of leads in active pipeline (Build Now tier).
+ *                       Excludes Strategic Holds — those are watch-list,
+ *                       a different mental category, and live only in the
+ *                       Pipeline section header below the action list.
  *   parcelCount       — total parcels tracked in this ZIP
  *   city, state       — location strings, render below the headline
  *   weekOf            — date string for the briefing's week-of marker
@@ -24,7 +27,7 @@ import { Link } from 'react-router-dom';
 export default function BriefingHeader({
   zip,
   actionCount,
-  pipelineCount,
+  buildNowCount,
   parcelCount,
   city,
   state,
@@ -35,8 +38,22 @@ export default function BriefingHeader({
 
   // The oracle line — surfaces "we're watching the whole ZIP" without
   // overclaiming. Numbers are real, territory-specific, no inference.
-  const pipelineText = pipelineCount > 0
-    ? `${pipelineCount.toLocaleString()} more building`
+  //
+  // Two pieces only: pipeline (active leads the agent is cultivating)
+  // and territory parcels tracked. Strategic Holds (the watch list)
+  // are excluded from the oracle on purpose — they sit in the
+  // Pipeline section header below where the agent has full context,
+  // and including them in the oracle would force the cold visitor to
+  // parse three numbers in one line.
+  //
+  // "in pipeline" replaces the earlier "more building" because
+  // "building" is internal jargon — a cold visitor reading "100 more
+  // building" might think we mean construction. "Pipeline" is
+  // universally understood by anyone in sales (including agents)
+  // and reads as modest: it claims "lead being cultivated," not
+  // "likely seller."
+  const pipelineText = buildNowCount > 0
+    ? `${buildNowCount.toLocaleString()} more in pipeline`
     : null;
   const parcelText = parcelCount > 0
     ? `${parcelCount.toLocaleString()} homes tracked in your territory`
