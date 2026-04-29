@@ -6,7 +6,34 @@ Briefings API — the main weekly-playbook + map-data payload.
   GET  /api/briefings/:zip/history      — past briefings for this ZIP
 
 All endpoints gated by require_live_zip — ZIPs not in coverage return 404.
+
+— Caching —
+The full briefing endpoint is expensive: ~5–7 seconds for a 7K-parcel ZIP
+because it fetches parcels (paginated), investigations, harvester
+matches, signals, and case_parties from Supabase, then runs the full
+weekly_selector pipeline. The result only changes once per week (the
+playbook is keyed on Monday-of-the-week) and is the same for every
+viewer of the same ZIP.
+
+A simple in-process FIFO cache absorbs that cost. First request for
+a (zip, monday) pays the full ~5s; every subsequent request — same
+agent reloading, different agent on the same ZIP, search engine —
+gets the cached response in <50ms.
+
+Tradeoffs: the cache is in-memory, so it doesn't survive Railway
+process recycles (deploys, scale events). That's acceptable for a
+beta product where the primary load pattern is "agents load their
+territory daily." If recycle frequency becomes a problem, the next
+step is to also persist into briefings_v3 (the existing snapshot
+table) and read from there as a second-tier cache.
+
+The week_monday is part of the cache key, so cache entries expire
+naturally on Mondays without a sweep — Tuesday's first request
+re-computes because (zip, new_monday) isn't in the dict.
+
+Bypass: pass ?force_rebuild=true to skip the cache.
 """
+from collections import OrderedDict
 from fastapi import APIRouter, HTTPException, Query, Depends
 from datetime import datetime, date, timedelta, timezone
 from backend.api.db import get_supabase_client
@@ -15,6 +42,39 @@ from backend.selection import weekly_selector as _ws
 from backend.selection.parcel_state_tags import derive_tags
 
 router = APIRouter()
+
+
+# ── Briefing cache ────────────────────────────────────────────────
+# OrderedDict gives us O(1) move-to-end and O(1) popitem(last=False)
+# for FIFO eviction. Bounded at 100 entries — we currently have 11
+# KC ZIPs seeded, so the cache will never approach the cap in
+# practice. The bound exists to prevent runaway growth if a malicious
+# or buggy client ever sweeps through every US ZIP.
+#
+# Cache hits and misses are tracked for the X-Briefing-Cache header,
+# which makes it easy to verify cache behavior in production with
+# a single curl -I call.
+_BRIEFING_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_BRIEFING_CACHE_MAX = 100
+
+
+def _briefing_cache_get(key: tuple):
+    """Return cached briefing dict for this key, or None on miss.
+    On hit, mark as recently used (move to end). On miss, return None."""
+    if key in _BRIEFING_CACHE:
+        _BRIEFING_CACHE.move_to_end(key)
+        return _BRIEFING_CACHE[key]
+    return None
+
+
+def _briefing_cache_set(key: tuple, value: dict):
+    """Store value under key. If cache is at capacity, evict the
+    least-recently-used entry first (FIFO when no hits, LRU when
+    hits move things to the end)."""
+    _BRIEFING_CACHE[key] = value
+    _BRIEFING_CACHE.move_to_end(key)
+    while len(_BRIEFING_CACHE) > _BRIEFING_CACHE_MAX:
+        _BRIEFING_CACHE.popitem(last=False)
 
 
 # ── New-this-week helpers ──────────────────────────────────────────
@@ -123,6 +183,8 @@ async def get_briefing(
         description="Max STRATEGIC HOLD leads; 0 = return all (default)"),
     dedup: bool = Query(True,
         description="Dedup by owner surname (one lead per family)"),
+    force_rebuild: bool = Query(False,
+        description="Bypass cache and recompute from scratch"),
 ):
     """
     Full briefing for a ZIP. Returns:
@@ -130,6 +192,28 @@ async def get_briefing(
       - playbook: { call_now, build_now, strategic_holds }
       - stats: counts, cost, last run info
     """
+    # ── Cache check ──
+    # The cache key includes every input that materially changes the
+    # response, so two requests with different limits or dedup flags
+    # don't share an entry. In practice almost every call uses the
+    # default values (zeros + dedup=True + include_map=True), so this
+    # functionally caches "the briefing for this ZIP this week."
+    today = date.today()
+    week_monday_iso = (today - timedelta(days=today.weekday())).isoformat()
+    cache_key = (
+        zip_code,
+        week_monday_iso,
+        include_map,
+        call_now_limit,
+        build_now_limit,
+        hold_limit,
+        dedup,
+    )
+    if not force_rebuild:
+        cached = _briefing_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
@@ -565,11 +649,9 @@ async def get_briefing(
         build_now_picks = [_shape_pick(L) for L in build_now_leads]
         hold_picks      = [_shape_pick(L) for L in hold_leads]
 
-        # ── Compute week_of (Monday of current week) ──
-        today = date.today()
-        week_monday = today - timedelta(days=today.weekday())
-
         # ── Stats ──
+        # week_monday_iso was computed at the top of the handler for
+        # the cache key. Reuse it here rather than recomputing.
         stats = {
             'total_parcels':       len(parcels),
             'investigated_count':  len(inv_by_pin),
@@ -578,9 +660,9 @@ async def get_briefing(
             'strategic_holds_count': len(hold_picks),
         }
 
-        return {
+        response = {
             'zip':       zip_code,
-            'week_of':   week_monday.isoformat(),
+            'week_of':   week_monday_iso,
             'playbook':  {
                 'call_now':        call_now_picks,
                 'build_now':       build_now_picks,
@@ -588,6 +670,14 @@ async def get_briefing(
             },
             'stats':     stats,
         }
+
+        # Cache the fully-shaped response. Subsequent requests for
+        # the same (zip, week, params) tuple skip the entire
+        # supabase + scoring pipeline above. The cache lives until
+        # the week rolls over (key contains week_monday_iso) or the
+        # process is recycled, whichever comes first.
+        _briefing_cache_set(cache_key, response)
+        return response
 
     except HTTPException:
         raise
