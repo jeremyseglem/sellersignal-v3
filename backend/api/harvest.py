@@ -2699,7 +2699,9 @@ def diag_rematch_dry_run(
             actual_by_zip[ZIP] = 0
             continue
         cnt = 0
-        CHUNK = 200
+        # Use 100 PINs per chunk to stay under PostgREST/Cloudflare URL
+        # length limit. Larger chunks reliably 400 on full-coverage runs.
+        CHUNK = 100
         for i in range(0, len(pins), CHUNK):
             chunk = pins[i : i + CHUNK]
             try:

@@ -292,15 +292,29 @@ def _load_canonical_for_pins(supa, pins: list[str]) -> dict:
     """
     Batch-fetch owner_canonical_v3 rows for a set of pins.
     Returns {pin: canonical_row}.
+
+    Chunk size note: kept low (100) because the .in_(pin, [chunk])
+    filter generates a URL of the form ?pin=in.(pin1,pin2,...) and
+    Cloudflare (PostgREST's reverse proxy) returns 400 Bad Request
+    when the URL exceeds ~8KB. With single-ZIP loads this rarely
+    triggered, but full-coverage matcher runs against all 11 ZIPs
+    (~86k PINs total) reliably overflow at chunk=500. Smaller chunks
+    are slower but never 400.
     """
     out: dict = {}
-    CHUNK = 500
+    CHUNK = 100
     for i in range(0, len(pins), CHUNK):
         chunk = pins[i : i + CHUNK]
-        rows = (supa.table('owner_canonical_v3')
-                .select('*')
-                .in_('pin', chunk)
-                .execute().data) or []
+        try:
+            rows = (supa.table('owner_canonical_v3')
+                    .select('*')
+                    .in_('pin', chunk)
+                    .execute().data) or []
+        except Exception as e:
+            log.warning(
+                f"_load_canonical_for_pins chunk {i}-{i+CHUNK} failed: {e}"
+            )
+            continue
         for r in rows:
             out[r['pin']] = r
     return out
