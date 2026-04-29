@@ -301,7 +301,7 @@ def fetch_case_participants(
     polite_delay: float = 0.4,
     max_retries: int = 2,
     retry_backoff: float = 2.0,
-) -> list[ParsedParty]:
+) -> tuple[list[ParsedParty], str]:
     """
     Fetch and parse the Participants tab for a single case.
 
@@ -325,8 +325,19 @@ def fetch_case_participants(
         retry_backoff: Seconds between retries, multiplied per attempt.
 
     Returns:
-        list of ParsedParty objects. Empty if fetch fails or no parties
-        are parseable (after retries).
+        Tuple (parties, outcome) where outcome is one of:
+          'success'         — parties list is non-empty (real data extracted)
+          'genuinely_empty' — participants table loaded, had no rows
+                              (this case really has no participants in the
+                               portal — caller should NOT retry)
+          'shell_page'      — 28KB shell returned after all retries
+                              (transient auth failure — caller SHOULD retry later)
+          'network_error'   — request exception after all retries
+                              (transient network failure — caller SHOULD retry later)
+
+        The caller MUST distinguish between these. Treating 'shell_page' or
+        'network_error' as 'genuinely_empty' is what poisoned the dataset
+        before this signature change.
     """
     if polite_delay > 0:
         time.sleep(polite_delay)
@@ -337,6 +348,8 @@ def fetch_case_participants(
         f"?Id={internal_id}"
         f"&folder=FV-Public-Case-Participants-Portal"
     )
+
+    last_outcome = 'shell_page'  # default if we exhaust retries on degraded responses
 
     for attempt in range(max_retries + 1):
         # Bootstrap: visit the detail-page entry link to establish view session
@@ -350,10 +363,11 @@ def fetch_case_participants(
             log.warning(
                 f"Bootstrap GET failed for case {internal_id} (attempt {attempt + 1}): {e}"
             )
+            last_outcome = 'network_error'
             if attempt < max_retries:
                 time.sleep(retry_backoff * (attempt + 1))
                 continue
-            return []
+            return [], last_outcome
 
         # Now fetch the Participants tab
         try:
@@ -367,16 +381,18 @@ def fetch_case_participants(
             log.warning(
                 f"Participants GET failed for case {internal_id} (attempt {attempt + 1}): {e}"
             )
+            last_outcome = 'network_error'
             if attempt < max_retries:
                 time.sleep(retry_backoff * (attempt + 1))
                 continue
-            return []
+            return [], last_outcome
 
         html = resp.text
         # Degraded-response detection: the healthy authorized page has the
         # 'table-condensed' class on the parties table; the shell page
         # does not. ~28KB = shell, ~50KB+ = authorized.
         if 'table-condensed' not in html:
+            last_outcome = 'shell_page'
             if attempt < max_retries:
                 log.info(
                     f"Case {internal_id} returned shell page "
@@ -384,15 +400,19 @@ def fetch_case_participants(
                 )
                 time.sleep(retry_backoff * (attempt + 1))
                 continue
-            # Fall through — parser will return empty list
+            # Out of retries on a shell page — return as failure
+            return [], last_outcome
 
+        # Table-condensed IS present — page authorized successfully
         parties = _parse_participants_html(html)
-        if not parties and 'table-condensed' in html:
-            # Table was present but no rows parsed — genuinely empty
-            log.debug(f"No parties parsed for case internal_id={internal_id}")
-        return parties
+        if parties:
+            return parties, 'success'
+        # Table was present but no rows parsed — this case genuinely has
+        # no participants. NOT a failure; do not retry.
+        log.debug(f"No parties parsed for case internal_id={internal_id} (genuinely empty)")
+        return [], 'genuinely_empty'
 
-    return []  # should be unreachable, safety
+    return [], last_outcome  # safety — should not be reachable
 
 
 def compute_html_hash(html: str) -> str:

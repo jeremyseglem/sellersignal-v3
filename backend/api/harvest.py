@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import time
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Header
@@ -36,6 +36,147 @@ def _require_admin(x_admin_key: Optional[str]):
         raise HTTPException(503, "ADMIN_KEY not configured server-side")
     if x_admin_key != server_key:
         raise HTTPException(401, "Missing or invalid X-Admin-Key header")
+
+
+# ─── Scrape-attempt tracking (case_party_scrape_attempts) ──────────────
+#
+# These helpers replace the old "write a sentinel row to case_parties_v3
+# on failure" pattern. They route attempt outcomes to a dedicated table
+# so transient portal failures do not become permanent suppressions.
+
+# Backoff schedule for retrying failed scrapes. See migration 012 header.
+def _backoff_for_attempt_count(count: int) -> timedelta:
+    """How long to wait after `count` consecutive failures before retrying."""
+    if count <= 1:
+        return timedelta(hours=1)
+    if count == 2:
+        return timedelta(hours=6)
+    if count == 3:
+        return timedelta(hours=24)
+    return timedelta(days=7)
+
+
+def _record_scrape_attempt(
+    supa,
+    case_number: str,
+    source_type: str,
+    status: str,
+    error_detail: Optional[str] = None,
+) -> None:
+    """
+    Upsert a row in case_party_scrape_attempts.
+
+    On first attempt: insert a new row with attempt_count=1.
+    On subsequent attempts: increment attempt_count, refresh last_attempt_at,
+    update status. first_attempt_at is preserved.
+
+    Failures inside this helper are logged but not re-raised — attempt
+    tracking should never block the main scrape pipeline.
+    """
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        existing = (supa.table('case_party_scrape_attempts')
+                    .select('id, attempt_count')
+                    .eq('case_number', case_number)
+                    .eq('source_type', source_type)
+                    .limit(1)
+                    .execute())
+        rows = existing.data or []
+        trimmed_detail = (error_detail or '')[:500] or None
+        if rows:
+            (supa.table('case_party_scrape_attempts')
+             .update({
+                 'status':          status,
+                 'error_detail':    trimmed_detail,
+                 'attempt_count':   (rows[0].get('attempt_count') or 0) + 1,
+                 'last_attempt_at': now_iso,
+             })
+             .eq('id', rows[0]['id'])
+             .execute())
+        else:
+            (supa.table('case_party_scrape_attempts')
+             .insert({
+                 'case_number':       case_number,
+                 'source_type':       source_type,
+                 'status':            status,
+                 'error_detail':      trimmed_detail,
+                 'attempt_count':     1,
+                 'first_attempt_at':  now_iso,
+                 'last_attempt_at':   now_iso,
+             })
+             .execute())
+    except Exception as e:
+        log.warning(
+            f"_record_scrape_attempt failed for case={case_number} "
+            f"status={status}: {e}"
+        )
+
+
+def _is_eligible_for_scrape(attempt_row: Optional[dict]) -> bool:
+    """
+    Decide whether a case with the given scrape-attempts row should be
+    retried right now.
+
+    Returns True when:
+      - There is no prior attempt row, OR
+      - The last attempt was a transient failure AND enough time has
+        passed (per _backoff_for_attempt_count).
+
+    Returns False (skip) when:
+      - status='success'         (we have real data)
+      - status='genuinely_empty' (scraper confirmed empty — never retry)
+      - status is failure but still within backoff window
+    """
+    if not attempt_row:
+        return True
+    status = attempt_row.get('status')
+    if status == 'success':
+        return False
+    if status == 'genuinely_empty':
+        return False
+    # Transient failure — apply backoff
+    last_at = attempt_row.get('last_attempt_at')
+    if not last_at:
+        return True
+    try:
+        # supabase returns ISO strings, sometimes with 'Z' suffix
+        if isinstance(last_at, str):
+            last_dt = datetime.fromisoformat(last_at.replace('Z', '+00:00'))
+        else:
+            last_dt = last_at  # already a datetime
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    age = datetime.now(timezone.utc) - last_dt
+    backoff = _backoff_for_attempt_count(attempt_row.get('attempt_count') or 1)
+    return age >= backoff
+
+
+def _fetch_attempt_rows(
+    supa,
+    case_numbers: list[str],
+    source_type: str,
+) -> dict[str, dict]:
+    """Fetch case_party_scrape_attempts rows for a list of case_numbers.
+    Returns {case_number: row_dict}. Cases with no attempt yet are absent."""
+    out: dict[str, dict] = {}
+    if not case_numbers:
+        return out
+    CHK = 300
+    for i in range(0, len(case_numbers), CHK):
+        chunk = case_numbers[i : i + CHK]
+        try:
+            res = (supa.table('case_party_scrape_attempts')
+                   .select('case_number, status, attempt_count, last_attempt_at')
+                   .in_('case_number', chunk)
+                   .eq('source_type', source_type)
+                   .execute())
+            for row in (res.data or []):
+                out[row['case_number']] = row
+        except Exception as e:
+            log.warning(f"_fetch_attempt_rows chunk failed: {e}")
+    return out
 
 
 # ─── Request / response models ─────────────────────────────────────────
@@ -306,6 +447,88 @@ def diag_recent_real_parties(
         "most_recent_sentinel_at":    sentinel_rows[0]['scraped_at'] if sentinel_rows else None,
         "recent_real_rows":           real_rows,
         "recent_sentinel_rows":       sentinel_rows,
+    }
+
+
+@router.get("/diag/scrape-attempts")
+def diag_scrape_attempts(
+    x_admin_key: Optional[str] = Header(None),
+    case_number: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """
+    Inspect case_party_scrape_attempts. Either pass case_number to look up
+    one specific case, or filter by status to see all rows of that kind
+    (e.g. 'shell_page' to find currently-blocked cases).
+
+    Also returns counts grouped by status for a quick health view.
+
+    Read-only.
+
+    Args:
+      case_number — exact match on case_number (e.g. "26-4-03312-6")
+      status      — exact match on status: 'success' / 'genuinely_empty' /
+                    'shell_page' / 'network_error' / 'other'
+      limit       — max rows to return (default 50, max 200)
+    """
+    _require_admin(x_admin_key)
+    if limit < 1 or limit > 200:
+        raise HTTPException(400, "limit must be 1–200")
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Aggregate counts by status
+    status_counts: dict = {}
+    for st in ['success', 'genuinely_empty', 'shell_page',
+               'network_error', 'other']:
+        try:
+            c = (supa.table('case_party_scrape_attempts')
+                 .select('id', count='exact')
+                 .eq('status', st)
+                 .execute())
+            status_counts[st] = c.count or 0
+        except Exception as e:
+            status_counts[st] = f"error: {str(e)[:80]}"
+
+    q = (supa.table('case_party_scrape_attempts')
+         .select('case_number, source_type, status, error_detail, '
+                 'attempt_count, first_attempt_at, last_attempt_at'))
+    if case_number:
+        q = q.eq('case_number', case_number)
+    if status:
+        q = q.eq('status', status)
+    q = q.order('last_attempt_at', desc=True).limit(limit)
+    try:
+        res = q.execute()
+        rows = res.data or []
+    except Exception as e:
+        # Most likely the migration hasn't been applied yet — return a
+        # helpful message rather than a 500.
+        return {
+            "error":          f"scrape_attempts query failed: {str(e)[:200]}",
+            "hint":           "If this is the first deploy after migration 012, "
+                              "make sure schema/012_case_party_scrape_attempts.sql "
+                              "has been applied to Supabase.",
+            "status_counts":  status_counts,
+            "rows":           [],
+        }
+
+    # Annotate each row with eligibility decision
+    annotated = []
+    for r in rows:
+        annotated.append({
+            **r,
+            "eligible_for_retry_now": _is_eligible_for_scrape(r),
+        })
+
+    return {
+        "status_counts": status_counts,
+        "filter":        {"case_number": case_number, "status": status},
+        "row_count":     len(annotated),
+        "rows":          annotated,
     }
 
 
@@ -857,7 +1080,8 @@ def harvest_pending_parties(
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # 1) Get already-scraped case_numbers from case_parties_v3
+    # 1a) Get already-scraped case_numbers from case_parties_v3 (real data only,
+    #     per migration 012 — sentinels are no longer written here).
     already_scraped: set = set()
     off = 0
     STEP = 1000
@@ -870,6 +1094,30 @@ def harvest_pending_parties(
         if not batch:
             break
         already_scraped.update(r['case_number'] for r in batch)
+        if len(batch) < STEP:
+            break
+        off += STEP
+
+    # 1b) Get cases that are not eligible for retry from case_party_scrape_attempts.
+    #     These are: status='success' (have data), status='genuinely_empty'
+    #     (no data exists), and failed attempts still within their backoff window.
+    not_eligible: set = set()
+    off = 0
+    while True:
+        try:
+            res = (supa.table('case_party_scrape_attempts')
+                   .select('case_number, status, attempt_count, last_attempt_at')
+                   .range(off, off + STEP - 1)
+                   .execute())
+        except Exception as e:
+            log.warning(f"pending-parties: scrape_attempts fetch failed: {e}")
+            break
+        batch = res.data or []
+        if not batch:
+            break
+        for row in batch:
+            if not _is_eligible_for_scrape(row):
+                not_eligible.add(row['case_number'])
         if len(batch) < STEP:
             break
         off += STEP
@@ -940,6 +1188,8 @@ def harvest_pending_parties(
                 continue
             if case_num in already_scraped:
                 continue
+            if case_num in not_eligible:
+                continue
             if target_case_nums is not None and case_num not in target_case_nums:
                 continue
             pending.append({
@@ -956,9 +1206,11 @@ def harvest_pending_parties(
         off += STEP
 
     return {
-        'pending':   pending,
-        'total':     len(pending),
-        'zip_code':  zip_code,
+        'pending':              pending,
+        'total':                len(pending),
+        'zip_code':             zip_code,
+        'already_scraped_set':  len(already_scraped),
+        'not_eligible_set':     len(not_eligible),
     }
 
 
@@ -1009,22 +1261,24 @@ def harvest_ingest_parties(
         raise HTTPException(503, "Supabase not configured")
 
     inserted = 0
-    sentinels = 0
+    empty_submissions = 0  # cases the external scraper reported as empty
     errors: list = []
 
     for case in payload.cases:
         try:
             if not case.parties:
-                (supa.table('case_parties_v3')
-                 .upsert({
-                    'case_number':    case.case_number,
-                    'source_type':    payload.source_type,
-                    'role':           'other',
-                    'raw_role':       '(no participants found)',
-                    'name_raw':       '(empty)',
-                 }, on_conflict='case_number,source_type,role,name_raw')
-                 .execute())
-                sentinels += 1
+                # External scraper is asserting this case has no participants.
+                # Record this as a 'genuinely_empty' attempt — NOT a sentinel
+                # row in case_parties_v3. This way the case is correctly
+                # excluded from retry, but we don't poison the parties table.
+                _record_scrape_attempt(
+                    supa,
+                    case_number=case.case_number,
+                    source_type=payload.source_type,
+                    status='genuinely_empty',
+                    error_detail='ingest-parties received empty parties list',
+                )
+                empty_submissions += 1
                 continue
 
             rows = [
@@ -1046,14 +1300,30 @@ def harvest_ingest_parties(
              .upsert(rows, on_conflict='case_number,source_type,role,name_raw')
              .execute())
             inserted += len(rows)
+            _record_scrape_attempt(
+                supa,
+                case_number=case.case_number,
+                source_type=payload.source_type,
+                status='success',
+            )
         except Exception as e:
             errors.append({'case_number': case.case_number, 'error': str(e)[:200]})
+            _record_scrape_attempt(
+                supa,
+                case_number=case.case_number,
+                source_type=payload.source_type,
+                status='other',
+                error_detail=str(e),
+            )
 
     return {
-        'cases_processed':  len(payload.cases),
-        'parties_inserted': inserted,
-        'sentinels_added':  sentinels,
-        'errors':           errors,
+        'cases_processed':   len(payload.cases),
+        'parties_inserted':  inserted,
+        'empty_submissions': empty_submissions,
+        # Backwards-compat: callers may still read 'sentinels_added'. We no
+        # longer write sentinel rows; this field now mirrors empty_submissions.
+        'sentinels_added':   empty_submissions,
+        'errors':            errors,
     }
 
 
@@ -1061,14 +1331,23 @@ def harvest_ingest_parties(
 def harvest_clear_sentinels(
     x_admin_key: Optional[str] = Header(None),
     confirm: bool = False,
+    case_number: Optional[str] = None,
 ):
     """
     Delete '(no participants found)' sentinel rows from case_parties_v3.
 
-    Earlier versions of backfill-parties failed with "not authorized" due
-    to wrong session warm-up and wrote sentinels for cases that actually
-    have participants. This endpoint clears those sentinels so the cases
-    can be re-scraped.
+    Historical context: earlier versions of backfill-parties wrote sentinel
+    rows on transient portal failures, conflating "we tried and failed" with
+    "this case has no participants." Once a sentinel existed, the dedup
+    check skipped the case forever. As of migration 012, failures are
+    routed to case_party_scrape_attempts instead, but ~1,092 sentinel rows
+    from the old behavior remain and need to be cleared so those cases
+    can re-attempt under the new architecture.
+
+    Behavior:
+      - If case_number is provided: only deletes the sentinel row for that
+        one case (used for single-case test runs).
+      - Otherwise: clears ALL sentinel rows.
 
     Only deletes rows where raw_role='(no participants found)'. Real
     party data is never touched.
@@ -1081,13 +1360,22 @@ def harvest_clear_sentinels(
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    res = (supa.table('case_parties_v3')
-           .delete()
-           .eq('raw_role', '(no participants found)')
-           .execute())
+    q = (supa.table('case_parties_v3')
+         .delete()
+         .eq('raw_role', '(no participants found)'))
+    if case_number:
+        q = q.eq('case_number', case_number)
+    res = q.execute()
+    deleted = len(res.data or [])
     return {
-        "deleted_count": len(res.data or []),
-        "message":       "Cleared sentinel rows. Cases are unblocked for re-scraping.",
+        "deleted_count": deleted,
+        "case_number":   case_number,
+        "message": (
+            f"Cleared {deleted} sentinel row(s) for case {case_number}."
+            if case_number
+            else f"Cleared {deleted} sentinel rows. "
+                 f"Cases are unblocked for re-scraping."
+        ),
     }
 
 
@@ -1360,6 +1648,8 @@ def harvest_backfill_parties(
     offset: int = 0,
     source_type: str = "kc_superior_court",
     zip_code: Optional[str] = None,
+    case_number: Optional[str] = None,
+    force: bool = False,
 ):
     """
     Enrich existing probate/divorce signals with Participants-tab data.
@@ -1374,21 +1664,30 @@ def harvest_backfill_parties(
     through all result pages to authorize every case, (3) fetches
     Participants for every case in that week's batch.
 
-    Idempotent: cases already in case_parties_v3 are skipped. Safe to retry.
+    Idempotent. Cases with real data in case_parties_v3 are skipped.
+    Cases with status='success' or 'genuinely_empty' in
+    case_party_scrape_attempts are skipped. Cases with status of a
+    transient failure are skipped while inside their backoff window
+    (per _is_eligible_for_scrape).
 
-    Case selection modes:
-      1) offset-based (default): scans signals in id order starting at `offset`
-      2) zip_code=XXXXX: restricts to signals that matched parcels in that ZIP.
-         This is the high-value mode for agents — prioritizes their territory.
+    Case selection modes (mutually exclusive, in priority order):
+      1) case_number=XXX: process exactly one case (single-case test mode)
+      2) zip_code=XXXXX: restricts to signals matched to parcels in that ZIP
+      3) offset-based (default): scans signals in id order from `offset`
 
     Params:
-      limit    — cap on cases to process this call (default 50, max 200).
-      offset   — skip this many signal IDs before scanning (for chunked runs).
-      zip_code — if set, only process cases that have a match for a parcel
-                 in this ZIP (e.g. "98004"). Ignores offset.
+      limit       — cap on cases to process this call (default 50, max 200).
+                    Ignored when case_number is set (always 1).
+      offset      — skip this many signal IDs before scanning.
+      zip_code    — only process cases that have a match for a parcel
+                    in this ZIP (e.g. "98004"). Ignores offset.
+      case_number — process only this specific case. Used for single-case
+                    test runs after clearing a sentinel. Ignores offset/zip.
+      force       — bypass the case_party_scrape_attempts eligibility filter
+                    (still honors case_parties_v3 dedup). Use with case_number
+                    when forcibly retesting a failed case.
 
-    Typical rate: ~0.5s per case + ~2s per week warm-up. For 50 cases
-    spread across ~5 weeks: ~40 sec wall-clock per call.
+    Typical rate: ~0.5s per case + ~2s per week warm-up.
     """
     _require_admin(x_admin_key)
     if not confirm:
@@ -1403,7 +1702,22 @@ def harvest_backfill_parties(
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    if zip_code:
+    if case_number:
+        # Single-case mode: load exactly that one signal.
+        sig_res = (supa.table('raw_signals_v3')
+                   .select('id, document_ref, raw_data, signal_type, event_date')
+                   .eq('source_type', source_type)
+                   .eq('document_ref', case_number)
+                   .limit(1)
+                   .execute())
+        all_signals = sig_res.data or []
+        if not all_signals:
+            return {
+                "processed":   0,
+                "message":     f"No signal found for case_number={case_number}.",
+                "case_number": case_number,
+            }
+    elif zip_code:
         # ZIP-driven selection: find raw_signal_ids that matched parcels
         # in this ZIP, then load those signals (not offset-based).
         pins_in_zip: list = []
@@ -1478,7 +1792,9 @@ def harvest_backfill_parties(
                        .execute())
         all_signals = signals_res.data or []
 
-    # Find which case_numbers already have parties scraped
+    # Find which case_numbers already have parties scraped (real data).
+    # As of migration 012, case_parties_v3 only contains real party rows,
+    # so any presence here means we have real data.
     case_numbers_to_check = [
         s['document_ref'] for s in all_signals if s.get('document_ref')
     ]
@@ -1494,6 +1810,20 @@ def harvest_backfill_parties(
                    .execute())
             already_scraped.update(r['case_number'] for r in (res.data or []))
 
+    # Cross-reference with case_party_scrape_attempts. Skip cases that are:
+    #   - status='success' (already have data — overlaps with already_scraped)
+    #   - status='genuinely_empty' (no participants exist; never retry)
+    #   - in transient-failure backoff window (per _is_eligible_for_scrape)
+    # Bypassed when force=true (single-case test mode).
+    not_eligible: set = set()
+    if not force and case_numbers_to_check:
+        attempts_map = _fetch_attempt_rows(
+            supa, case_numbers_to_check, source_type,
+        )
+        for cn, row in attempts_map.items():
+            if not _is_eligible_for_scrape(row):
+                not_eligible.add(cn)
+
     # Filter to signals needing scrape + with internal_id + with event_date
     needs_scrape = [
         s for s in all_signals
@@ -1501,6 +1831,7 @@ def harvest_backfill_parties(
         and s.get('raw_data', {}).get('internal_id')
         and s.get('event_date')  # need date to group by week
         and s['document_ref'] not in already_scraped
+        and s['document_ref'] not in not_eligible
     ][:limit]
 
     if not needs_scrape:
@@ -1516,9 +1847,12 @@ def harvest_backfill_parties(
                 and not s.get('event_date')
             ),
             "already_scraped":   len(already_scraped),
+            "not_eligible":      len(not_eligible),
             "message":           "Nothing to process in this window.",
             "offset_scanned":    offset,
             "offset_scanned_to": offset + len(all_signals),
+            "case_number":       case_number,
+            "force":             force,
         }
 
     # Group signals by ISO week (Monday-based). Each week-group will get
@@ -1546,7 +1880,14 @@ def harvest_backfill_parties(
 
     processed = 0
     inserted_parties = 0
-    no_parties_count = 0
+    no_parties_count = 0  # legacy: cases that returned 0 parties for any reason
+    outcomes: dict = {     # new: breakdown by reason
+        'success':         0,
+        'genuinely_empty': 0,
+        'shell_page':      0,
+        'network_error':   0,
+        'other':           0,
+    }
     errors: list = []
     weeks_processed = 0
 
@@ -1643,53 +1984,61 @@ def harvest_backfill_parties(
                 cases_processed_on_this_page += 1
 
                 try:
-                    parties = fetch_case_participants(
+                    parties, outcome = fetch_case_participants(
                         session, iid, search_referer, polite_delay=0.3,
                     )
                     processed += 1
+                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
                     case_trace.append({
                         'case': case_num, 'drupal_page': drupal_page,
-                        'parties': len(parties),
+                        'parties': len(parties), 'outcome': outcome,
                     })
 
-                    if not parties:
+                    if outcome == 'success':
+                        rows_ins = [
+                            {
+                                'case_number':       case_num,
+                                'source_type':       source_type,
+                                'role':              p.role,
+                                'raw_role':          p.raw_role,
+                                'name_raw':          p.name_raw,
+                                'name_last':         p.name_last,
+                                'name_first':        p.name_first,
+                                'name_middle':       p.name_middle,
+                                'represented_by':    p.represented_by,
+                                'pr_classification': p.pr_classification,
+                            }
+                            for p in parties
+                        ]
                         (supa.table('case_parties_v3')
-                         .upsert({
-                            'case_number':    case_num,
-                            'source_type':    source_type,
-                            'role':           'other',
-                            'raw_role':       '(no participants found)',
-                            'name_raw':       '(empty)',
-                         }, on_conflict='case_number,source_type,role,name_raw')
+                         .upsert(rows_ins,
+                                 on_conflict='case_number,source_type,role,name_raw')
                          .execute())
+                        inserted_parties += len(rows_ins)
+                        _record_scrape_attempt(
+                            supa, case_num, source_type, 'success',
+                        )
+                    else:
+                        # No parties returned. Route to scrape_attempts table
+                        # WITHOUT writing a sentinel to case_parties_v3.
+                        # Outcome distinguishes 'genuinely_empty' (final, do
+                        # not retry) from 'shell_page' / 'network_error'
+                        # (transient, retry after backoff).
+                        _record_scrape_attempt(
+                            supa, case_num, source_type, outcome,
+                            error_detail=f"drupal_page={drupal_page}",
+                        )
                         no_parties_count += 1
-                        continue
-
-                    rows_ins = [
-                        {
-                            'case_number':       case_num,
-                            'source_type':       source_type,
-                            'role':              p.role,
-                            'raw_role':          p.raw_role,
-                            'name_raw':          p.name_raw,
-                            'name_last':         p.name_last,
-                            'name_first':        p.name_first,
-                            'name_middle':       p.name_middle,
-                            'represented_by':    p.represented_by,
-                            'pr_classification': p.pr_classification,
-                        }
-                        for p in parties
-                    ]
-                    (supa.table('case_parties_v3')
-                     .upsert(rows_ins,
-                             on_conflict='case_number,source_type,role,name_raw')
-                     .execute())
-                    inserted_parties += len(rows_ins)
                 except Exception as e:
                     errors.append({
                         'case_number': case_num,
                         'error':       str(e)[:200],
                     })
+                    outcomes['other'] = outcomes.get('other', 0) + 1
+                    _record_scrape_attempt(
+                        supa, case_num, source_type, 'other',
+                        error_detail=str(e),
+                    )
                     if len(errors) > 20:
                         week_done = True
                         break
@@ -1738,12 +2087,15 @@ def harvest_backfill_parties(
         "processed":            processed,
         "inserted_parties":     inserted_parties,
         "no_parties_found":     no_parties_count,
+        "outcomes":             outcomes,
         "weeks_processed":      weeks_processed,
         "total_weeks_in_batch": len(groups),
         "errors":               errors,
         "offset_start":         offset,
         "offset_end":           offset + len(all_signals),
         "next_offset":          offset + len(all_signals),
+        "case_number":          case_number,
+        "force":                force,
     }
 
 
