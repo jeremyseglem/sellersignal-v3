@@ -42,7 +42,14 @@ TICK_INTERVAL          = int(os.environ.get("TREASURY_AUTOFILL_TICK_SECONDS", "8
 TREASURY_SINCE_DAYS    = int(os.environ.get("TREASURY_AUTOFILL_SINCE_DAYS",    "1"))
 TREASURY_RUN_TIMEOUT   = int(os.environ.get("TREASURY_AUTOFILL_RUN_TIMEOUT",   "300"))
 TREASURY_STARTUP_DELAY = int(os.environ.get("TREASURY_AUTOFILL_STARTUP_DELAY", "120"))
-ZIP_FILTER             = os.environ.get("TREASURY_AUTOFILL_ZIP_FILTER", "98004")
+# ZIP scoping for the treasury harvester's matcher phase.
+#
+# Default is empty string -> treated as None below, which means "match
+# against parcels in every covered ZIP." Set TREASURY_AUTOFILL_ZIP_FILTER
+# to a single ZIP (e.g. "98004") to restrict matching for diagnostic
+# reasons; leave unset for production.
+_ZIP_FILTER_RAW        = os.environ.get("TREASURY_AUTOFILL_ZIP_FILTER", "").strip()
+ZIP_FILTER             = _ZIP_FILTER_RAW or None
 MAX_BACKOFF_SECS       = 3600
 
 LOCAL_PORT = int(os.environ.get("PORT", "8000"))

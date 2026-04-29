@@ -215,8 +215,13 @@ class HarvestRunRequest(BaseModel):
         ),
     )
     zip_filter: Optional[str] = Field(
-        "98004",
-        description="Scope matches to this ZIP. None = all covered ZIPs.",
+        None,
+        description=(
+            "Scope matches to this ZIP. None (default) = all covered ZIPs. "
+            "The pilot phase historically defaulted to '98004' here; that "
+            "default was removed when additional ZIPs were seeded so the "
+            "matcher would join signals against parcels in every covered ZIP."
+        ),
     )
     dry_run: bool = Field(
         False,
@@ -289,7 +294,7 @@ def harvest_run(
 @router.post("/match-only")
 def harvest_match_only(
     x_admin_key: Optional[str] = Header(None),
-    zip_filter: Optional[str] = "98004",
+    zip_filter: Optional[str] = None,
     batch_size: int = 100,
     max_batches: int = 200,
 ):
@@ -2468,7 +2473,7 @@ def diag_parties_count(
 def harvest_rematch(
     x_admin_key: Optional[str] = Header(None),
     confirm: bool = False,
-    zip_filter: Optional[str] = "98004",
+    zip_filter: Optional[str] = None,
 ):
     """
     Delete ALL existing raw_signal_matches_v3 rows, then reset
@@ -2539,6 +2544,283 @@ def harvest_rematch(
         "deleted_matches": deleted_matches,
         "signals_reset": reset_count,
         "match_stats": stats,
+    }
+
+
+@router.get("/diag/rematch-dry-run")
+def diag_rematch_dry_run(
+    x_admin_key: Optional[str] = Header(None),
+    zip_filter: Optional[str] = None,
+    sample_size: int = 200,
+):
+    """
+    Dry-run diagnostic. Loads the parcel owner database under the given
+    zip_filter (None = all ZIPs) and processes a sample of raw_signals
+    through the matcher in MEMORY ONLY. Writes nothing to the database.
+
+    Useful for projecting "if I rematched everything county-wide, how
+    many matches would each ZIP get?" before committing to a real run.
+
+    The result extrapolates from the sample to the full signal corpus
+    and gives a per-ZIP projection alongside actuals from the existing
+    raw_signal_matches_v3 rows.
+
+    Args:
+      zip_filter   — None (default) = all covered ZIPs. Single ZIP for
+                     baseline comparison.
+      sample_size  — How many raw_signals to project against. Larger
+                     gives better accuracy at higher CPU cost. Default 200.
+
+    Read-only. No DB writes. No portal calls.
+    """
+    _require_admin(x_admin_key)
+    if sample_size < 10 or sample_size > 2000:
+        raise HTTPException(400, "sample_size must be 10–2000")
+
+    from backend.harvesters import matcher as M
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Load owners under the requested zip_filter.
+    owners_db, use_codes = M._load_owners_db(supa, zip_filter)
+    parcels_loaded = len(owners_db)
+
+    # Pull a representative sample of raw signals across all signal types.
+    # Use bucketed sampling so divorce/probate/etc. all get represented
+    # rather than one type dominating.
+    by_type: dict = {'probate': [], 'divorce': [], 'obituary': [], 'tax_foreclosure': []}
+    per_type_target = max(10, sample_size // len(by_type))
+    for st in by_type.keys():
+        try:
+            res = (supa.table('raw_signals_v3')
+                   .select('id, signal_type, party_names, event_date, '
+                           'document_ref, raw_data')
+                   .eq('signal_type', st)
+                   .order('id', desc=True)
+                   .limit(per_type_target)
+                   .execute())
+            by_type[st] = res.data or []
+        except Exception as e:
+            by_type[st] = []
+            log.warning(f"dry_run sample fetch for {st} failed: {e}")
+
+    # Total raw signals per type, for extrapolation
+    totals_by_type: dict = {}
+    for st in by_type.keys():
+        try:
+            c = (supa.table('raw_signals_v3')
+                 .select('id', count='exact')
+                 .eq('signal_type', st)
+                 .execute())
+            totals_by_type[st] = c.count or 0
+        except Exception:
+            totals_by_type[st] = 0
+
+    # Need parcel→zip mapping to bucket projected matches by ZIP.
+    pin_to_zip: dict = {}
+    PAGE = 1000
+    off = 0
+    while True:
+        res = (supa.table('parcels_v3')
+               .select('pin, zip_code')
+               .range(off, off + PAGE - 1)
+               .execute())
+        batch = res.data or []
+        if not batch:
+            break
+        for r in batch:
+            if r.get('zip_code'):
+                pin_to_zip[r['pin']] = r['zip_code']
+        if len(batch) < PAGE:
+            break
+        off += PAGE
+        if off > 200000:
+            break
+
+    # Run dispatcher on each sample row IN MEMORY ONLY. Count candidates
+    # by ZIP and signal type. We intentionally do NOT call _process_one
+    # because that writes; we call the dispatcher directly.
+    sample_match_counts: dict = {}  # zip → signal_type → count
+    sample_processed_by_type: dict = {st: 0 for st in by_type.keys()}
+    sample_matched_by_type: dict = {st: 0 for st in by_type.keys()}
+
+    for st, rows in by_type.items():
+        dispatcher = M._DISPATCH.get(st)
+        if not dispatcher:
+            continue
+        for row in rows:
+            sample_processed_by_type[st] += 1
+            try:
+                candidates = dispatcher(row, owners_db, use_codes)
+            except Exception as e:
+                log.debug(f"dispatcher error sample row {row.get('id')}: {e}")
+                continue
+            if not candidates:
+                continue
+            sample_matched_by_type[st] += 1
+            for c in candidates:
+                pin = c.get('parcel_id')
+                if not pin:
+                    continue
+                z = pin_to_zip.get(pin, 'unknown')
+                sample_match_counts.setdefault(z, {})
+                sample_match_counts[z][st] = (
+                    sample_match_counts[z].get(st, 0) + 1
+                )
+
+    # Extrapolate sample to full corpus per signal_type.
+    projected_by_zip: dict = {}
+    for z, by_st in sample_match_counts.items():
+        projected_by_zip[z] = {}
+        for st, sample_count in by_st.items():
+            sampled = sample_processed_by_type.get(st, 0)
+            total = totals_by_type.get(st, 0)
+            if sampled <= 0 or total <= 0:
+                projected_by_zip[z][st] = sample_count
+                continue
+            scale = total / sampled
+            projected_by_zip[z][st] = int(round(sample_count * scale))
+
+    # Compare to actual existing matches per ZIP for context.
+    actual_by_zip: dict = {}
+    for ZIP in ['98004', '98005', '98006', '98007', '98033', '98039',
+                '98040', '98052', '98105', '98112', '98199']:
+        try:
+            pins_res = (supa.table('parcels_v3')
+                        .select('pin')
+                        .eq('zip_code', ZIP)
+                        .execute())
+            pins = [r['pin'] for r in (pins_res.data or [])]
+        except Exception:
+            pins = []
+        if not pins:
+            actual_by_zip[ZIP] = 0
+            continue
+        cnt = 0
+        CHUNK = 200
+        for i in range(0, len(pins), CHUNK):
+            chunk = pins[i : i + CHUNK]
+            try:
+                r = (supa.table('raw_signal_matches_v3')
+                     .select('id', count='exact')
+                     .in_('pin', chunk)
+                     .execute())
+                cnt += r.count or 0
+            except Exception:
+                pass
+        actual_by_zip[ZIP] = cnt
+
+    return {
+        "zip_filter":               zip_filter,
+        "parcels_loaded_in_owners": parcels_loaded,
+        "sample_size_per_type":     per_type_target,
+        "sample_processed_by_type": sample_processed_by_type,
+        "sample_matched_by_type":   sample_matched_by_type,
+        "totals_by_type":           totals_by_type,
+        "projected_matches_by_zip": projected_by_zip,
+        "current_actual_by_zip":    actual_by_zip,
+        "note": (
+            "projected_matches_by_zip is an extrapolation from a small "
+            "sample. Treat as order-of-magnitude. The real rematch will "
+            "produce numbers within ~30%."
+        ),
+    }
+
+
+@router.post("/rematch-surgical")
+def harvest_rematch_surgical(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    zip_filter: Optional[str] = None,
+    batch_size: int = 100,
+    max_batches: int = 500,
+):
+    """
+    Non-destructive variant of /rematch.
+
+    Unlike /rematch which deletes ALL existing matches and resets every
+    signal's matched_at, this endpoint:
+
+      1. Loads owners_db under the given zip_filter (default None = all
+         covered ZIPs).
+      2. Selects raw_signals where matched_at IS NOT NULL but the
+         matcher wouldn't have produced matches for the current owners_db.
+         These are signals that were processed under an older, narrower
+         zip_filter and never had a chance to match against parcels
+         outside that scope.
+      3. Resets matched_at to NULL on those signals only.
+      4. Re-runs process_unmatched with the new zip_filter.
+
+    Existing match rows in raw_signal_matches_v3 are PRESERVED (the
+    matcher upserts into them; existing matches just survive untouched).
+
+    Use case: the matcher historically defaulted to zip_filter='98004',
+    so signals harvested before the multi-ZIP fix were matched against
+    only 98004 parcels. Re-running them with zip_filter=None will
+    produce additional matches in the other 10 ZIPs without disturbing
+    98004's existing 313 matches.
+
+    Pass ?confirm=true to actually execute.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This resets matched_at on previously-processed signals and "
+            "re-runs the matcher. Pass ?confirm=true to proceed.",
+        )
+
+    from backend.harvesters import matcher as M
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Reset matched_at on every previously-matched signal so the matcher
+    # picks them up. The matcher upserts into raw_signal_matches_v3 keyed
+    # by (raw_signal_id, pin), so existing matches survive — re-processing
+    # only ADDS new matches against parcels that were not in scope before.
+    page = 1000
+    reset_count = 0
+    safety = 0
+    while True:
+        rows = (supa.table('raw_signals_v3')
+                .select('id')
+                .not_.is_('matched_at', 'null')
+                .range(0, page - 1)
+                .execute()).data or []
+        if not rows:
+            break
+        ids = [r['id'] for r in rows]
+        (supa.table('raw_signals_v3')
+         .update({'matched_at': None})
+         .in_('id', ids)
+         .execute())
+        reset_count += len(ids)
+        safety += 1
+        if safety > 200:  # ~200k signals, plenty
+            break
+
+    # Re-run matcher with the broader zip_filter.
+    stats = M.process_unmatched(
+        supa,
+        zip_filter=zip_filter,
+        batch_size=batch_size,
+        max_batches=max_batches,
+    )
+
+    return {
+        "signals_reset": reset_count,
+        "zip_filter":    zip_filter,
+        "match_stats":   stats,
+        "note": (
+            "Existing match rows in raw_signal_matches_v3 were not deleted. "
+            "The matcher upserted by (raw_signal_id, pin), so prior matches "
+            "are preserved and any new in-scope parcels produced additional "
+            "match rows."
+        ),
     }
 
 

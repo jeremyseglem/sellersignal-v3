@@ -37,7 +37,14 @@ TICK_INTERVAL       = int(os.environ.get("OBIT_AUTOFILL_TICK_SECONDS", "43200"))
 OBIT_SINCE_DAYS     = int(os.environ.get("OBIT_AUTOFILL_SINCE_DAYS",   "7"))
 OBIT_RUN_TIMEOUT    = int(os.environ.get("OBIT_AUTOFILL_RUN_TIMEOUT",  "600"))
 OBIT_STARTUP_DELAY  = int(os.environ.get("OBIT_AUTOFILL_STARTUP_DELAY", "60"))
-ZIP_FILTER          = os.environ.get("OBIT_AUTOFILL_ZIP_FILTER", "98004")
+# ZIP scoping for the obit harvester's matcher phase.
+#
+# Default is empty string -> treated as None below, which means "match
+# against parcels in every covered ZIP." Set OBIT_AUTOFILL_ZIP_FILTER
+# to a single ZIP (e.g. "98004") to restrict matching for diagnostic
+# reasons; leave unset for production.
+_ZIP_FILTER_RAW     = os.environ.get("OBIT_AUTOFILL_ZIP_FILTER", "").strip()
+ZIP_FILTER          = _ZIP_FILTER_RAW or None
 MAX_BACKOFF_SECS    = 3600
 
 LOCAL_PORT = int(os.environ.get("PORT", "8000"))
