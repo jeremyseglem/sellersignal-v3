@@ -2552,6 +2552,7 @@ def diag_rematch_dry_run(
     x_admin_key: Optional[str] = Header(None),
     zip_filter: Optional[str] = None,
     sample_size: int = 200,
+    step: Optional[str] = None,
 ):
     """
     Dry-run diagnostic. Loads the parcel owner database under the given
@@ -2561,15 +2562,17 @@ def diag_rematch_dry_run(
     Useful for projecting "if I rematched everything county-wide, how
     many matches would each ZIP get?" before committing to a real run.
 
-    The result extrapolates from the sample to the full signal corpus
-    and gives a per-ZIP projection alongside actuals from the existing
-    raw_signal_matches_v3 rows.
-
     Args:
-      zip_filter   — None (default) = all covered ZIPs. Single ZIP for
-                     baseline comparison.
-      sample_size  — How many raw_signals to project against. Larger
-                     gives better accuracy at higher CPU cost. Default 200.
+      zip_filter   — None (default) = all covered ZIPs.
+      sample_size  — How many raw_signals to project against. 10–2000.
+      step         — Stop early after a given phase; useful for finding
+                     which phase hangs:
+                       'load_owners'    — return after _load_owners_db
+                       'load_signals'   — return after sample fetch
+                       'load_pin_zip'   — return after pin_to_zip build
+                       'dispatch'       — return after dispatcher loop
+                                          (skip actual_by_zip count)
+                       None / unset     — full diagnostic (default)
 
     Read-only. No DB writes. No portal calls.
     """
@@ -2578,18 +2581,29 @@ def diag_rematch_dry_run(
         raise HTTPException(400, "sample_size must be 10–2000")
 
     from backend.harvesters import matcher as M
+    import time as _time
 
     supa = get_supabase_client()
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # Load owners under the requested zip_filter.
+    timings: dict = {}
+    t0 = _time.time()
+
+    # ── Phase 1: load owners_db
     owners_db, use_codes = M._load_owners_db(supa, zip_filter)
     parcels_loaded = len(owners_db)
+    timings['load_owners_seconds'] = round(_time.time() - t0, 2)
+    if step == 'load_owners':
+        return {
+            "step":                  "load_owners",
+            "zip_filter":            zip_filter,
+            "parcels_loaded":        parcels_loaded,
+            "timings":               timings,
+        }
 
-    # Pull a representative sample of raw signals across all signal types.
-    # Use bucketed sampling so divorce/probate/etc. all get represented
-    # rather than one type dominating.
+    # ── Phase 2: pull sample signals
+    t1 = _time.time()
     by_type: dict = {'probate': [], 'divorce': [], 'obituary': [], 'tax_foreclosure': []}
     per_type_target = max(10, sample_size // len(by_type))
     for st in by_type.keys():
@@ -2605,8 +2619,10 @@ def diag_rematch_dry_run(
         except Exception as e:
             by_type[st] = []
             log.warning(f"dry_run sample fetch for {st} failed: {e}")
+    timings['load_signals_seconds'] = round(_time.time() - t1, 2)
 
     # Total raw signals per type, for extrapolation
+    t2 = _time.time()
     totals_by_type: dict = {}
     for st in by_type.keys():
         try:
@@ -2617,28 +2633,62 @@ def diag_rematch_dry_run(
             totals_by_type[st] = c.count or 0
         except Exception:
             totals_by_type[st] = 0
+    timings['load_totals_seconds'] = round(_time.time() - t2, 2)
+    if step == 'load_signals':
+        return {
+            "step":                     "load_signals",
+            "parcels_loaded":           parcels_loaded,
+            "sample_size_per_type":     per_type_target,
+            "rows_in_sample":           {st: len(rs) for st, rs in by_type.items()},
+            "totals_by_type":           totals_by_type,
+            "timings":                  timings,
+        }
 
-    # Need parcel→zip mapping to bucket projected matches by ZIP.
+    # ── Phase 3: pin→zip map (only for the 11 ZIPs we care about — no
+    #             need to load every parcel in KC County). The original
+    #             implementation paged the entire parcels_v3 table which
+    #             was 87k+ rows × 100ms each ≈ 9 sec but produced rows
+    #             we'd discard for ZIPs outside scope. Instead just pull
+    #             the 11 specific ZIPs.
+    t3 = _time.time()
+    TARGET_ZIPS = ['98004', '98005', '98006', '98007', '98033', '98039',
+                   '98040', '98052', '98105', '98112', '98199']
     pin_to_zip: dict = {}
-    PAGE = 1000
-    off = 0
-    while True:
-        res = (supa.table('parcels_v3')
-               .select('pin, zip_code')
-               .range(off, off + PAGE - 1)
-               .execute())
-        batch = res.data or []
-        if not batch:
-            break
-        for r in batch:
-            if r.get('zip_code'):
-                pin_to_zip[r['pin']] = r['zip_code']
-        if len(batch) < PAGE:
-            break
-        off += PAGE
-        if off > 200000:
-            break
+    for ZIP in TARGET_ZIPS:
+        PAGE = 1000
+        off = 0
+        while True:
+            try:
+                res = (supa.table('parcels_v3')
+                       .select('pin')
+                       .eq('zip_code', ZIP)
+                       .range(off, off + PAGE - 1)
+                       .execute())
+            except Exception as e:
+                log.warning(f"pin_to_zip page for {ZIP} off={off} failed: {e}")
+                break
+            batch = res.data or []
+            if not batch:
+                break
+            for r in batch:
+                pin_to_zip[r['pin']] = ZIP
+            if len(batch) < PAGE:
+                break
+            off += PAGE
+            if off > 200000:
+                break
+    timings['load_pin_zip_seconds'] = round(_time.time() - t3, 2)
+    if step == 'load_pin_zip':
+        return {
+            "step":             "load_pin_zip",
+            "parcels_loaded":   parcels_loaded,
+            "pin_to_zip_size":  len(pin_to_zip),
+            "totals_by_type":   totals_by_type,
+            "timings":          timings,
+        }
 
+    # ── Phase 4: dispatcher loop (in-memory matching)
+    t4 = _time.time()
     # Run dispatcher on each sample row IN MEMORY ONLY. Bucket candidates
     # by (zip, signal_type, strength) so we can distinguish high-confidence
     # matches from weak surname-only matches that are usually false positives.
@@ -2724,17 +2774,29 @@ def diag_rematch_dry_run(
 
     projected_strict = _project(sample_match_counts_strict)
     projected_weak   = _project(sample_match_counts_weak)
+    timings['dispatch_seconds'] = round(_time.time() - t4, 2)
+    if step == 'dispatch':
+        return {
+            "step":                        "dispatch",
+            "parcels_loaded":              parcels_loaded,
+            "sample_processed_by_type":    sample_processed_by_type,
+            "sample_matched_by_type":      sample_matched_by_type,
+            "totals_by_type":              totals_by_type,
+            "projected_strict_by_zip":     projected_strict,
+            "projected_weak_by_zip":       projected_weak,
+            "sample_matches_per_zip":      sample_matches_per_zip,
+            "timings":                     timings,
+        }
 
-    # Compare to actual existing matches per ZIP for context.
-    # Two views:
-    # Compare to actual existing matches per ZIP for context.
+    # ── Phase 5: actual existing matches per ZIP
     # Two views:
     #   actual_by_zip          — non-weak match rows (what users see)
     #   actual_by_zip_with_weak — every match row including weak ones
     #
-    # Strategy: instead of N=11_zips * ~875_chunks * 2_queries (~19k round
-    # trips that timed out the request), page through all match rows ONCE,
-    # bucket by zip in memory using pin_to_zip we already have.
+    # Strategy: page through all match rows ONCE and bucket by zip in
+    # memory using pin_to_zip. ~2-200 round trips depending on total
+    # match-row count; the previous per-chunk approach did ~19k.
+    t5 = _time.time()
     actual_by_zip:           dict = {z: 0 for z in
         ['98004','98005','98006','98007','98033','98039',
          '98040','98052','98105','98112','98199']}
@@ -2770,6 +2832,8 @@ def diag_rematch_dry_run(
         safety += 1
         if safety > 200:  # ~200k matches max
             break
+    timings['actual_by_zip_seconds'] = round(_time.time() - t5, 2)
+    timings['total_seconds'] = round(_time.time() - t0, 2)
 
     return {
         "zip_filter":                  zip_filter,
@@ -2783,6 +2847,7 @@ def diag_rematch_dry_run(
         "current_actual_by_zip":       actual_by_zip,
         "current_actual_with_weak":    actual_by_zip_with_weak,
         "sample_matches_per_zip":      sample_matches_per_zip,
+        "timings":                     timings,
         "note": (
             "projected_*_by_zip extrapolated from a small sample. "
             "Treat as order-of-magnitude. STRICT projections approximate "
