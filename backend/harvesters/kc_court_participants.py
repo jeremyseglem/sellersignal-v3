@@ -56,19 +56,31 @@ BASE = "https://dja-prd-ecexap1.kingcounty.gov"
 # The portal displays roles with varying casing and occasional embedded
 # newlines (e.g. "Petitioner\r\n \r\n/ Personal Representative"). We
 # normalize to a stable vocabulary for storage.
+#
+# Probate terminology note: "Administrator" is the older Washington
+# probate term for the equivalent of "Personal Representative." KC's
+# portal uses both interchangeably. Cases where the deceased had no
+# will (intestate) often list the appointee as "Administrator"; cases
+# with a will list them as "Personal Representative." In both cases
+# the person is the workable family contact, so we treat them the same.
 _ROLE_PATTERNS = [
-    # Most specific first — "Petitioner / Personal Representative" shows up
-    # as a combined label when the filer is also the appointed PR. Treat as PR.
-    (re.compile(r"petitioner.*personal\s*rep", re.I), "personal_representative"),
-    (re.compile(r"personal\s*rep", re.I),             "personal_representative"),
-    (re.compile(r"^petitioner$", re.I),               "petitioner"),
-    (re.compile(r"respondent", re.I),                 "respondent"),
-    (re.compile(r"decea?sed", re.I),                  "deceased"),
-    (re.compile(r"^guardian$", re.I),                 "guardian"),
-    (re.compile(r"ward", re.I),                       "ward"),
-    (re.compile(r"attorney", re.I),                   "attorney"),
-    (re.compile(r"trustee", re.I),                    "trustee"),
-    (re.compile(r"minor|child", re.I),                "minor"),
+    # Most specific first — "Petitioner / Personal Representative" and
+    # "Petitioner / Administrator" both indicate the filer is also the
+    # appointed decision-maker. Treat as PR.
+    (re.compile(r"petitioner.*personal\s*rep",  re.I), "personal_representative"),
+    (re.compile(r"petitioner.*administrator",   re.I), "personal_representative"),
+    (re.compile(r"personal\s*rep",              re.I), "personal_representative"),
+    # Bare "Administrator" (and variants like "Special Administrator",
+    # "Co-Administrator", "Administrator CTA"). Treat as PR-equivalent.
+    (re.compile(r"administrator",               re.I), "personal_representative"),
+    (re.compile(r"^petitioner$",                re.I), "petitioner"),
+    (re.compile(r"respondent",                  re.I), "respondent"),
+    (re.compile(r"decea?sed",                   re.I), "deceased"),
+    (re.compile(r"^guardian$",                  re.I), "guardian"),
+    (re.compile(r"ward",                        re.I), "ward"),
+    (re.compile(r"attorney",                    re.I), "attorney"),
+    (re.compile(r"trustee",                     re.I), "trustee"),
+    (re.compile(r"minor|child",                 re.I), "minor"),
 ]
 
 

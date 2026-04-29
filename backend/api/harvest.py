@@ -1542,35 +1542,49 @@ def treasury_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
 def harvest_reclassify_parties(
     x_admin_key: Optional[str] = Header(None),
     confirm: bool = False,
+    recompute_roles: bool = True,
 ):
     """
-    Re-run classify_pr() against every row in case_parties_v3 using the
-    current classifier logic, and update pr_classification where it
-    changed. No scraping. No portal calls. Pure logic.
+    Re-run role normalization and PR classification against every row in
+    case_parties_v3 using the current logic, and update where it changed.
+    No scraping. No portal calls. Pure logic.
 
-    Use after improving classify_pr (e.g. adding corporate patterns
-    like HEALTH / HOSPITAL / FRANCISCAN) to retroactively fix stale
-    rows without re-scraping 14,000 cases.
+    Use after improving _normalize_role (e.g. adding Administrator) or
+    classify_pr (e.g. adding corporate patterns) to retroactively fix
+    stale rows without re-scraping the entire backlog.
+
+    Args:
+      recompute_roles — if True (default), also re-run _normalize_role
+        against raw_role and update the role field. If a row's role
+        transitions to 'personal_representative', pr_classification is
+        recomputed from name_raw via classify_pr.
+        If False, only pr_classification is recomputed (legacy behavior).
+
+    Returns transitions broken out as:
+      role_transitions:           {old_role→new_role: count}
+      classification_transitions: {old_class→new_class: count}
     """
     _require_admin(x_admin_key)
     if not confirm:
         raise HTTPException(400, "Pass ?confirm=true to proceed.")
 
-    from backend.harvesters.kc_court_participants import classify_pr
+    from backend.harvesters.kc_court_participants import (
+        classify_pr, _normalize_role,
+    )
 
     supa = get_supabase_client()
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # Paginate through all rows
     total = 0
-    updated = 0
-    by_old_new: dict = {}
+    rows_updated = 0
+    role_transitions: dict = {}
+    classification_transitions: dict = {}
     OFFSET_STEP = 1000
     off = 0
     while True:
         res = (supa.table('case_parties_v3')
-               .select('id, name_raw, pr_classification')
+               .select('id, name_raw, raw_role, role, pr_classification')
                .range(off, off + OFFSET_STEP - 1)
                .execute())
         batch = res.data or []
@@ -1578,24 +1592,54 @@ def harvest_reclassify_parties(
             break
         total += len(batch)
         for row in batch:
-            new_class = classify_pr(row.get('name_raw') or '')
+            updates: dict = {}
+
+            old_role = row.get('role')
+            new_role = old_role
+            if recompute_roles:
+                raw_role = row.get('raw_role') or ''
+                if raw_role:
+                    new_role = _normalize_role(raw_role)
+                    if new_role != old_role:
+                        updates['role'] = new_role
+                        key = f"{old_role}→{new_role}"
+                        role_transitions[key] = role_transitions.get(key, 0) + 1
+
+            # Recompute pr_classification:
+            # - If the (possibly new) role is personal_representative,
+            #   classify the name.
+            # - Otherwise, the field should be NULL per schema.
             old_class = row.get('pr_classification')
+            if new_role == 'personal_representative':
+                new_class = classify_pr(row.get('name_raw') or '')
+            else:
+                new_class = None
             if new_class != old_class:
+                updates['pr_classification'] = new_class
+                key = f"{old_class}→{new_class}"
+                classification_transitions[key] = (
+                    classification_transitions.get(key, 0) + 1
+                )
+
+            if updates:
                 (supa.table('case_parties_v3')
-                 .update({'pr_classification': new_class})
+                 .update(updates)
                  .eq('id', row['id'])
                  .execute())
-                updated += 1
-                key = f"{old_class}→{new_class}"
-                by_old_new[key] = by_old_new.get(key, 0) + 1
+                rows_updated += 1
+
         if len(batch) < OFFSET_STEP:
             break
         off += OFFSET_STEP
 
     return {
-        "total_rows":       total,
-        "updated":          updated,
-        "transitions":      by_old_new,
+        "total_rows":                  total,
+        "rows_updated":                rows_updated,
+        "role_transitions":            role_transitions,
+        "classification_transitions":  classification_transitions,
+        # Backwards-compat: callers that read `updated` and `transitions`
+        "updated":                     rows_updated,
+        "transitions":                 classification_transitions,
     }
 
 
