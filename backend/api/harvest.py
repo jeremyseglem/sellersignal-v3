@@ -2727,54 +2727,49 @@ def diag_rematch_dry_run(
 
     # Compare to actual existing matches per ZIP for context.
     # Two views:
-    #   actual_by_zip          — match rows with non-weak match_strength
-    #                            (what /api/harvest/matches/{zip} returns
-    #                            by default)
+    # Compare to actual existing matches per ZIP for context.
+    # Two views:
+    #   actual_by_zip          — non-weak match rows (what users see)
     #   actual_by_zip_with_weak — every match row including weak ones
-    actual_by_zip: dict = {}
-    actual_by_zip_with_weak: dict = {}
-    for ZIP in ['98004', '98005', '98006', '98007', '98033', '98039',
-                '98040', '98052', '98105', '98112', '98199']:
+    #
+    # Strategy: instead of N=11_zips * ~875_chunks * 2_queries (~19k round
+    # trips that timed out the request), page through all match rows ONCE,
+    # bucket by zip in memory using pin_to_zip we already have.
+    actual_by_zip:           dict = {z: 0 for z in
+        ['98004','98005','98006','98007','98033','98039',
+         '98040','98052','98105','98112','98199']}
+    actual_by_zip_with_weak: dict = dict(actual_by_zip)
+    PAGE = 1000
+    off = 0
+    safety = 0
+    while True:
         try:
-            pins_res = (supa.table('parcels_v3')
-                        .select('pin')
-                        .eq('zip_code', ZIP)
-                        .execute())
-            pins = [r['pin'] for r in (pins_res.data or [])]
-        except Exception:
-            pins = []
-        if not pins:
-            actual_by_zip[ZIP] = 0
-            actual_by_zip_with_weak[ZIP] = 0
-            continue
-        cnt_strict = 0
-        cnt_all = 0
-        # Use 100 PINs per chunk to stay under PostgREST/Cloudflare URL
-        # length limit. Larger chunks reliably 400 on full-coverage runs.
-        CHUNK = 100
-        for i in range(0, len(pins), CHUNK):
-            chunk = pins[i : i + CHUNK]
-            # Count rows excluding weak (matches what users see)
-            try:
-                r = (supa.table('raw_signal_matches_v3')
-                     .select('id', count='exact')
-                     .in_('pin', chunk)
-                     .neq('match_strength', 'weak')
-                     .execute())
-                cnt_strict += r.count or 0
-            except Exception:
-                pass
-            # Count rows including weak (raw total)
-            try:
-                r = (supa.table('raw_signal_matches_v3')
-                     .select('id', count='exact')
-                     .in_('pin', chunk)
-                     .execute())
-                cnt_all += r.count or 0
-            except Exception:
-                pass
-        actual_by_zip[ZIP] = cnt_strict
-        actual_by_zip_with_weak[ZIP] = cnt_all
+            res = (supa.table('raw_signal_matches_v3')
+                   .select('pin, match_strength')
+                   .range(off, off + PAGE - 1)
+                   .execute())
+        except Exception as e:
+            log.warning(f"actual-by-zip page {off} failed: {e}")
+            break
+        batch = res.data or []
+        if not batch:
+            break
+        for r in batch:
+            pin = r.get('pin')
+            if not pin:
+                continue
+            z = pin_to_zip.get(pin)
+            if z not in actual_by_zip_with_weak:
+                continue
+            actual_by_zip_with_weak[z] += 1
+            if (r.get('match_strength') or 'strict') != 'weak':
+                actual_by_zip[z] += 1
+        if len(batch) < PAGE:
+            break
+        off += PAGE
+        safety += 1
+        if safety > 200:  # ~200k matches max
+            break
 
     return {
         "zip_filter":                  zip_filter,
