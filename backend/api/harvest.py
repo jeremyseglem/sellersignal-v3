@@ -243,6 +243,72 @@ def diag_parties_count(
     }
 
 
+@router.get("/diag/recent-real-parties")
+def diag_recent_real_parties(
+    x_admin_key: Optional[str] = Header(None),
+    limit: int = 10,
+):
+    """
+    Return the most recent REAL party rows from case_parties_v3.
+
+    "Real" means raw_role != '(no participants found)' — i.e. an actual
+    extracted participant, not a sentinel marker. Sorted by created_at
+    descending so the first row is the moment the scraper last
+    successfully extracted real participant data.
+
+    This pinpoints when the system stopped working. If the most recent
+    real row's created_at is days ago and we have hundreds of pending
+    cases that should have been scraped since, the scraper has been
+    silently failing for that long.
+
+    Read-only. No writes, no fetches to KC. Pure DB query.
+
+    Returns:
+      {
+        most_recent_real_party_at: ISO timestamp of newest real row
+        most_recent_sentinel_at:   ISO timestamp of newest sentinel row
+        recent_real_rows:          [{case_number, role, name_raw,
+                                     created_at}, ...]  (limit rows)
+        recent_sentinel_rows:      same shape, sentinel rows only
+      }
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    if limit < 1 or limit > 100:
+        raise HTTPException(400, "limit must be 1-100")
+
+    # Most recent REAL rows (anything not the sentinel raw_role)
+    real_res = (supa.table('case_parties_v3')
+                .select('case_number, role, raw_role, name_raw, '
+                        'pr_classification, created_at')
+                .neq('raw_role', '(no participants found)')
+                .order('created_at', desc=True)
+                .limit(limit)
+                .execute())
+
+    # Most recent SENTINEL rows (failed scrape markers)
+    sentinel_res = (supa.table('case_parties_v3')
+                    .select('case_number, role, raw_role, name_raw, '
+                            'created_at')
+                    .eq('raw_role', '(no participants found)')
+                    .order('created_at', desc=True)
+                    .limit(limit)
+                    .execute())
+
+    real_rows = real_res.data or []
+    sentinel_rows = sentinel_res.data or []
+
+    return {
+        "most_recent_real_party_at":  real_rows[0]['created_at'] if real_rows else None,
+        "most_recent_sentinel_at":    sentinel_rows[0]['created_at'] if sentinel_rows else None,
+        "recent_real_rows":           real_rows,
+        "recent_sentinel_rows":       sentinel_rows,
+    }
+
+
 @router.get("/diag/signal-date-range")
 def diag_signal_date_range(
     x_admin_key: Optional[str] = Header(None),
