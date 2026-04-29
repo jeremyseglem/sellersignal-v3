@@ -283,18 +283,18 @@ def diag_recent_real_parties(
     # Most recent REAL rows (anything not the sentinel raw_role)
     real_res = (supa.table('case_parties_v3')
                 .select('case_number, role, raw_role, name_raw, '
-                        'pr_classification, created_at')
+                        'pr_classification, scraped_at')
                 .neq('raw_role', '(no participants found)')
-                .order('created_at', desc=True)
+                .order('scraped_at', desc=True)
                 .limit(limit)
                 .execute())
 
     # Most recent SENTINEL rows (failed scrape markers)
     sentinel_res = (supa.table('case_parties_v3')
                     .select('case_number, role, raw_role, name_raw, '
-                            'created_at')
+                            'scraped_at')
                     .eq('raw_role', '(no participants found)')
-                    .order('created_at', desc=True)
+                    .order('scraped_at', desc=True)
                     .limit(limit)
                     .execute())
 
@@ -302,8 +302,8 @@ def diag_recent_real_parties(
     sentinel_rows = sentinel_res.data or []
 
     return {
-        "most_recent_real_party_at":  real_rows[0]['created_at'] if real_rows else None,
-        "most_recent_sentinel_at":    sentinel_rows[0]['created_at'] if sentinel_rows else None,
+        "most_recent_real_party_at":  real_rows[0]['scraped_at'] if real_rows else None,
+        "most_recent_sentinel_at":    sentinel_rows[0]['scraped_at'] if sentinel_rows else None,
         "recent_real_rows":           real_rows,
         "recent_sentinel_rows":       sentinel_rows,
     }
