@@ -2704,6 +2704,17 @@ def diag_rematch_dry_run(
     sample_matches_per_zip: dict = {}
     SAMPLES_PER_ZIP_LIMIT = 5
 
+    # Counter for candidates rejected by the surname gate. The previous
+    # version of this dry-run skipped the gate entirely and produced
+    # alarming false-positive projections; this counter makes the gate's
+    # filtering visible in the response.
+    gate_rejected_by_type: dict = {st: 0 for st in by_type.keys()}
+
+    def _combine_strength(dispatcher_s: str, gate_s: str) -> str:
+        if dispatcher_s == 'weak' or gate_s == 'weak':
+            return 'weak'
+        return 'strict'
+
     for st, rows in by_type.items():
         dispatcher = M._DISPATCH.get(st)
         if not dispatcher:
@@ -2717,22 +2728,50 @@ def diag_rematch_dry_run(
                 continue
             if not candidates:
                 continue
+
+            # Replicate _process_one's surname-gate filter.
+            # Build parties from row.party_names, excluding 'predeceased_*'
+            # roles (these are already dead and should not be used as
+            # surname-match targets).
+            parties = [
+                p for p in (row.get('party_names') or [])
+                if not (isinstance(p, dict)
+                        and str(p.get('role', '')).startswith('predeceased_'))
+            ]
+
+            # Tax foreclosure bypasses the gate (matched by parcel identity,
+            # not name) — preserve that behavior here.
+            survived: list = []
+            for c in candidates:
+                if st == 'tax_foreclosure':
+                    survived.append((c, 'strict'))
+                    continue
+                gate_s = M._surname_gate(c['parcel_id'], owners_db, parties)
+                if gate_s is None:
+                    gate_rejected_by_type[st] += 1
+                    continue
+                survived.append((c, gate_s))
+
+            if not survived:
+                continue
             sample_matched_by_type[st] += 1
 
             # Track up to 1 sample per (signal, zip) for the eyeball list,
             # so a single signal that matched 50 parcels doesn't dominate.
             zips_already_sampled_for_this_signal: set = set()
 
-            for c in candidates:
+            for c, gate_s in survived:
                 pin = c.get('parcel_id')
                 if not pin:
                     continue
                 z = pin_to_zip.get(pin, 'unknown')
-                strength = (c.get('trigger_hint') or {}).get('match_strength', 'strict')
+                disp_s = (c.get('trigger_hint') or {}).get('match_strength', 'strict')
+                final_s = _combine_strength(disp_s, gate_s)
 
-                # Bucket by strength
+                # Bucket by FINAL combined strength (matches what production
+                # writes to raw_signal_matches_v3).
                 bucket = (sample_match_counts_strict
-                          if strength != 'weak' else sample_match_counts_weak)
+                          if final_s != 'weak' else sample_match_counts_weak)
                 bucket.setdefault(z, {})
                 bucket[z][st] = bucket[z].get(st, 0) + 1
 
@@ -2752,7 +2791,7 @@ def diag_rematch_dry_run(
                         ),
                         "parcel_pin":    pin,
                         "parcel_owner":  (owners_db.get(pin) or {}).get('owner_name', '?'),
-                        "strength":      strength,
+                        "strength":      final_s,
                     })
                     zips_already_sampled_for_this_signal.add(z)
 
@@ -2781,6 +2820,7 @@ def diag_rematch_dry_run(
             "parcels_loaded":              parcels_loaded,
             "sample_processed_by_type":    sample_processed_by_type,
             "sample_matched_by_type":      sample_matched_by_type,
+            "gate_rejected_by_type":       gate_rejected_by_type,
             "totals_by_type":              totals_by_type,
             "projected_strict_by_zip":     projected_strict,
             "projected_weak_by_zip":       projected_weak,
@@ -2841,6 +2881,7 @@ def diag_rematch_dry_run(
         "sample_size_per_type":        per_type_target,
         "sample_processed_by_type":    sample_processed_by_type,
         "sample_matched_by_type":      sample_matched_by_type,
+        "gate_rejected_by_type":       gate_rejected_by_type,
         "totals_by_type":              totals_by_type,
         "projected_strict_by_zip":     projected_strict,
         "projected_weak_by_zip":       projected_weak,
@@ -2849,14 +2890,15 @@ def diag_rematch_dry_run(
         "sample_matches_per_zip":      sample_matches_per_zip,
         "timings":                     timings,
         "note": (
-            "projected_*_by_zip extrapolated from a small sample. "
-            "Treat as order-of-magnitude. STRICT projections approximate "
-            "the matches users would see in /api/harvest/matches/{zip}. "
-            "WEAK projections are surname-only false-positive candidates "
-            "that the matches endpoint filters out by default. "
-            "sample_matches_per_zip shows actual signal-party→parcel-owner "
-            "pairs for human eyeball verification — if these look like "
-            "real matches, the projection is trustworthy."
+            "projected_*_by_zip extrapolated from a small sample, with "
+            "the surname gate from _process_one applied — these counts "
+            "now match what production would actually write to "
+            "raw_signal_matches_v3. STRICT projections approximate "
+            "matches users see in /api/harvest/matches/{zip}. WEAK are "
+            "common-surname-only matches that the matches endpoint "
+            "filters out by default. gate_rejected_by_type counts "
+            "candidates the dispatcher proposed but the surname gate "
+            "rejected — these never become matches in production."
         ),
     }
 
