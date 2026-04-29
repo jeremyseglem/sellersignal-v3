@@ -2639,12 +2639,20 @@ def diag_rematch_dry_run(
         if off > 200000:
             break
 
-    # Run dispatcher on each sample row IN MEMORY ONLY. Count candidates
-    # by ZIP and signal type. We intentionally do NOT call _process_one
-    # because that writes; we call the dispatcher directly.
-    sample_match_counts: dict = {}  # zip → signal_type → count
+    # Run dispatcher on each sample row IN MEMORY ONLY. Bucket candidates
+    # by (zip, signal_type, strength) so we can distinguish high-confidence
+    # matches from weak surname-only matches that are usually false positives.
+    # We intentionally do NOT call _process_one because that writes; we
+    # call the dispatcher directly.
+    sample_match_counts_strict: dict = {}  # zip → signal_type → count
+    sample_match_counts_weak:   dict = {}  # zip → signal_type → count
     sample_processed_by_type: dict = {st: 0 for st in by_type.keys()}
-    sample_matched_by_type: dict = {st: 0 for st in by_type.keys()}
+    sample_matched_by_type:   dict = {st: 0 for st in by_type.keys()}
+
+    # Capture up to ~3 example matches per ZIP for eyeball verification.
+    # Format: {zip: [{signal_party, parcel_owner, signal_type, strength, ...}]}
+    sample_matches_per_zip: dict = {}
+    SAMPLES_PER_ZIP_LIMIT = 5
 
     for st, rows in by_type.items():
         dispatcher = M._DISPATCH.get(st)
@@ -2660,31 +2668,71 @@ def diag_rematch_dry_run(
             if not candidates:
                 continue
             sample_matched_by_type[st] += 1
+
+            # Track up to 1 sample per (signal, zip) for the eyeball list,
+            # so a single signal that matched 50 parcels doesn't dominate.
+            zips_already_sampled_for_this_signal: set = set()
+
             for c in candidates:
                 pin = c.get('parcel_id')
                 if not pin:
                     continue
                 z = pin_to_zip.get(pin, 'unknown')
-                sample_match_counts.setdefault(z, {})
-                sample_match_counts[z][st] = (
-                    sample_match_counts[z].get(st, 0) + 1
-                )
+                strength = (c.get('trigger_hint') or {}).get('match_strength', 'strict')
 
-    # Extrapolate sample to full corpus per signal_type.
-    projected_by_zip: dict = {}
-    for z, by_st in sample_match_counts.items():
-        projected_by_zip[z] = {}
-        for st, sample_count in by_st.items():
-            sampled = sample_processed_by_type.get(st, 0)
-            total = totals_by_type.get(st, 0)
-            if sampled <= 0 or total <= 0:
-                projected_by_zip[z][st] = sample_count
-                continue
-            scale = total / sampled
-            projected_by_zip[z][st] = int(round(sample_count * scale))
+                # Bucket by strength
+                bucket = (sample_match_counts_strict
+                          if strength != 'weak' else sample_match_counts_weak)
+                bucket.setdefault(z, {})
+                bucket[z][st] = bucket[z].get(st, 0) + 1
+
+                # Capture eyeball sample (one per signal-zip pair)
+                if (z != 'unknown'
+                        and z not in zips_already_sampled_for_this_signal
+                        and len(sample_matches_per_zip.get(z, [])) < SAMPLES_PER_ZIP_LIMIT):
+                    sample_matches_per_zip.setdefault(z, [])
+                    sample_matches_per_zip[z].append({
+                        "signal_type":   st,
+                        "case_number":   row.get('document_ref'),
+                        "signal_party":  (
+                            (c.get('trigger_hint') or {}).get('decedent')
+                            or (c.get('trigger_hint') or {}).get('survivor')
+                            or (row.get('party_names') or [None])[0]
+                            or '?'
+                        ),
+                        "parcel_pin":    pin,
+                        "parcel_owner":  (owners_db.get(pin) or {}).get('owner_name', '?'),
+                        "strength":      strength,
+                    })
+                    zips_already_sampled_for_this_signal.add(z)
+
+    # Extrapolate sample to full corpus per signal_type, separately for
+    # strict and weak strength.
+    def _project(bucket: dict) -> dict:
+        out: dict = {}
+        for z, by_st in bucket.items():
+            out[z] = {}
+            for st, sample_count in by_st.items():
+                sampled = sample_processed_by_type.get(st, 0)
+                total = totals_by_type.get(st, 0)
+                if sampled <= 0 or total <= 0:
+                    out[z][st] = sample_count
+                    continue
+                scale = total / sampled
+                out[z][st] = int(round(sample_count * scale))
+        return out
+
+    projected_strict = _project(sample_match_counts_strict)
+    projected_weak   = _project(sample_match_counts_weak)
 
     # Compare to actual existing matches per ZIP for context.
+    # Two views:
+    #   actual_by_zip          — match rows with non-weak match_strength
+    #                            (what /api/harvest/matches/{zip} returns
+    #                            by default)
+    #   actual_by_zip_with_weak — every match row including weak ones
     actual_by_zip: dict = {}
+    actual_by_zip_with_weak: dict = {}
     for ZIP in ['98004', '98005', '98006', '98007', '98033', '98039',
                 '98040', '98052', '98105', '98112', '98199']:
         try:
@@ -2697,36 +2745,58 @@ def diag_rematch_dry_run(
             pins = []
         if not pins:
             actual_by_zip[ZIP] = 0
+            actual_by_zip_with_weak[ZIP] = 0
             continue
-        cnt = 0
+        cnt_strict = 0
+        cnt_all = 0
         # Use 100 PINs per chunk to stay under PostgREST/Cloudflare URL
         # length limit. Larger chunks reliably 400 on full-coverage runs.
         CHUNK = 100
         for i in range(0, len(pins), CHUNK):
             chunk = pins[i : i + CHUNK]
+            # Count rows excluding weak (matches what users see)
+            try:
+                r = (supa.table('raw_signal_matches_v3')
+                     .select('id', count='exact')
+                     .in_('pin', chunk)
+                     .neq('match_strength', 'weak')
+                     .execute())
+                cnt_strict += r.count or 0
+            except Exception:
+                pass
+            # Count rows including weak (raw total)
             try:
                 r = (supa.table('raw_signal_matches_v3')
                      .select('id', count='exact')
                      .in_('pin', chunk)
                      .execute())
-                cnt += r.count or 0
+                cnt_all += r.count or 0
             except Exception:
                 pass
-        actual_by_zip[ZIP] = cnt
+        actual_by_zip[ZIP] = cnt_strict
+        actual_by_zip_with_weak[ZIP] = cnt_all
 
     return {
-        "zip_filter":               zip_filter,
-        "parcels_loaded_in_owners": parcels_loaded,
-        "sample_size_per_type":     per_type_target,
-        "sample_processed_by_type": sample_processed_by_type,
-        "sample_matched_by_type":   sample_matched_by_type,
-        "totals_by_type":           totals_by_type,
-        "projected_matches_by_zip": projected_by_zip,
-        "current_actual_by_zip":    actual_by_zip,
+        "zip_filter":                  zip_filter,
+        "parcels_loaded_in_owners":    parcels_loaded,
+        "sample_size_per_type":        per_type_target,
+        "sample_processed_by_type":    sample_processed_by_type,
+        "sample_matched_by_type":      sample_matched_by_type,
+        "totals_by_type":              totals_by_type,
+        "projected_strict_by_zip":     projected_strict,
+        "projected_weak_by_zip":       projected_weak,
+        "current_actual_by_zip":       actual_by_zip,
+        "current_actual_with_weak":    actual_by_zip_with_weak,
+        "sample_matches_per_zip":      sample_matches_per_zip,
         "note": (
-            "projected_matches_by_zip is an extrapolation from a small "
-            "sample. Treat as order-of-magnitude. The real rematch will "
-            "produce numbers within ~30%."
+            "projected_*_by_zip extrapolated from a small sample. "
+            "Treat as order-of-magnitude. STRICT projections approximate "
+            "the matches users would see in /api/harvest/matches/{zip}. "
+            "WEAK projections are surname-only false-positive candidates "
+            "that the matches endpoint filters out by default. "
+            "sample_matches_per_zip shows actual signal-party→parcel-owner "
+            "pairs for human eyeball verification — if these look like "
+            "real matches, the projection is trustworthy."
         ),
     }
 
