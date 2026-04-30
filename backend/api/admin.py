@@ -1514,3 +1514,220 @@ async def reset_canonical_zip(
                    if only_zero_confidence else "confidence<0.5"),
         "note": "These PINs will be re-queued on the next canonicalize-all run.",
     }
+
+
+# ─── Clean fabricated previously_listed signals (one-shot data fix) ─────
+
+@router.post("/clean-listing-signals", dependencies=[Depends(require_admin)])
+async def clean_listing_signals_endpoint(
+    confirm: bool = False,
+    zip_code: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    """
+    One-shot cleanup for fabricated `previously_listed` signals that
+    came from listing-site SerpAPI results before commit aefd60b
+    landed the own-URL gate + tightened regex.
+
+    Why this exists. The pre-fix regex tagged `previously_listed` from
+    snippet text any time it matched 'off market' / 'removed' / etc.
+    SerpAPI returns Zillow / Redfin / Realtor pages whose 'nearby homes'
+    sidebars carry our address with 'Off Market' chrome adjacent — and
+    even on a parcel's own page Zillow says 'this property is off market'
+    as generic explainer text, not as a listing-history claim. The
+    regex couldn't tell the difference.
+
+    Result: investigations_v3 contains fabricated `previously_listed`
+    signals on parcels that have never been on MLS, and deep_signals_v3
+    contains LLM 'What to Say' copy that faithfully paraphrases the
+    fake signal into 'previously listed but is now off market'.
+
+    What this endpoint does (in confirm=true mode):
+      1. Find every investigations_v3 row with a previously_listed signal
+         where source_type = 'listing_site' (Zillow / Redfin / Realtor /
+         Trulia). Only listing-site signals are removed; any from other
+         sources (e.g. Property History label with source_type=
+         generic_web) are left alone — those weren't observed misfiring
+         and removing them might delete real signals.
+      2. For each affected investigation: filter the signals array,
+         recompute signal_count + has_* flags + trust_summary, write
+         back. action_category / action_pressure are NOT recomputed —
+         that's a separate operation via /api/admin/rescore/{zip}.
+      3. Delete the corresponding deep_signals_v3 row (cache will
+         regenerate fresh from cleaned investigation on next view).
+
+    Idempotent: a second run finds zero affected rows.
+    Cost: zero (no SerpAPI, no Anthropic).
+
+    Query params:
+      ?confirm=true     — required for any writes; default is dry-run
+      ?zip_code=98004   — limit to one ZIP (optional)
+      ?limit=N          — process only first N affected rows (smoke test)
+
+    Returns:
+      {
+        "dry_run":              bool,
+        "zip_code":             str | null,
+        "limit":                int | null,
+        "investigations_scanned": int,
+        "investigations_affected": int,    # contained at least one bad signal
+        "signals_removed":        int,    # total bad signals stripped
+        "investigations_written": int,    # 0 if dry_run
+        "deep_signals_invalidated": int,  # 0 if dry_run
+        "per_zip": { "98004": {"affected": N, "signals_removed": N}, ... },
+        "sample_before_after": [          # first 3 affected rows (dry_run only)
+           {"pin": ..., "before": [...], "after": [...]}
+        ]
+      }
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    # ── Pull candidate investigations ─────────────────────────────────────
+    # Supabase REST doesn't support JSONB-array element filters cleanly,
+    # so we fetch the rows we plausibly need (filtered by zip if given)
+    # and do the signal-level filter in Python. This is the same approach
+    # used by /admin/rescore.
+    page_size = 1000
+    rows_all = []
+    offset = 0
+    while True:
+        q = (supa.table('investigations_v3')
+                .select('pin, zip_code, signals, signal_count, '
+                        'has_life_event, has_financial, has_blocker, '
+                        'identity_resolved, trust_summary, mode')
+                .range(offset, offset + page_size - 1))
+        if zip_code:
+            q = q.eq('zip_code', zip_code)
+        page = q.execute()
+        if not page.data: break
+        rows_all.extend(page.data)
+        if len(page.data) < page_size: break
+        offset += page_size
+
+    # ── Identify rows containing offending signals ────────────────────────
+    def is_bad_signal(s: dict) -> bool:
+        return (s.get('type') == 'previously_listed'
+                and s.get('source_type') == 'listing_site')
+
+    affected = []   # list of {pin, zip, before_sigs, after_sigs}
+    signals_removed_total = 0
+    per_zip: dict = {}
+
+    for row in rows_all:
+        sigs = row.get('signals') or []
+        bad_count = sum(1 for s in sigs if is_bad_signal(s))
+        if bad_count == 0: continue
+        clean_sigs = [s for s in sigs if not is_bad_signal(s)]
+        affected.append({
+            'pin': row['pin'],
+            'zip_code': row['zip_code'],
+            'before_sigs': sigs,
+            'after_sigs': clean_sigs,
+            'mode': row.get('mode'),
+        })
+        signals_removed_total += bad_count
+        z = row['zip_code']
+        per_zip.setdefault(z, {'affected': 0, 'signals_removed': 0})
+        per_zip[z]['affected'] += 1
+        per_zip[z]['signals_removed'] += bad_count
+
+    if limit is not None:
+        affected = affected[:limit]
+
+    # ── Dry-run: report and exit ──────────────────────────────────────────
+    if not confirm:
+        sample = []
+        for a in affected[:3]:
+            sample.append({
+                'pin': a['pin'],
+                'zip_code': a['zip_code'],
+                'before_signal_count': len(a['before_sigs']),
+                'after_signal_count': len(a['after_sigs']),
+                'removed_sources': [
+                    s.get('source_label')
+                    for s in a['before_sigs']
+                    if is_bad_signal(s)
+                ],
+            })
+        return {
+            'dry_run': True,
+            'zip_code': zip_code,
+            'limit': limit,
+            'investigations_scanned': len(rows_all),
+            'investigations_affected': len(affected),
+            'signals_removed': sum(
+                sum(1 for s in a['before_sigs'] if is_bad_signal(s))
+                for a in affected
+            ),
+            'investigations_written': 0,
+            'deep_signals_invalidated': 0,
+            'per_zip': per_zip,
+            'sample_before_after': sample,
+            'note': 'Dry run only. Pass ?confirm=true to execute.',
+        }
+
+    # ── Confirmed: write cleaned investigations + invalidate cache ────────
+    investigations_written = 0
+    deep_signals_invalidated = 0
+
+    for a in affected:
+        clean_sigs = a['after_sigs']
+
+        # Recompute roll-ups using the same logic as investigate_parcel().
+        trust_summary = {'high': 0, 'medium': 0, 'low': 0}
+        for s in clean_sigs:
+            t = s.get('trust', 'medium')
+            trust_summary[t] = trust_summary.get(t, 0) + 1
+
+        update_row = {
+            'signals': clean_sigs,
+            'signal_count': len(clean_sigs),
+            'has_life_event': any(s.get('category') == 'life_event' for s in clean_sigs),
+            'has_financial':  any(s.get('category') == 'financial'  for s in clean_sigs),
+            'has_blocker':    any(s.get('category') == 'blocker'    for s in clean_sigs),
+            'identity_resolved': any(s.get('type') in ('linkedin_found', 'age_found', 'entity_info') for s in clean_sigs),
+            'trust_summary':  trust_summary,
+        }
+
+        try:
+            (supa.table('investigations_v3')
+                 .update(update_row)
+                 .eq('pin', a['pin'])
+                 .execute())
+            investigations_written += 1
+        except Exception:
+            # Skip on individual failure rather than abort the batch —
+            # we'd rather make partial progress than orphan everyone.
+            continue
+
+        # Invalidate deep_signals cache. Best-effort; if no row exists,
+        # delete is a no-op.
+        try:
+            res = (supa.table('deep_signals_v3')
+                       .delete()
+                       .eq('pin', a['pin'])
+                       .execute())
+            if res.data:
+                deep_signals_invalidated += len(res.data)
+        except Exception:
+            pass
+
+    return {
+        'dry_run': False,
+        'zip_code': zip_code,
+        'limit': limit,
+        'investigations_scanned': len(rows_all),
+        'investigations_affected': len(affected),
+        'signals_removed': signals_removed_total if limit is None else sum(
+            sum(1 for s in a['before_sigs'] if is_bad_signal(s))
+            for a in affected
+        ),
+        'investigations_written': investigations_written,
+        'deep_signals_invalidated': deep_signals_invalidated,
+        'per_zip': per_zip,
+        'note': ('Action category / pressure NOT recomputed — '
+                 'run /api/admin/rescore/{zip} after this if you want '
+                 'leads re-evaluated against the cleaned signal set.'),
+    }
