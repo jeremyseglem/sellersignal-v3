@@ -56,12 +56,20 @@ async def lifespan(app: FastAPI):
     from backend.tasks.treasury_autofill import treasury_autofill_loop
     treasury_autofill_task = asyncio.create_task(treasury_autofill_loop())
 
+    # Rematch autofill — drains unmatched signals (matched_at IS NULL)
+    # in small in-process chunks. Doesn't go through HTTP, so HTTP timeouts
+    # don't apply. Used to apply matcher logic changes (e.g. the multi-ZIP
+    # zip_filter fix) to the back-catalog of harvested signals.
+    from backend.tasks.rematch_autofill import rematch_autofill_loop
+    rematch_autofill_task = asyncio.create_task(rematch_autofill_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
     autofill_task.cancel()
     obit_autofill_task.cancel()
     treasury_autofill_task.cancel()
+    rematch_autofill_task.cancel()
     try:
         await autofill_task
     except asyncio.CancelledError:
@@ -72,6 +80,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await treasury_autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await rematch_autofill_task
     except asyncio.CancelledError:
         pass
 

@@ -1543,6 +1543,52 @@ def treasury_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
     return {"message": "Backoff cleared. Task will tick on its normal schedule."}
 
 
+# ─── Rematch autofill background task admin ──────────────────────────
+
+@router.get("/rematch-autofill-status")
+def rematch_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Current state of the rematch autofill background task. The task
+    drains the unmatched-signals queue (matched_at IS NULL) in small
+    in-process chunks. Use this endpoint to monitor progress after
+    calling /rematch-reset.
+
+    Key fields:
+      signals_remaining — unmatched count after the most recent tick.
+                          When 0, the rematch is done.
+      total_processed   — cumulative signals touched by the matcher
+                          since this Railway deploy started.
+      total_matched     — cumulative signals that produced match rows.
+      last_tick_result  — what the most recent tick did (processed,
+                          matched, errors, before/after counts).
+      backoff_until     — if set, the task is in backoff after errors
+                          and is waiting to retry.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.rematch_autofill import state
+    return dict(state)
+
+
+@router.post("/rematch-autofill-pause")
+def rematch_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause the rematch autofill task — loop keeps running but skips ticks."""
+    _require_admin(x_admin_key)
+    from backend.tasks.rematch_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Rematch autofill paused."}
+
+
+@router.post("/rematch-autofill-resume")
+def rematch_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume the rematch autofill task and clear any backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.rematch_autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "Rematch autofill resumed."}
+
+
 @router.post("/reclassify-parties")
 def harvest_reclassify_parties(
     x_admin_key: Optional[str] = Header(None),
