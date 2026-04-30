@@ -2903,6 +2903,192 @@ def diag_rematch_dry_run(
     }
 
 
+@router.post("/rematch-reset")
+def harvest_rematch_reset(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+):
+    """
+    Mark every previously-matched raw_signal as unmatched (matched_at = NULL)
+    so the matcher will reprocess it. Does NOT delete any rows from
+    raw_signal_matches_v3 — existing matches survive intact, and
+    process_unmatched will upsert any new matches alongside them.
+
+    This is the FIRST half of a two-step rematch. After this returns,
+    call /rematch-process repeatedly until signals_remaining returns 0.
+
+    Why split? Resetting all rows + processing them in one HTTP request
+    times out at Railway's 10-min limit when the matcher has more than
+    ~3,000 signals to chew through. Resetting alone is fast (single
+    UPDATE per page); processing is the slow part.
+
+    Idempotent: re-running this when there's nothing left to reset is
+    a no-op.
+
+    Pass ?confirm=true to actually execute.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This resets matched_at on every previously-matched signal. "
+            "Pass ?confirm=true to proceed.",
+        )
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Page through every signal with matched_at IS NOT NULL and reset.
+    # We fetch IDs in pages of 1000 to keep each query small and fast.
+    page = 1000
+    reset_count = 0
+    safety = 0
+    while True:
+        try:
+            rows = (supa.table('raw_signals_v3')
+                    .select('id')
+                    .not_.is_('matched_at', 'null')
+                    .order('id', desc=False)
+                    .range(0, page - 1)
+                    .execute()).data or []
+        except Exception as e:
+            log.warning(f"rematch-reset page fetch failed: {e}")
+            break
+        if not rows:
+            break
+        ids = [r['id'] for r in rows]
+        try:
+            (supa.table('raw_signals_v3')
+             .update({'matched_at': None})
+             .in_('id', ids)
+             .execute())
+        except Exception as e:
+            log.warning(f"rematch-reset update batch failed: {e}")
+            break
+        reset_count += len(ids)
+        safety += 1
+        if safety > 200:  # ~200k signals, plenty
+            break
+
+    # Verify
+    try:
+        unmatched = (supa.table('raw_signals_v3')
+                     .select('id', count='exact')
+                     .is_('matched_at', 'null')
+                     .execute())
+        unmatched_count = unmatched.count or 0
+    except Exception:
+        unmatched_count = -1
+
+    return {
+        "signals_reset":      reset_count,
+        "signals_unmatched":  unmatched_count,
+        "next_step": (
+            "Call POST /api/harvest/rematch-process repeatedly until "
+            "signals_remaining returns 0. Each call processes a bounded "
+            "amount and returns within Railway's HTTP timeout."
+        ),
+    }
+
+
+@router.post("/rematch-process")
+def harvest_rematch_process(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    zip_filter: Optional[str] = None,
+    batch_size: int = 100,
+    max_batches: int = 10,
+):
+    """
+    Process unmatched signals (matched_at IS NULL) through the matcher,
+    bounded by max_batches * batch_size signals per call.
+
+    This is the SECOND half of a two-step rematch. Call /rematch-reset
+    first, then call this repeatedly until signals_remaining returns 0.
+
+    Args:
+      zip_filter   — None (default) means match against parcels in all
+                     covered ZIPs. Set to a single ZIP for narrower runs.
+      batch_size   — Inner matcher batch (rows per round trip), default 100.
+      max_batches  — Number of batches per call. Default 10 = up to 1,000
+                     signals per call. Don't exceed 20 (~2,000 signals)
+                     or Railway's 10-minute HTTP timeout will kill the
+                     request mid-process.
+
+    Returns progress counters so you can decide when to stop:
+      signals_processed  — how many we just ran the matcher against
+      signals_matched    — how many produced match rows in this call
+      signals_remaining  — how many still have matched_at IS NULL after
+                           this call. When 0, the rematch is done.
+
+    Idempotent: safe to call when signals_remaining is 0 (returns
+    processed=0, matched=0).
+
+    Pass ?confirm=true to actually execute.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This runs the matcher against unmatched signals. Pass "
+            "?confirm=true to proceed.",
+        )
+    if max_batches < 1 or max_batches > 50:
+        raise HTTPException(400, "max_batches must be 1-50")
+    if batch_size < 1 or batch_size > 500:
+        raise HTTPException(400, "batch_size must be 1-500")
+
+    from backend.harvesters import matcher as M
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Snapshot pre-state for accurate progress reporting.
+    try:
+        pre = (supa.table('raw_signals_v3')
+               .select('id', count='exact')
+               .is_('matched_at', 'null')
+               .execute())
+        pre_unmatched = pre.count or 0
+    except Exception:
+        pre_unmatched = -1
+
+    stats = M.process_unmatched(
+        supa,
+        zip_filter=zip_filter,
+        batch_size=batch_size,
+        max_batches=max_batches,
+    )
+
+    # Snapshot post-state.
+    try:
+        post = (supa.table('raw_signals_v3')
+                .select('id', count='exact')
+                .is_('matched_at', 'null')
+                .execute())
+        post_unmatched = post.count or 0
+    except Exception:
+        post_unmatched = -1
+
+    return {
+        "signals_processed":   (stats or {}).get('processed', 0),
+        "signals_matched":     (stats or {}).get('matched', 0),
+        "signals_none":        (stats or {}).get('signals_none', 0),
+        "by_type":             (stats or {}).get('by_type', {}),
+        "errors":              (stats or {}).get('errors', []),
+        "pre_unmatched":       pre_unmatched,
+        "signals_remaining":   post_unmatched,
+        "zip_filter":          zip_filter,
+        "next_step": (
+            "Done — signals_remaining is 0."
+            if post_unmatched == 0
+            else f"Call again. {post_unmatched} signals still unmatched."
+        ),
+    }
+
+
 @router.post("/rematch-surgical")
 def harvest_rematch_surgical(
     x_admin_key: Optional[str] = Header(None),
@@ -2913,48 +3099,26 @@ def harvest_rematch_surgical(
     max_signals: Optional[int] = None,
 ):
     """
-    Non-destructive variant of /rematch.
+    DEPRECATED: This endpoint had a design flaw — its incremental mode
+    re-reset the same first N signals on every call instead of
+    progressing through the table, so it could only complete via a
+    single uncapped run that timed out for any meaningful workload.
 
-    Unlike /rematch which deletes ALL existing matches and resets every
-    signal's matched_at, this endpoint:
+    Use /rematch-reset followed by /rematch-process instead.
 
-      1. Loads owners_db under the given zip_filter (default None = all
-         covered ZIPs).
-      2. Selects raw_signals where matched_at IS NOT NULL but the
-         matcher wouldn't have produced matches for the current owners_db.
-         These are signals that were processed under an older, narrower
-         zip_filter and never had a chance to match against parcels
-         outside that scope.
-      3. Resets matched_at to NULL on those signals.
-      4. Re-runs process_unmatched with the new zip_filter.
-
-    Existing match rows in raw_signal_matches_v3 are PRESERVED (the
-    matcher upserts into them; existing matches just survive untouched).
-
-    Args:
-      zip_filter   — None (default) means match against all covered ZIPs.
-                     Set to a single ZIP for a narrow rematch.
-      batch_size   — Inner matcher batch size (rows fetched per round trip).
-      max_batches  — Inner matcher upper bound on batches per call.
-      max_signals  — Cap the total number of signals reset+processed
-                     per call. Use this to run incrementally:
-                       1st call: ?max_signals=1000 — reset+process oldest 1k
-                       2nd call: ?max_signals=1000 — next 1k, etc.
-                     Repeat until response 'signals_still_unprocessed'==0.
-                     Default None = no cap (single large call).
-
-    Idempotency: safe to call repeatedly. Already-NULL signals (left
-    over from a partial prior call) are picked up by process_unmatched
-    on subsequent calls without needing another reset.
-
-    Pass ?confirm=true to actually execute.
+    This endpoint is preserved as a redirect-style stub that runs the
+    new two-step flow internally for callers that hit the old URL.
+    Behavior matches calling /rematch-reset once + /rematch-process
+    once with the given (batch_size, max_batches). max_signals is
+    ignored.
     """
     _require_admin(x_admin_key)
     if not confirm:
         raise HTTPException(
             400,
-            "This resets matched_at on previously-processed signals and "
-            "re-runs the matcher. Pass ?confirm=true to proceed.",
+            "This endpoint is deprecated. Use /rematch-reset and then "
+            "/rematch-process. Pass ?confirm=true if you really want "
+            "the legacy behavior.",
         )
 
     from backend.harvesters import matcher as M
@@ -2963,41 +3127,17 @@ def harvest_rematch_surgical(
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
 
-    # Snapshot pre-state so the response can show progress.
-    try:
-        pre_unmatched = (supa.table('raw_signals_v3')
-                         .select('id', count='exact')
-                         .is_('matched_at', 'null')
-                         .execute())
-        pre_unmatched_count = pre_unmatched.count or 0
-    except Exception:
-        pre_unmatched_count = -1
-
-    # Reset matched_at on previously-matched signals so the matcher will
-    # pick them up. The matcher upserts into raw_signal_matches_v3 keyed
-    # by (raw_signal_id, pin), so existing matches survive — re-processing
-    # only ADDS new matches against parcels that were not in scope before.
-    #
-    # If max_signals is set, cap the number reset this call so the work
-    # is bounded.
+    # Reset every previously-matched signal (full table) — not capped,
+    # since that capping was the bug.
     page = 1000
     reset_count = 0
     safety = 0
-    cap = max_signals if max_signals and max_signals > 0 else None
     while True:
-        if cap is not None:
-            remaining = cap - reset_count
-            if remaining <= 0:
-                break
-            fetch_n = min(page, remaining)
-        else:
-            fetch_n = page
-
         rows = (supa.table('raw_signals_v3')
                 .select('id')
                 .not_.is_('matched_at', 'null')
                 .order('id', desc=False)
-                .range(0, fetch_n - 1)
+                .range(0, page - 1)
                 .execute()).data or []
         if not rows:
             break
@@ -3008,71 +3148,34 @@ def harvest_rematch_surgical(
          .execute())
         reset_count += len(ids)
         safety += 1
-        if safety > 200:  # ~200k signals, plenty
+        if safety > 200:
             break
-
-    # Re-run matcher with the broader zip_filter. process_unmatched will
-    # pick up both the rows we just reset AND any rows still NULL from a
-    # previous partial call.
-    #
-    # If max_signals capped the reset, also cap the matcher work so we
-    # don't accidentally process more than the user asked for in this
-    # call (could happen if previous partial calls left NULL rows behind).
-    effective_max_batches = max_batches
-    if cap is not None:
-        # Round up so the matcher can finish the last partial batch.
-        effective_max_batches = min(
-            max_batches,
-            (cap + batch_size - 1) // batch_size,
-        )
 
     stats = M.process_unmatched(
         supa,
         zip_filter=zip_filter,
         batch_size=batch_size,
-        max_batches=effective_max_batches,
+        max_batches=max_batches,
     )
 
-    # Snapshot post-state.
     try:
-        post_unmatched = (supa.table('raw_signals_v3')
-                          .select('id', count='exact')
-                          .is_('matched_at', 'null')
-                          .execute())
-        signals_still_unprocessed = post_unmatched.count or 0
+        post = (supa.table('raw_signals_v3')
+                .select('id', count='exact')
+                .is_('matched_at', 'null')
+                .execute())
+        post_unmatched = post.count or 0
     except Exception:
-        signals_still_unprocessed = -1
-
-    # Total previously-matched signals that haven't been touched by this
-    # call yet (i.e. still have a non-null matched_at). Use this to decide
-    # whether to call again.
-    try:
-        remaining_to_reset = (supa.table('raw_signals_v3')
-                              .select('id', count='exact')
-                              .not_.is_('matched_at', 'null')
-                              .execute())
-        signals_remaining_to_reset = remaining_to_reset.count or 0
-    except Exception:
-        signals_remaining_to_reset = -1
+        post_unmatched = -1
 
     return {
-        "signals_reset_this_call":     reset_count,
-        "signals_processed_this_call": (stats or {}).get('processed', 0),
-        "signals_matched_this_call":   (stats or {}).get('matched', 0),
-        "signals_still_unprocessed":   signals_still_unprocessed,
-        "signals_remaining_to_reset":  signals_remaining_to_reset,
-        "pre_unmatched_count":         pre_unmatched_count,
-        "zip_filter":                  zip_filter,
-        "max_signals_cap":             cap,
-        "match_stats":                 stats,
-        "note": (
-            "Existing match rows in raw_signal_matches_v3 were not "
-            "deleted. The matcher upserted by (raw_signal_id, pin), so "
-            "prior matches are preserved and any new in-scope parcels "
-            "produced additional match rows. To finish an incremental "
-            "rematch: call repeatedly until signals_remaining_to_reset "
-            "AND signals_still_unprocessed both equal zero."
-        ),
+        "deprecated":            True,
+        "use_instead":           "/rematch-reset then /rematch-process",
+        "signals_reset":         reset_count,
+        "signals_processed":     (stats or {}).get('processed', 0),
+        "signals_matched":       (stats or {}).get('matched', 0),
+        "signals_remaining":     post_unmatched,
+        "zip_filter":            zip_filter,
+        "match_stats":           stats,
     }
 
 
