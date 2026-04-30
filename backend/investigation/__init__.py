@@ -581,6 +581,62 @@ def _snippet_mentions_owner(result: dict, owner_parts: list[str]) -> bool:
 
 
 # ─── SIGNAL EXTRACTION — per-result with provenance + name matching ───
+def _parse_street_for_gate(addr: str) -> tuple[str, str]:
+    """Extract street number and primary name token for the own-URL gate.
+
+    Examples:
+      '733 96TH AVE SE'      -> ('733',  '96TH')
+      '9010 NE 47TH ST'      -> ('9010', '47TH')
+      '4601 91ST AVE NE'     -> ('4601', '91ST')
+      '1700 92ND AVE NE'     -> ('1700', '92ND')
+      '2415 KILLARNEY WAY'   -> ('2415', 'KILLARNEY')
+
+    The "primary name token" is the first non-directional, non-empty
+    token after the street number — typically the cross-street ordinal
+    (96TH, 47TH) or named street (KILLARNEY). Skipping leading
+    directionals (N, S, E, W, NE, NW, SE, SW) handles addresses like
+    "9010 NE 47TH ST" where the directional precedes the ordinal.
+    """
+    if not addr: return ('', '')
+    parts = re.findall(r"[A-Z0-9]+", addr.upper())
+    if not parts: return ('', '')
+    # First numeric chunk is the street number
+    num = parts[0] if parts[0].isdigit() else ''
+    # Walk remaining tokens, skip leading directionals, take first real token
+    DIRECTIONALS = {'N','S','E','W','NE','NW','SE','SW'}
+    name = ''
+    for tok in parts[1:]:
+        if tok in DIRECTIONALS: continue
+        name = tok
+        break
+    return (num, name)
+
+
+def _result_is_about_parcel(result: dict, street_num: str, street_name: str) -> bool:
+    """Return True iff the SerpAPI result's URL or title actually
+    references this parcel's address.
+
+    Both the street number AND the primary street-name token must
+    appear in the URL or title for the gate to pass. This rejects:
+      - Neighbor pages: e.g. zillow.com/homedetails/707-94th-Ave-SE-...
+        (different number AND different street name from 733 96th SE)
+      - Directory/index pages: e.g. realtor.com/propertyrecord-search/
+        beaux-arts_wa/91st-Ave-NE (no street number — covers many
+        houses on 91st Ave NE)
+      - Search-result pages, generic neighborhood pages, etc.
+
+    If we can't determine the parcel address (street_num empty),
+    the gate fails closed: no listing signal is produced.
+    """
+    if not street_num or not street_name:
+        return False
+    haystack = ((result.get('link') or '') + ' ' + (result.get('title') or '')).upper()
+    if not haystack: return False
+    # Both tokens must be present; we don't require adjacency because URL
+    # and title formats vary across listing sites.
+    return (street_num in haystack) and (street_name in haystack)
+
+
 def extract_all_signals(all_results: dict, parcel: dict | None = None) -> list[dict]:
     """
     Extract signals from raw SerpAPI results.
@@ -610,6 +666,32 @@ def extract_all_signals(all_results: dict, parcel: dict | None = None) -> list[d
         signals.append(sig)
 
     # ── LISTING (property-based, name matching not required) ──────────
+    # Two-part defense for `previously_listed` and other listing-category
+    # signals:
+    #
+    # Part 1 — Own-URL gate. SerpAPI commonly returns Zillow / Redfin /
+    # Realtor pages for NEIGHBORING properties whose page lists our parcel
+    # address in a "nearby homes" sidebar with default "Off Market" chrome
+    # next to it. Without this gate, the regex tags the neighbor's listing
+    # state as if it were ours. A 50-parcel 98004 sample found 3 of 4
+    # listing signals were neighbor-page misfires.
+    #
+    # Part 2 — Tightened regex (see comment at the regex itself). Even on
+    # the parcel's OWN Zillow page, snippets routinely contain "off market"
+    # or "this property is off market" as generic chrome — those words do
+    # not imply listing history.
+    #
+    # Both gates are necessary. Either alone leaves false positives. The
+    # gate fails closed when the parcel address can't be parsed.
+    parcel_street_for_gate = (parcel or {}).get('address') or ''
+    if not parcel_street_for_gate and parcel:
+        # _parcel_fields runs normalization; reuse it if 'address' raw was empty
+        try:
+            parcel_street_for_gate = _parcel_fields(parcel).get('street','')
+        except Exception:
+            parcel_street_for_gate = ''
+    _street_num, _street_name_token = _parse_street_for_gate(parcel_street_for_gate)
+
     for label in ('Zillow', 'Redfin', 'Realtor.com', 'Trulia', 'Property History'):
         res = all_results.get(label) or []
         for r in res:
@@ -617,7 +699,23 @@ def extract_all_signals(all_results: dict, parcel: dict | None = None) -> list[d
             text = (r.get('title', '') + ' ' + r.get('snippet', '')).lower()
             stype = _infer_source_type(label, r.get('link', ''))
 
-            if re.search(r'off\s*market|removed|delisted|withdrawn|expired|cancelled|previously listed', text):
+            # Apply own-URL gate. If we can't verify the result is about
+            # this parcel's address, skip listing-signal extraction. We
+            # still allow the result through other extractors below
+            # (LinkedIn / obituary / court paths key on owner name, not
+            # address — they have their own gates).
+            if not _result_is_about_parcel(r, _street_num, _street_name_token):
+                continue
+
+            # Tightened previously_listed regex. Bare 'off market' and
+            # 'removed' were removed because Zillow / Redfin / Realtor
+            # use those words as default UI chrome for any non-active
+            # property — including ones never on MLS. Even on a parcel's
+            # own page, Zillow's snippet may say "this property is off
+            # market, which means it's not currently listed" (a generic
+            # explainer, not a listing-history claim). Remaining words
+            # are unambiguous MLS-event language.
+            if re.search(r'delisted|withdrawn|expired|cancelled|previously listed', text):
                 _push(_build_signal('previously_listed', 'listing', 0.85,
                                     'Property was listed but is now off market',
                                     label, stype, matched_result=r))
