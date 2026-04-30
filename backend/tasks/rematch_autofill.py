@@ -99,6 +99,36 @@ def _count_unmatched(supa) -> int:
         return -1
 
 
+async def _trigger_coverage_refresh() -> None:
+    """
+    Hit the local /api/coverage/refresh-counts endpoint to update
+    zip_coverage_v3.current_call_now_count for every live ZIP. Called
+    after a rematch finishes so the territories list page shows fresh
+    counts without manual intervention.
+
+    Best-effort. Logs failures but never raises.
+    """
+    import httpx
+    admin_key  = os.environ.get("ADMIN_KEY", "").strip()
+    if not admin_key:
+        log.info("_trigger_coverage_refresh: no ADMIN_KEY, skipping")
+        return
+    local_port = int(os.environ.get("PORT", "8000"))
+    base_url   = f"http://127.0.0.1:{local_port}"
+    async with httpx.AsyncClient(base_url=base_url, timeout=300) as client:
+        r = await client.post(
+            "/api/coverage/refresh-counts",
+            params={'confirm': 'true'},
+            headers={'X-Admin-Key': admin_key},
+        )
+        r.raise_for_status()
+        body = r.json()
+        log.info(
+            f"coverage-counts refreshed: targets={body.get('targets')} "
+            f"updated={body.get('updated')}"
+        )
+
+
 async def rematch_autofill_loop() -> None:
     """Main task body. Runs until cancelled."""
     # Lazy imports so module load doesn't fail in test harnesses
@@ -184,6 +214,19 @@ async def rematch_autofill_loop() -> None:
                 f"processed={processed} matched={matched} "
                 f"remaining={unmatched_after} (was {unmatched_before})"
             )
+
+            # If matches were produced AND the queue has fully drained
+            # this tick, trigger a coverage-counts refresh so the
+            # territories list page reflects the new totals. (We skip
+            # this on every tick because it makes 11 briefing-builder
+            # round trips and we don't want to do that 50+ times during
+            # a big rematch.) The refresh is best-effort; failures are
+            # logged but don't disrupt the rematch loop.
+            if matched > 0 and unmatched_after == 0:
+                try:
+                    await _trigger_coverage_refresh()
+                except Exception as e:
+                    log.warning(f"coverage-counts refresh failed: {e}")
 
             # Active or idle sleep based on whether the queue is drained.
             sleep_for = IDLE_INTERVAL if unmatched_after == 0 else TICK_INTERVAL

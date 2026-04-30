@@ -7,8 +7,15 @@ Coverage API — lists ZIPs that SellerSignal supports.
 The frontend calls /api/coverage to populate the ZIP selector dropdown.
 Only live ZIPs are returned by default — in-development ZIPs are hidden.
 """
-from fastapi import APIRouter, HTTPException, Query
+import logging
+import os
+from typing import Optional
+
+import httpx
+from fastapi import APIRouter, Header, HTTPException, Query
 from backend.api.db import get_supabase_client
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -199,3 +206,126 @@ async def get_zip_stats(zip_code: str):
         # counts — callers can see something's wrong and act.
         resp['warnings'] = errors
     return resp
+
+
+# ─── Admin: refresh stored Call Now counts ────────────────────────────────
+
+def _require_admin(x_admin_key: Optional[str]):
+    """Local guard for admin endpoints (mirrors backend.api.harvest._require_admin)."""
+    server_key = os.environ.get("ADMIN_KEY")
+    if not server_key:
+        raise HTTPException(503, "ADMIN_KEY not configured server-side")
+    if x_admin_key != server_key:
+        raise HTTPException(401, "Missing or invalid X-Admin-Key header")
+
+
+@router.post("/refresh-counts")
+async def refresh_coverage_counts(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    zip_code: Optional[str] = None,
+):
+    """
+    Refresh the stored `current_call_now_count` on every live ZIP in
+    zip_coverage_v3 by computing the count from the live briefing logic
+    and writing it back to the database.
+
+    Why: the territories list page reads `current_call_now_count` as a
+    pre-computed snapshot for fast at-a-glance display. The stored value
+    is only updated when a "deep investigation" runs (zip_investigation.py),
+    which is a different code path that costs SerpAPI credits and isn't
+    triggered by the matcher/briefing pipeline. So when matches change
+    (e.g. after a rematch like the multi-ZIP fix), the territories page
+    keeps showing stale numbers — accurate-when-clicked but wrong on the
+    overview list.
+
+    This endpoint reconciles them. It calls the briefing endpoint
+    in-process (via httpx to the local FastAPI port), counts call_now
+    leads, and writes the result back to zip_coverage_v3.
+
+    Args:
+      zip_code   — Optional. If set, refresh only that ZIP. Otherwise
+                   refresh every live ZIP.
+
+    Read-from-API + write-to-DB. Safe to call repeatedly. Idempotent.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "This rewrites current_call_now_count on every live ZIP. "
+            "Pass ?confirm=true to proceed.",
+        )
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+
+    # Find target ZIPs.
+    q = (supa.table('zip_coverage_v3')
+         .select('zip_code, current_call_now_count')
+         .eq('status', 'live'))
+    if zip_code:
+        q = q.eq('zip_code', zip_code)
+    target_rows = (q.execute().data) or []
+    if not target_rows:
+        return {
+            'updated':    0,
+            'targets':    0,
+            'message':    'no live ZIPs match the filter',
+            'zip_code':   zip_code,
+        }
+
+    # Hit the local briefing endpoint per ZIP.
+    local_port = int(os.environ.get("PORT", "8000"))
+    base_url   = f"http://127.0.0.1:{local_port}"
+    admin_key  = os.environ.get("ADMIN_KEY", "")
+
+    transitions: list = []
+    errors: list      = []
+
+    async with httpx.AsyncClient(base_url=base_url, timeout=120) as client:
+        for row in target_rows:
+            z = row['zip_code']
+            old_count = row.get('current_call_now_count') or 0
+            try:
+                resp = await client.get(
+                    f"/api/briefings/{z}",
+                    params={'force_rebuild': 'true'},
+                    headers={'X-Admin-Key': admin_key},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception as e:
+                errors.append({'zip_code': z, 'error': f"briefing fetch failed: {str(e)[:200]}"})
+                continue
+
+            try:
+                playbook = payload.get('playbook', {}) or {}
+                new_count = len(playbook.get('call_now', []) or [])
+            except Exception as e:
+                errors.append({'zip_code': z, 'error': f"playbook parse failed: {str(e)[:200]}"})
+                continue
+
+            try:
+                (supa.table('zip_coverage_v3')
+                 .update({'current_call_now_count': new_count})
+                 .eq('zip_code', z)
+                 .execute())
+            except Exception as e:
+                errors.append({'zip_code': z, 'error': f"db update failed: {str(e)[:200]}"})
+                continue
+
+            transitions.append({
+                'zip_code':  z,
+                'old_count': old_count,
+                'new_count': new_count,
+                'delta':     new_count - old_count,
+            })
+
+    return {
+        'targets':      len(target_rows),
+        'updated':      len(transitions),
+        'transitions':  transitions,
+        'errors':       errors,
+    }
