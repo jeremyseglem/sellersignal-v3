@@ -1731,3 +1731,201 @@ async def clean_listing_signals_endpoint(
                  'run /api/admin/rescore/{zip} after this if you want '
                  'leads re-evaluated against the cleaned signal set.'),
     }
+
+
+# ─── Shadow-mode match review (calibration layer) ─────────────────────
+
+@router.post("/audit-match-review", dependencies=[Depends(require_admin)])
+async def audit_match_review_endpoint(
+    confirm: bool = False,
+    zip_code: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    """
+    Run the shadow-strict matcher (backend.scoring.match_review.classify_match)
+    over rows in raw_signal_matches_v3 and populate the review columns:
+      - match_review_status   ('likely_valid' / 'needs_review' / 'likely_false_positive')
+      - match_review_reason   (short tag like 'particle_only', 'middle_disagree', etc.)
+      - match_confidence_score (0.0 – 1.0)
+
+    DOES NOT change which matches the briefings selector returns. The
+    selector ignores these columns. This endpoint exists purely to
+    populate a flagged-match dataset for human review before any
+    stricter rule is promoted to the live gate.
+
+    Idempotent: re-running with the same data writes the same verdicts.
+    Cheap: zero external API calls, processes ~1000 rows/second in
+    Python.
+
+    Query params:
+      ?confirm=true     — required for any writes; default is dry-run
+      ?zip_code=98004   — limit to one ZIP (optional)
+      ?limit=N          — process only first N rows (smoke test)
+
+    Returns counts of each verdict + a sample of the most-flagged rows.
+    """
+    from backend.scoring.match_review import classify_match
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    # Pull candidate rows. We only audit STRICT matches — that's what
+    # the live selector promotes to call_now / build_now.
+    page_size = 1000
+    rows_all = []
+    offset = 0
+    while True:
+        q = (supa.table('raw_signal_matches_v3')
+                .select('id, pin, zip_code, signal_type, match_strength, '
+                        'matched_party, owner_name')
+                .eq('match_strength', 'strict')
+                .range(offset, offset + page_size - 1))
+        if zip_code:
+            q = q.eq('zip_code', zip_code)
+        page = q.execute()
+        if not page.data: break
+        rows_all.extend(page.data)
+        if len(page.data) < page_size: break
+        offset += page_size
+
+    if limit is not None:
+        rows_all = rows_all[:limit]
+
+    # Classify every row
+    verdicts = []  # list of (row, status, reason, confidence)
+    status_counts: dict = {}
+    reason_counts: dict = {}
+    for row in rows_all:
+        status, reason, conf = classify_match(
+            row.get('matched_party') or '',
+            row.get('owner_name') or '',
+        )
+        verdicts.append((row, status, reason, conf))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    # Dry-run report
+    if not confirm:
+        # Surface a few illustrative samples per status
+        samples_by_status: dict = {}
+        for row, status, reason, conf in verdicts:
+            samples_by_status.setdefault(status, [])
+            if len(samples_by_status[status]) < 3:
+                samples_by_status[status].append({
+                    'pin': row['pin'],
+                    'zip_code': row['zip_code'],
+                    'signal_type': row['signal_type'],
+                    'owner_name': row['owner_name'],
+                    'matched_party': row['matched_party'],
+                    'reason': reason,
+                    'confidence': conf,
+                })
+        return {
+            'dry_run': True,
+            'rows_scanned': len(rows_all),
+            'verdict_counts': status_counts,
+            'reason_counts': reason_counts,
+            'samples_by_status': samples_by_status,
+            'note': ('Dry run only. Pass ?confirm=true to write verdicts '
+                     'to raw_signal_matches_v3.match_review_status / '
+                     'match_review_reason / match_confidence_score. '
+                     'No leads will be removed from briefings — the '
+                     'selector does not read these columns.'),
+        }
+
+    # Write verdicts. Update one row at a time — Supabase batch update
+    # requires the same fields per row, and our update payload IS the
+    # same shape per row, but the PK is unique, so per-row PATCH is
+    # the cleanest. Wrap in try so a single failure doesn't abort the
+    # whole batch.
+    written = 0
+    failed = 0
+    for row, status, reason, conf in verdicts:
+        try:
+            (supa.table('raw_signal_matches_v3')
+                 .update({
+                     'match_review_status': status,
+                     'match_review_reason': reason,
+                     'match_confidence_score': conf,
+                 })
+                 .eq('id', row['id'])
+                 .execute())
+            written += 1
+        except Exception:
+            failed += 1
+            continue
+
+    return {
+        'dry_run': False,
+        'rows_scanned': len(rows_all),
+        'rows_written': written,
+        'rows_failed': failed,
+        'verdict_counts': status_counts,
+        'reason_counts': reason_counts,
+    }
+
+
+@router.get("/match-review-queue", dependencies=[Depends(require_admin)])
+async def match_review_queue_endpoint(
+    status: Optional[str] = None,
+    zip_code: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Read endpoint for the human review workflow.
+
+    Returns flagged matches sorted by impact (lowest confidence first
+    within each requested status, since lower confidence = stronger
+    signal of misfire).
+
+    Default behavior: returns all matches with non-null match_review_status,
+    100 rows at a time. Use ?status= to filter (e.g. 'likely_false_positive'
+    to focus on confirmed misfires; 'needs_review' for the ambiguous zone).
+
+    Query params:
+      ?status=likely_false_positive | needs_review | likely_valid
+      ?zip_code=98004
+      ?limit=N (default 100, max 1000)
+      ?offset=N
+
+    Returns:
+      {
+        "rows":  [ { id, pin, zip_code, signal_type, owner_name,
+                     matched_party, match_review_status,
+                     match_review_reason, match_confidence_score }, ... ],
+        "limit":  N,
+        "offset": N,
+        "filtered_by_status": str | null,
+        "filtered_by_zip":    str | null,
+      }
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    limit = min(limit, 1000)
+
+    q = (supa.table('raw_signal_matches_v3')
+             .select('id, pin, zip_code, signal_type, owner_name, '
+                     'matched_party, match_review_status, '
+                     'match_review_reason, match_confidence_score')
+             .not_.is_('match_review_status', 'null')
+             .order('match_confidence_score', desc=False)
+             .order('id', desc=False))
+    if status:
+        q = q.eq('match_review_status', status)
+    if zip_code:
+        q = q.eq('zip_code', zip_code)
+
+    q = q.range(offset, offset + limit - 1)
+    res = q.execute()
+
+    return {
+        'rows': res.data or [],
+        'limit': limit,
+        'offset': offset,
+        'filtered_by_status': status,
+        'filtered_by_zip': zip_code,
+    }
