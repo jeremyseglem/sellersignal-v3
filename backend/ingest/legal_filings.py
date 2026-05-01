@@ -36,17 +36,42 @@ _TITLE_TOKENS = {"MR", "MRS", "MS", "DR", "JR", "SR", "II", "III", "IV", "ESQ"}
 _TRUST_TOKENS = {"TRUSTEE", "TRUSTEES", "TTEE", "TTEES", "TRT", "TRUST",
                  "FAMILY", "REVOCABLE", "LIVING", "ET", "ANO", "AL"}
 
+# Gender / lineage particles that aren't real disambiguating tokens.
+# Without stripping these, common-particle names flood-match each other:
+#   - 'THI' (Vietnamese female middle particle) — appears in nearly every
+#     Vietnamese woman's name; not a name component.
+#   - 'VAN' (Vietnamese male middle particle, also Dutch/Afrikaans surname
+#     particle 'van der'). Appears as middle in Vietnamese male names and
+#     as a particle in compound surnames like 'VAN DER HOUT'.
+#   - 'DE', 'LA', 'EL', 'DA' (Romance surname particles — 'de la Rosa',
+#     'da Silva'). Don't disambiguate two different 'de la' names.
+# Empirically: 50 of 851 strict matches in production were particle-only
+# overlaps (~6% of all matches, ~100% of all match-with-multiple-stacked-
+# signals false positives Brian flagged in the UI).
+_PARTICLE_TOKENS = {"THI", "VAN", "DE", "LA", "EL", "DA"}
+
 
 def normalize_name(name: str) -> set[str]:
-    """Return a set of last+first tokens from a name string, uppercased."""
+    """Return a set of meaningful tokens from a name string, uppercased.
+
+    Single-letter tokens (middle initials like 'S') are preserved so
+    callers that compare middles can detect 'Michael S Hansen' vs
+    'Michael R Hansen' as different people. Title, trust, and gender-
+    particle tokens are stripped because they don't disambiguate
+    identity — particles especially cause flood-matches between
+    unrelated Vietnamese names sharing 'THI' / 'VAN'.
+    """
     if not name:
         return set()
     up = name.upper()
     up = _NAME_NOISE.sub(" ", up)
     up = _WHITESPACE.sub(" ", up).strip()
-    tokens = {t for t in up.split() if len(t) >= 2}
+    # Keep single-letter tokens (middle initials) — they carry real
+    # disambiguating signal.
+    tokens = {t for t in up.split() if len(t) >= 1}
     tokens -= _TITLE_TOKENS
     tokens -= _TRUST_TOKENS
+    tokens -= _PARTICLE_TOKENS
     return tokens
 
 
@@ -55,8 +80,14 @@ def name_match(filing_name: str, owner_name: str,
     """
     True if the filing and owner names share at least `min_overlap`
     meaningful tokens. Default 2 = both first and last name must match.
-    Single-token matches (e.g., just shared surname) are intentionally
-    rejected — too many false positives.
+
+    This is the LIVE matcher gate. It is intentionally soft — it strips
+    obvious garbage (Vietnamese THI/VAN particle floods) but accepts
+    matches that share two real tokens, even when middle names disagree.
+
+    A stricter "shadow" gate lives in backend.scoring.match_review and
+    populates raw_signal_matches_v3.match_review_status without changing
+    visible behavior. See that module for the calibration logic.
     """
     a = normalize_name(filing_name)
     b = normalize_name(owner_name)
