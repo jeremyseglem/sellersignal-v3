@@ -1753,9 +1753,14 @@ async def audit_match_review_endpoint(
     populate a flagged-match dataset for human review before any
     stricter rule is promoted to the live gate.
 
+    Implementation: raw_signal_matches_v3 stores only pin + raw_signal_id.
+    Owner-name comes from parcels_v3 (joined by pin). Filing party comes
+    from raw_signals_v3.party_names (joined by raw_signal_id) — the
+    "matched party" is the first entry in that array, matching the
+    convention used by GET /api/harvest/matches/:zip.
+
     Idempotent: re-running with the same data writes the same verdicts.
-    Cheap: zero external API calls, processes ~1000 rows/second in
-    Python.
+    Cheap: zero external API calls.
 
     Query params:
       ?confirm=true     — required for any writes; default is dry-run
@@ -1770,86 +1775,146 @@ async def audit_match_review_endpoint(
     if not supa:
         raise HTTPException(503, "Supabase not configured.")
 
-    # Pull candidate rows. We only audit STRICT matches — that's what
-    # the live selector promotes to call_now / build_now.
-    page_size = 1000
-    rows_all = []
-    offset = 0
+    # Step 1: build pin -> (zip_code, owner_name) map. If zip_code is
+    # provided, only fetch parcels in that ZIP (much smaller); otherwise
+    # we need all parcels because matches reference any pin.
+    parcels_by_pin: dict = {}
+    page = 1000
+    off = 0
     while True:
-        q = (supa.table('raw_signal_matches_v3')
-                .select('id, pin, zip_code, signal_type, match_strength, '
-                        'matched_party, owner_name')
-                .eq('match_strength', 'strict')
-                .range(offset, offset + page_size - 1))
+        q = supa.table('parcels_v3').select('pin, zip_code, owner_name').range(off, off + page - 1)
         if zip_code:
             q = q.eq('zip_code', zip_code)
-        page = q.execute()
-        if not page.data: break
-        rows_all.extend(page.data)
-        if len(page.data) < page_size: break
-        offset += page_size
+        res = q.execute()
+        batch = res.data or []
+        for r in batch:
+            parcels_by_pin[r['pin']] = r
+        if len(batch) < page: break
+        off += page
+        if off > 200000: break  # safety bound
+
+    if not parcels_by_pin:
+        return {'dry_run': not confirm, 'rows_scanned': 0,
+                'note': 'No parcels found' + (f' in ZIP {zip_code}' if zip_code else '')}
+
+    # Step 2: pull strict matches for those pins (in chunks).
+    pins = list(parcels_by_pin.keys())
+    matches_all: list[dict] = []
+    CHUNK = 200
+    for i in range(0, len(pins), CHUNK):
+        chunk = pins[i:i+CHUNK]
+        res = (supa.table('raw_signal_matches_v3')
+                  .select('id, raw_signal_id, pin, match_strength')
+                  .in_('pin', chunk)
+                  .eq('match_strength', 'strict')
+                  .limit(5000)
+                  .execute())
+        matches_all.extend(res.data or [])
 
     if limit is not None:
-        rows_all = rows_all[:limit]
+        matches_all = matches_all[:limit]
 
-    # Classify every row
-    verdicts = []  # list of (row, status, reason, confidence)
+    if not matches_all:
+        return {'dry_run': not confirm, 'rows_scanned': 0,
+                'note': 'No strict matches found'}
+
+    # Step 3: pull the raw_signals for these matches.
+    signal_ids = list({m['raw_signal_id'] for m in matches_all})
+    signals_by_id: dict = {}
+    CHUNK_S = 300
+    for i in range(0, len(signal_ids), CHUNK_S):
+        chunk = signal_ids[i:i+CHUNK_S]
+        res = (supa.table('raw_signals_v3')
+                  .select('id, signal_type, party_names')
+                  .in_('id', chunk)
+                  .execute())
+        for r in (res.data or []):
+            signals_by_id[r['id']] = r
+
+    # Step 4: classify each match.
+    verdicts = []
     status_counts: dict = {}
     reason_counts: dict = {}
-    for row in rows_all:
-        status, reason, conf = classify_match(
-            row.get('matched_party') or '',
-            row.get('owner_name') or '',
-        )
-        verdicts.append((row, status, reason, conf))
+    skipped_no_signal = 0
+    skipped_no_parcel = 0
+
+    for m in matches_all:
+        signal = signals_by_id.get(m['raw_signal_id'])
+        parcel = parcels_by_pin.get(m['pin'])
+        if not signal:
+            skipped_no_signal += 1
+            continue
+        if not parcel:
+            skipped_no_parcel += 1
+            continue
+        owner_name = parcel.get('owner_name') or ''
+        # matched_party = first entry in party_names (same convention as
+        # /api/harvest/matches/:zip)
+        parties = signal.get('party_names') or []
+        if not parties:
+            continue
+        first = parties[0]
+        if isinstance(first, dict):
+            matched_party = first.get('raw') or first.get('name') or ''
+        else:
+            matched_party = str(first)
+
+        status, reason, conf = classify_match(matched_party, owner_name)
+        verdicts.append({
+            'id': m['id'],
+            'pin': m['pin'],
+            'zip_code': parcel.get('zip_code'),
+            'signal_type': signal.get('signal_type'),
+            'owner_name': owner_name,
+            'matched_party': matched_party,
+            'status': status,
+            'reason': reason,
+            'confidence': conf,
+        })
         status_counts[status] = status_counts.get(status, 0) + 1
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
     # Dry-run report
     if not confirm:
-        # Surface a few illustrative samples per status
         samples_by_status: dict = {}
-        for row, status, reason, conf in verdicts:
-            samples_by_status.setdefault(status, [])
-            if len(samples_by_status[status]) < 3:
-                samples_by_status[status].append({
-                    'pin': row['pin'],
-                    'zip_code': row['zip_code'],
-                    'signal_type': row['signal_type'],
-                    'owner_name': row['owner_name'],
-                    'matched_party': row['matched_party'],
-                    'reason': reason,
-                    'confidence': conf,
+        for v in verdicts:
+            samples_by_status.setdefault(v['status'], [])
+            if len(samples_by_status[v['status']]) < 3:
+                samples_by_status[v['status']].append({
+                    'pin': v['pin'],
+                    'zip_code': v['zip_code'],
+                    'signal_type': v['signal_type'],
+                    'owner_name': v['owner_name'],
+                    'matched_party': v['matched_party'],
+                    'reason': v['reason'],
+                    'confidence': v['confidence'],
                 })
         return {
             'dry_run': True,
-            'rows_scanned': len(rows_all),
+            'rows_scanned': len(matches_all),
+            'rows_classified': len(verdicts),
+            'skipped_no_signal': skipped_no_signal,
+            'skipped_no_parcel': skipped_no_parcel,
             'verdict_counts': status_counts,
             'reason_counts': reason_counts,
             'samples_by_status': samples_by_status,
-            'note': ('Dry run only. Pass ?confirm=true to write verdicts '
-                     'to raw_signal_matches_v3.match_review_status / '
-                     'match_review_reason / match_confidence_score. '
-                     'No leads will be removed from briefings — the '
-                     'selector does not read these columns.'),
+            'note': ('Dry run only. Pass ?confirm=true to write verdicts. '
+                     'No leads will be removed — the selector does not '
+                     'read these columns.'),
         }
 
-    # Write verdicts. Update one row at a time — Supabase batch update
-    # requires the same fields per row, and our update payload IS the
-    # same shape per row, but the PK is unique, so per-row PATCH is
-    # the cleanest. Wrap in try so a single failure doesn't abort the
-    # whole batch.
+    # Write verdicts.
     written = 0
     failed = 0
-    for row, status, reason, conf in verdicts:
+    for v in verdicts:
         try:
             (supa.table('raw_signal_matches_v3')
                  .update({
-                     'match_review_status': status,
-                     'match_review_reason': reason,
-                     'match_confidence_score': conf,
+                     'match_review_status': v['status'],
+                     'match_review_reason': v['reason'],
+                     'match_confidence_score': v['confidence'],
                  })
-                 .eq('id', row['id'])
+                 .eq('id', v['id'])
                  .execute())
             written += 1
         except Exception:
@@ -1858,7 +1923,8 @@ async def audit_match_review_endpoint(
 
     return {
         'dry_run': False,
-        'rows_scanned': len(rows_all),
+        'rows_scanned': len(matches_all),
+        'rows_classified': len(verdicts),
         'rows_written': written,
         'rows_failed': failed,
         'verdict_counts': status_counts,
@@ -1876,30 +1942,16 @@ async def match_review_queue_endpoint(
     """
     Read endpoint for the human review workflow.
 
-    Returns flagged matches sorted by impact (lowest confidence first
-    within each requested status, since lower confidence = stronger
-    signal of misfire).
-
-    Default behavior: returns all matches with non-null match_review_status,
-    100 rows at a time. Use ?status= to filter (e.g. 'likely_false_positive'
-    to focus on confirmed misfires; 'needs_review' for the ambiguous zone).
+    Returns flagged matches sorted by confidence ascending (lowest
+    confidence first = most likely misfire). Each row is enriched with
+    owner_name + matched_party + signal_type from the joined parcels
+    and signals tables.
 
     Query params:
       ?status=likely_false_positive | needs_review | likely_valid
       ?zip_code=98004
       ?limit=N (default 100, max 1000)
       ?offset=N
-
-    Returns:
-      {
-        "rows":  [ { id, pin, zip_code, signal_type, owner_name,
-                     matched_party, match_review_status,
-                     match_review_reason, match_confidence_score }, ... ],
-        "limit":  N,
-        "offset": N,
-        "filtered_by_status": str | null,
-        "filtered_by_zip":    str | null,
-      }
     """
     supa = get_supabase_client()
     if not supa:
@@ -1907,25 +1959,90 @@ async def match_review_queue_endpoint(
 
     limit = min(limit, 1000)
 
+    # Step 1: pull match rows with verdicts (sorted by confidence asc).
     q = (supa.table('raw_signal_matches_v3')
-             .select('id, pin, zip_code, signal_type, owner_name, '
-                     'matched_party, match_review_status, '
-                     'match_review_reason, match_confidence_score')
+             .select('id, pin, raw_signal_id, '
+                     'match_review_status, match_review_reason, '
+                     'match_confidence_score')
              .not_.is_('match_review_status', 'null')
              .order('match_confidence_score', desc=False)
              .order('id', desc=False))
     if status:
         q = q.eq('match_review_status', status)
-    if zip_code:
-        q = q.eq('zip_code', zip_code)
 
-    q = q.range(offset, offset + limit - 1)
+    # Pull more than `limit` so we can ZIP-filter post-fetch (ZIP lives on
+    # parcels_v3, not on the match row itself). Cap the prefetch at 5000
+    # to bound memory.
+    PREFETCH_CAP = max(limit + offset, 1000) * 3
+    PREFETCH_CAP = min(PREFETCH_CAP, 5000)
+    q = q.limit(PREFETCH_CAP)
     res = q.execute()
+    raw_rows = res.data or []
+
+    # Step 2: enrich with parcel + signal data.
+    pins = list({r['pin'] for r in raw_rows})
+    signal_ids = list({r['raw_signal_id'] for r in raw_rows})
+
+    parcels_by_pin: dict = {}
+    if pins:
+        for i in range(0, len(pins), 200):
+            chunk = pins[i:i+200]
+            res = (supa.table('parcels_v3')
+                       .select('pin, zip_code, owner_name, address')
+                       .in_('pin', chunk)
+                       .execute())
+            for r in (res.data or []):
+                parcels_by_pin[r['pin']] = r
+
+    signals_by_id: dict = {}
+    if signal_ids:
+        for i in range(0, len(signal_ids), 300):
+            chunk = signal_ids[i:i+300]
+            res = (supa.table('raw_signals_v3')
+                       .select('id, signal_type, party_names')
+                       .in_('id', chunk)
+                       .execute())
+            for r in (res.data or []):
+                signals_by_id[r['id']] = r
+
+    # Step 3: build enriched rows, ZIP-filtering as we go.
+    enriched = []
+    for r in raw_rows:
+        parcel = parcels_by_pin.get(r['pin']) or {}
+        if zip_code and parcel.get('zip_code') != zip_code:
+            continue
+        signal = signals_by_id.get(r['raw_signal_id']) or {}
+        parties = signal.get('party_names') or []
+        first = parties[0] if parties else None
+        if isinstance(first, dict):
+            matched_party = first.get('raw') or first.get('name') or ''
+        elif first is not None:
+            matched_party = str(first)
+        else:
+            matched_party = ''
+        enriched.append({
+            'id': r['id'],
+            'pin': r['pin'],
+            'zip_code': parcel.get('zip_code'),
+            'address': parcel.get('address'),
+            'owner_name': parcel.get('owner_name'),
+            'matched_party': matched_party,
+            'signal_type': signal.get('signal_type'),
+            'match_review_status': r['match_review_status'],
+            'match_review_reason': r['match_review_reason'],
+            'match_confidence_score': r['match_confidence_score'],
+        })
+
+    # Step 4: paginate the post-filtered set.
+    total_found = len(enriched)
+    page = enriched[offset:offset+limit]
 
     return {
-        'rows': res.data or [],
+        'rows': page,
         'limit': limit,
         'offset': offset,
+        'total_in_filter': total_found,
+        'prefetched': len(raw_rows),
         'filtered_by_status': status,
         'filtered_by_zip': zip_code,
     }
