@@ -126,15 +126,42 @@ This isn't a feature, it's the product. It converts SellerSignal from "tool that
 
 ### Architecture (final design from session)
 
-**Inputs (single voice block, no 20-field form):**
-- Free text: "Tell me how you typically approach sellers. Paste 1-2 real messages you've sent (email, text, letter), OR describe your style. What makes you different from other agents?"
-- Optional click-to-expand prompts: "More direct or relationship-first?" / "Speed, discretion, or price?" / "What do clients usually say about you?"
+**Inputs (single voice block + minimal stance controls):**
+
+Free text block:
+> "Tell me how you typically approach sellers. Paste 1-2 real messages you've sent (email, text, letter), OR describe your style. What makes you different from other agents?"
+
+Optional click-to-expand prompts: "More direct or relationship-first?" / "Speed, discretion, or price?" / "What do clients usually say about you?"
+
+**Stance controls (structured, NOT free text):**
+
+These are explicit behavioral configuration, not voice styling. They tell the prompt how to behave when the situation is sensitive — not by inferring from the agent's writing samples (which LLMs do unreliably) but by reading a stated preference. Minimum v1 set:
+
+```
+structural_acknowledgment: "direct" | "indirect"
+  When reaching out about sensitive situations (probate, divorce, etc.):
+  - direct: it is acceptable to reference the filing or situation explicitly
+  - indirect: keep the source vague, do not reference filings or records directly
+```
+
+This single field replaces guardrails like *"avoid saying 'I noticed the probate filing' unless the agent's voice is unusually direct"* — guardrails that force the LLM to infer personality and decide. The stance field makes the behavior deterministic and per-agent.
+
+Same pattern likely applies to other dimensions worth structuring as stance instead of voice:
+- divorce: explicit mention vs. discreet framing
+- investor: "are you selling?" vs. "open to opportunities?"
+- urgency level: "the market is moving" vs. "no rush"
+
+V1 ships with `structural_acknowledgment` only. Add others as warranted by real-world output drift.
 
 **Storage:**
 ```
 agent_profile {
   agent_id,
   voice_raw: "...full text...",
+  stance: {
+    structural_acknowledgment: "direct" | "indirect",
+    // ... future stance fields here
+  },
   generated_scripts: {
     probate: "...",
     investor: "...",
@@ -150,7 +177,7 @@ agent_profile {
 
 **Lead-level rendering: token substitution only, no LLM call.** Inject lead specifics into stored archetype script.
 
-**Fallback:** if agent has no profile, use default voice (Jeremy's, since that's what we voice-matched the v2 probate draft against).
+**Fallback:** if agent has no profile, use default voice (Jeremy's, since that's what we voice-matched the v2 probate draft against). Default stance: `indirect` (safer floor — never overclaims structural knowledge to a stranger).
 
 ### Production-ready prompt set
 
@@ -175,28 +202,36 @@ Rules:
 
 Per-archetype user prompts: see "Lead archetype prompts" section in this doc's tail. Five archetypes drafted (probate / investor / long-tenure / divorce / permit-completion). Trust and estate-transition still need prompts.
 
-### One real correction Claude flagged
+### How stance fields plug into prompts
 
-The probate prompt has: *"avoid saying 'I noticed the probate filing' unless the agent's voice is unusually direct."*
+The stance values get rendered into the user prompt as explicit behavioral instructions, not as guardrails:
 
-That's a guardrail that asks the LLM to make a judgment call about how direct the agent is. Models default soft under that ambiguity. **Better to make structural-acknowledgment a separate explicit input on the agent profile.**
+```
+Agent stance:
+- structural_acknowledgment: [DIRECT | INDIRECT]
 
-Add a single onboarding question:
-> "When you reach out about a probate, do you mention the filing directly, or do you keep the source vague?"
+If structural_acknowledgment is DIRECT:
+  → it is acceptable to reference the situation explicitly
+    (e.g., "I came across the probate filing")
 
-Same applies to divorce ("not mention divorce directly" is the right default but a forensic-style agent might override). Let agent voice override the prompt's guardrail explicitly, not implicitly.
+If structural_acknowledgment is INDIRECT:
+  → keep the source vague; do not reference filings or records directly
+    (e.g., "I work with families navigating decisions about a home")
+```
+
+The system prompt stays generic (no agent-specific guardrails). The user prompt carries both the voice text AND the stance values. Output stays deterministic per agent.
 
 ### What NOT to build in v1
 - 20+ profile fields
-- Structured form inputs
+- Structured form inputs beyond the minimum stance set
 - Per-lead LLM generation (cost would explode)
 - Heavy templating system
 
 ### What to build in v1 (estimated 1-2 days)
-1. Schema migration: `agent_profiles` table with `voice_raw` text + `generated_scripts` JSON column + `structural_acknowledge_preferences` JSON
-2. Onboarding flow: single text input + optional helper prompts, plus the structural-acknowledgment question
-3. Generation endpoint: `POST /api/agent/generate-scripts` — runs 5-6 LLM calls, stores results
-4. Render integration: dossier prefers agent's generated_scripts when available, falls back to default voice
+1. Schema migration: `agent_profiles` table with `voice_raw` text + `stance` JSON + `generated_scripts` JSON column
+2. Onboarding flow: single text input + optional helper prompts + the stance question(s) — `structural_acknowledgment` is the v1 minimum
+3. Generation endpoint: `POST /api/agent/generate-scripts` — runs 5-6 LLM calls with voice + stance, stores results
+4. Render integration: dossier prefers agent's `generated_scripts` when available, falls back to default voice
 5. UI label change: "What to say" → "Your approach"
 
 ---
@@ -269,6 +304,16 @@ Same applies to divorce ("not mention divorce directly" is the right default but
 
 1. Read this doc and the manifesto. Don't propose actions yet.
 2. Verify production health: `curl -s https://sellersignal.co/api/health` and hit one or two briefing endpoints.
-3. If Jeremy is starting on the agent-voice product: re-read the architecture section above and the prompt set. Ask before building the schema. Confirm v1 scope is the 5-step list.
-4. If Jeremy wants to revisit any of the open questions above: pick one. Don't pick more than one per session. They all interact.
-5. **Do not promote any more match-review cohorts without explicit Jeremy approval per cohort.** The shadow infrastructure is in place; the audit results are there to read. But trust continuity is the standing principle and surprise demotions are not OK.
+3. Confirm with Jeremy what the session focus is. Default plan if no other priority surfaces:
+
+```
+1. Verify the insufficient_overlap promotion is still clean (single-case check)
+2. Build agent_profiles schema + endpoint (v1 schema in this doc)
+3. Build the generate-scripts endpoint with voice + stance
+4. Wire the dossier to prefer agent_profile.generated_scripts when present
+5. First review of top 50 Call Now leads through the match-review queue
+   (separate from the agent-voice work — can defer if focus is voice)
+```
+
+4. **Do not promote any more match-review cohorts without explicit Jeremy approval per cohort.** The shadow infrastructure is in place; the audit results are there to read. But trust continuity is the standing principle and surprise demotions are not OK.
+5. **Do not build agent-voice schema beyond v1.** The v1 minimum (`voice_raw` + `stance.structural_acknowledgment` + `generated_scripts`) is the entire scope. Resist the pull to add fields.
