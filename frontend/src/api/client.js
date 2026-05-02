@@ -159,3 +159,28 @@ export const leadInteractions = {
    */
   byZip: (zip) => authedRequest(`/lead-interactions/by-zip/${zip}`),
 };
+
+
+/**
+ * agentVoice — agent voice product API.
+ *
+ * generateScripts() runs the 6-archetype LLM generation against the
+ * agent's profile (voice_sample, stance, bio). Server-side: ~30-90
+ * seconds, runs all 6 in parallel. Returns the full result with
+ * scripts, errors per archetype if any, token usage, and the
+ * voice_onboarding_completed_at timestamp.
+ *
+ * editScript({archetype, script}) saves an agent-edited version of
+ * one archetype's full script object back to the profile.
+ */
+export const agentVoice = {
+  generateScripts: () => authedRequest('/agent/generate-scripts', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }),
+
+  editScript: ({ archetype, script }) => authedRequest('/agent/edit-script', {
+    method: 'PUT',
+    body: JSON.stringify({ archetype, script }),
+  }),
+};

@@ -6,6 +6,7 @@ import SignupPage      from './pages/SignupPage.jsx';
 import TerritoriesPage from './pages/TerritoriesPage.jsx';
 import BriefingPage    from './pages/BriefingPage.jsx';
 import ProfilePage     from './pages/ProfilePage.jsx';
+import VoiceOnboardingPage from './pages/VoiceOnboardingPage.jsx';
 import { PrivacyPage, TermsPage } from './pages/LegalPages.jsx';
 
 import AuthGate from './components/shell/AuthGate.jsx';
@@ -66,6 +67,14 @@ export default function App() {
         element={
           <AuthGate>
             <ProfilePage />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/profile/voice"
+        element={
+          <AuthGate>
+            <VoiceOnboardingPage />
           </AuthGate>
         }
       />
