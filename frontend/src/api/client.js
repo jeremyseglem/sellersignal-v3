@@ -70,9 +70,9 @@ export const coverage = {
 
 export const briefings = {
   get: (zip, includeMap = true) =>
-    request(`/briefings/${zip}?include_map=${includeMap}`),
-  summary: (zip) => request(`/briefings/${zip}/summary`),
-  history: (zip, limit = 12) => request(`/briefings/${zip}/history?limit=${limit}`),
+    authedRequest(`/briefings/${zip}?include_map=${includeMap}`),
+  summary: (zip) => authedRequest(`/briefings/${zip}/summary`),
+  history: (zip, limit = 12) => authedRequest(`/briefings/${zip}/history?limit=${limit}`),
 };
 
 // ── Map data ───────────────────────────────────────────────────────
@@ -182,5 +182,26 @@ export const agentVoice = {
   editScript: ({ archetype, script }) => authedRequest('/agent/edit-script', {
     method: 'PUT',
     body: JSON.stringify({ archetype, script }),
+  }),
+};
+
+
+/**
+ * territory — territory claim & gating API.
+ *
+ * status() returns the territory grid annotated for the authenticated
+ * user: their role, their assigned ZIP (if any), and every live ZIP
+ * with a status — 'mine' | 'available' | 'claimed_by_other'.
+ *
+ * claim({zip_code}) attempts to claim a ZIP. Validates server-side:
+ * agent role required, no prior claim, ZIP must be live and unclaimed.
+ * Returns 409 on conflicts (already claimed, ZIP taken, etc.).
+ */
+export const territory = {
+  status: () => authedRequest('/agent/territory-status'),
+
+  claim: (zip_code) => authedRequest('/agent/claim-zip', {
+    method: 'POST',
+    body: JSON.stringify({ zip_code }),
   }),
 };

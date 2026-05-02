@@ -34,10 +34,12 @@ re-computes because (zip, new_monday) isn't in the dict.
 Bypass: pass ?force_rebuild=true to skip the cache.
 """
 from collections import OrderedDict
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from datetime import datetime, date, timedelta, timezone
 from backend.api.db import get_supabase_client
 from backend.api.zip_gate import require_live_zip
+from backend.api.auth import user_from_authorization as _user_from_authorization
+from backend.api.territory import require_zip_access as _require_zip_access
 from backend.selection import weekly_selector as _ws
 from backend.selection.parcel_state_tags import derive_tags
 
@@ -185,6 +187,7 @@ async def get_briefing(
         description="Dedup by owner surname (one lead per family)"),
     force_rebuild: bool = Query(False,
         description="Bypass cache and recompute from scratch"),
+    authorization: Optional[str] = Header(None),
 ):
     """
     Full briefing for a ZIP. Returns:
@@ -192,6 +195,11 @@ async def get_briefing(
       - playbook: { call_now, build_now, strategic_holds }
       - stats: counts, cost, last run info
     """
+    # ── Territory gate ─────────────────────────────────────────
+    # Operators see all ZIPs; agents see only their assigned_zip.
+    # Unauthenticated requests are rejected here (Bearer required).
+    user = _user_from_authorization(authorization)
+    _require_zip_access(user, zip_code)
     # ── Cache check ──
     # The cache key includes every input that materially changes the
     # response, so two requests with different limits or dedup flags
@@ -743,9 +751,13 @@ def _format_pick(parcel: dict, investigation: dict = None) -> dict:
 # ============================================================================
 
 @router.get("/{zip_code}/summary")
-async def get_briefing_summary(zip_code: str = Depends(require_live_zip)):
+async def get_briefing_summary(
+    zip_code: str = Depends(require_live_zip),
+    authorization: Optional[str] = Header(None),
+):
     """Compact version — just counts and top 3 CALL NOW leads."""
-    full = await get_briefing(zip_code, include_map=False)
+    # Territory gate via the full endpoint (it handles auth + access).
+    full = await get_briefing(zip_code, include_map=False, authorization=authorization)
     return {
         'zip':              zip_code,
         'week_of':          full['week_of'],
@@ -762,8 +774,13 @@ async def get_briefing_summary(zip_code: str = Depends(require_live_zip)):
 async def get_briefing_history(
     zip_code: str = Depends(require_live_zip),
     limit: int = Query(12, ge=1, le=52),
+    authorization: Optional[str] = Header(None),
 ):
     """Past briefings for this ZIP (persisted snapshots in briefings_v3)."""
+    # Territory gate
+    user = _user_from_authorization(authorization)
+    _require_zip_access(user, zip_code)
+
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")

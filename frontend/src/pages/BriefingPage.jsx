@@ -1,11 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   briefings,
   map as mapApi,
   parcels as parcelsApi,
   coverage as coverageApi,
 } from '../api/client.js';
+import { useAuth } from '../lib/AuthContext.jsx';
 import MapPanel from '../components/MapPanel.jsx';
 import ParcelDossier from '../components/ParcelDossierV2.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
@@ -69,6 +70,26 @@ export default function BriefingPage(props) {
 
 function BriefingBody() {
   const { zip } = useParams();
+  const navigate = useNavigate();
+  const { profile } = useAuth();
+
+  // ── Territory gate ────────────────────────────────────────────
+  // Non-operator agents may only view their assigned_zip. Anyone
+  // else gets redirected — to their assigned ZIP if they have one,
+  // or to /territories to claim. Operators bypass entirely.
+  useEffect(() => {
+    if (!profile) return;  // wait for profile to load
+    if (profile.role === 'operator') return;
+    if (profile.assigned_zip && profile.assigned_zip !== zip) {
+      navigate(`/zip/${profile.assigned_zip}`, { replace: true });
+      return;
+    }
+    if (!profile.assigned_zip) {
+      navigate('/territories', { replace: true });
+      return;
+    }
+  }, [profile, zip, navigate]);
+
   const [briefing, setBriefing] = useState(null);
   const [mapData, setMapData]   = useState(null);
   const [stats, setStats]       = useState(null);
@@ -196,6 +217,34 @@ function BriefingBody() {
         flexDirection: 'column',
         overflow: 'hidden',
       }}>
+        {profile?.role === 'operator' && (
+          <div style={{
+            padding: '8px 16px',
+            background: 'var(--accent)',
+            color: 'var(--text-inverse, #fff)',
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            fontFamily: 'var(--font-sans)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}>
+            <span>Operator view · {zip}</span>
+            <Link to="/territories" style={{
+              color: 'var(--text-inverse, #fff)',
+              opacity: 0.85,
+              textDecoration: 'none',
+              fontSize: 11,
+              fontWeight: 600,
+            }}>
+              All territories ↗
+            </Link>
+          </div>
+        )}
+
         <BriefingHeader
           zip={zip}
           actionCount={actionCount}
