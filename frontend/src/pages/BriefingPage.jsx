@@ -4,7 +4,6 @@ import {
   briefings,
   map as mapApi,
   parcels as parcelsApi,
-  coverage as coverageApi,
 } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import MapPanel from '../components/MapPanel.jsx';
@@ -92,7 +91,6 @@ function BriefingBody() {
 
   const [briefing, setBriefing] = useState(null);
   const [mapData, setMapData]   = useState(null);
-  const [stats, setStats]       = useState(null);
   const [selectedPin, setSelectedPin] = useState(null);
   const [dossier, setDossier]   = useState(null);
   const [error, setError]       = useState(null);
@@ -102,18 +100,32 @@ function BriefingBody() {
   const [filterKey, setFilterKey]     = useState('all');
   const [sortKey, setSortKey]         = useState('default');
 
-  // Load briefing + map + stats on ZIP change
+  // Load briefing + map on ZIP change.
+  // The previous version also called coverageApi.stats(zip) just for
+  // city/state — that endpoint paginates parcels and investigations
+  // to compute medians and counts the page never displays, costing
+  // ~14s cold. Briefing now returns city/state in zip_meta directly,
+  // saving the round trip.
   useEffect(() => {
-    setBriefing(null); setMapData(null); setStats(null);
+    setBriefing(null); setMapData(null);
     setSelectedPin(null); setDossier(null); setError(null);
 
     Promise.all([briefings.get(zip, false), mapApi.get(zip)])
       .then(([b, m]) => { setBriefing(b); setMapData(m); })
       .catch((e) => setError(e.detail?.message || e.message));
-
-    // Stats are nice-to-have; don't block the rest on them
-    coverageApi.stats(zip).then(setStats).catch(() => setStats(null));
   }, [zip]);
+
+  // Synthesize the 'stats' object from briefing for any downstream
+  // reads that still expect it. Mirrors the shape coverageApi.stats
+  // returned: { city, state, parcel_count }.
+  const stats = useMemo(() => {
+    if (!briefing) return null;
+    return {
+      city:         briefing?.zip_meta?.city,
+      state:        briefing?.zip_meta?.state,
+      parcel_count: briefing?.stats?.total_parcels,
+    };
+  }, [briefing]);
 
   // Load dossier when a pin is selected
   useEffect(() => {

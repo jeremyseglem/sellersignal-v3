@@ -698,6 +698,28 @@ async def get_briefing(
             'strategic_holds_total':   strategic_holds_total,
         }
 
+        # ── Pull city + state for header display ─────────────
+        # Single-row read on zip_coverage_v3 — cheap (~30ms). The
+        # frontend used to call /api/coverage/{zip}/stats just for
+        # this; that endpoint paginates parcels and investigations
+        # for medians/counts the page never displays, costing ~14s
+        # cold. Bundling city/state into the briefing response
+        # eliminates that round trip entirely.
+        zip_meta = {'city': None, 'state': None}
+        try:
+            cov_res = (supa.table('zip_coverage_v3')
+                       .select('city, state')
+                       .eq('zip_code', zip_code)
+                       .maybe_single()
+                       .execute())
+            if cov_res and cov_res.data:
+                zip_meta = {
+                    'city':  cov_res.data.get('city'),
+                    'state': cov_res.data.get('state'),
+                }
+        except Exception:
+            pass  # missing meta is non-fatal — header just shows ZIP code alone
+
         response = {
             'zip':       zip_code,
             'week_of':   week_monday_iso,
@@ -707,6 +729,7 @@ async def get_briefing(
                 'strategic_holds': hold_picks,
             },
             'stats':     stats,
+            'zip_meta':  zip_meta,
         }
 
         # Cache the fully-shaped response. Subsequent requests for
