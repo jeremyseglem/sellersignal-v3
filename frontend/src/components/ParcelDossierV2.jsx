@@ -879,6 +879,118 @@ function ContactSection({ parcel, archetype, equityDollars, personalRep, onGetCo
 }
 
 
+// agentGeneratedScripts(profile, archetype, dossier) — pulls the
+// agent's voice-generated scripts for this archetype from their
+// profile, substitutes lead-specific tokens, and returns
+// {phone, letter, door} matching the static-defaults shape.
+//
+// Token vocabulary (matches what the LLM uses in agent_voice/prompts.py):
+//   [PROPERTY_ADDRESS]  → parcel.address
+//   [NEIGHBORHOOD]      → parcel.city  (actual neighborhood is rarely
+//                         in our parcel data; city is the workable
+//                         proxy for cold outreach)
+//   [RECIPIENT_NAME]    → personal_representative.name (probate),
+//                         "the trustees" (trust),
+//                         owner_name first token (others)
+//   [DECEDENT_NAME]     → decedent's name from harvester match
+//                         (probate only; falls through to "your loved
+//                         one" otherwise so letters never claim a
+//                         name we don't have)
+//   [AGENT_NAME]        → profile.full_name (or "" — the letter
+//                         intentionally signs with the field, agent
+//                         can replace if they want to use first only)
+//
+// Returns null when the agent has no generated_scripts for this
+// archetype — caller falls through to staticDefaults.
+function agentGeneratedScripts(profile, archetype, dossier) {
+  if (!profile || !archetype) return null;
+  const scripts = profile.generated_scripts;
+  if (!scripts || typeof scripts !== 'object') return null;
+
+  const arch = archetype.key;
+  const block = scripts[arch];
+  if (!block || typeof block !== 'object') return null;
+
+  // Resolve tokens against the lead. The substitution rules mirror
+  // resolveDefaultScripts() in archetypePlaybooks.js but use the
+  // [BRACKET] placeholder vocabulary the LLM was instructed to emit.
+  const parcel = dossier?.parcel || {};
+  const matches = dossier?.harvester_matches || [];
+
+  let pr = null;
+  let decedent = null;
+  for (const m of matches) {
+    if (!pr && m.personal_representative && m.personal_representative.name_first) {
+      pr = m.personal_representative;
+    }
+    if (!decedent && m.signal_type === 'probate') {
+      const parties = m.all_case_parties || [];
+      const dec = parties.find((p) => p.role === 'deceased' || p.role === 'decedent');
+      if (dec && (dec.name_first || dec.name_last)) decedent = dec;
+    }
+    if (pr && decedent) break;
+  }
+
+  const ownerName = parcel.owner_name || dossier?.owner_name || '';
+  const looksLikeEntity = /\b(trust|llc|inc|corp|company|co\.?|partners|llp|lp)\b/i.test(ownerName);
+  const ownerFirst = (!looksLikeEntity && ownerName)
+    ? ownerName.trim().split(/\s+/)[0]
+    : null;
+
+  // Recipient name varies by archetype.
+  let recipientName;
+  if (arch === 'probate' && pr?.name_first) {
+    recipientName = pr.name_first;
+  } else if (arch === 'trust') {
+    recipientName = 'Trustees';
+  } else if (looksLikeEntity) {
+    recipientName = ownerName;  // "2412 Boston LLC"
+  } else if (ownerFirst) {
+    recipientName = ownerFirst;
+  } else {
+    recipientName = 'Friend';
+  }
+
+  const decedentName = decedent
+    ? `${decedent.name_first || ''} ${decedent.name_last || ''}`.trim()
+    : 'your loved one';
+
+  const tokens = {
+    '[PROPERTY_ADDRESS]': parcel.address || 'this property',
+    '[NEIGHBORHOOD]':     parcel.city || 'the area',
+    '[RECIPIENT_NAME]':   recipientName,
+    '[DECEDENT_NAME]':    decedentName,
+    '[AGENT_NAME]':       profile.full_name || '',
+  };
+
+  function fill(s) {
+    if (typeof s !== 'string') return s;
+    let out = s;
+    for (const [tok, val] of Object.entries(tokens)) {
+      // Token literal — escape for regex use, replace globally
+      const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(esc, 'g'), val);
+    }
+    return out;
+  }
+
+  // For the Letter tab, render Day 1 (the immediate-action letter).
+  // The full six-letter sequence is reachable via the Six Letters
+  // Modal — we don't try to fit six letters into the tab itself.
+  let letterText = null;
+  if (Array.isArray(block.letter_sequence) && block.letter_sequence.length > 0) {
+    const day1 = block.letter_sequence.find(L => L?.day === 1) || block.letter_sequence[0];
+    if (day1?.body) letterText = fill(day1.body);
+  }
+
+  return {
+    phone:  block.phone_script ? fill(block.phone_script) : null,
+    letter: letterText,
+    door:   block.door_script  ? fill(block.door_script)  : null,
+  };
+}
+
+
 function WhatToSaySection({
   dossier,
   deepSignal,
@@ -890,6 +1002,10 @@ function WhatToSaySection({
   canGenerateDeepSignal,
   onGenerateDeepSignal,
 }) {
+  // Pull the agent's profile from auth context so we can read their
+  // voice-generated scripts (populated by /profile/voice onboarding).
+  const { profile } = useAuth();
+
   // Wait-window: don't show a letter, show a hold message.
   if (inWaitWindow && waitOpens) {
     const dateStr = waitOpens.toLocaleDateString(undefined,
@@ -913,23 +1029,36 @@ function WhatToSaySection({
   // Always-on default scripts derived from structural data — addressed
   // to the personal representative on probate leads, the trustee on
   // trusts, the LLC on investor leads, etc. These render immediately
-  // without requiring an LLM call. Deep Signal output (when available)
-  // is preferred per-channel as an upgrade.
-  const defaults = resolveDefaultScripts(archetype, dossier);
+  // without requiring an LLM call.
+  const staticDefaults = resolveDefaultScripts(archetype, dossier);
 
+  // Agent's voice-generated scripts (from /profile/voice onboarding)
+  // override the static defaults when present. The shape is different:
+  //   generated.letter_sequence is an array of 6 letters with day/title/body
+  //   generated.phone_script and generated.door_script are formatted strings
+  // We fold the Day 1 letter into the Letter tab — the full six-letter
+  // sequence remains accessible via the existing Six Letters Modal.
+  const agentScripts = agentGeneratedScripts(profile, archetype, dossier);
+
+  // Final per-channel content priority:
+  //   1. Deep Signal (LLM-enriched, lead-specific) — highest
+  //   2. Agent generated (LLM, agent's voice) — middle
+  //   3. Static defaults (template + token sub) — fallback
   // Build merged tabs: Deep Signal text wins per-channel when present,
-  // otherwise fall back to the template default. Each tab is keyed
-  // on whether it has any content at all (defaults always do).
+  // otherwise agent generated, otherwise template default.
   const channels = [
     { key: 'call', label: 'Phone',
-      content: deepSignal?.call_script || defaults?.phone || null,
-      isDeep: Boolean(deepSignal?.call_script) },
+      content: deepSignal?.call_script || agentScripts?.phone || staticDefaults?.phone || null,
+      isDeep: Boolean(deepSignal?.call_script),
+      isAgentVoice: !deepSignal?.call_script && Boolean(agentScripts?.phone) },
     { key: 'mail', label: 'Letter',
-      content: deepSignal?.mail_script || defaults?.letter || null,
-      isDeep: Boolean(deepSignal?.mail_script) },
+      content: deepSignal?.mail_script || agentScripts?.letter || staticDefaults?.letter || null,
+      isDeep: Boolean(deepSignal?.mail_script),
+      isAgentVoice: !deepSignal?.mail_script && Boolean(agentScripts?.letter) },
     { key: 'door', label: 'Door',
-      content: deepSignal?.door_script || defaults?.door || null,
-      isDeep: Boolean(deepSignal?.door_script) },
+      content: deepSignal?.door_script || agentScripts?.door || staticDefaults?.door || null,
+      isDeep: Boolean(deepSignal?.door_script),
+      isAgentVoice: !deepSignal?.door_script && Boolean(agentScripts?.door) },
   ].filter((t) => t.content);
 
   if (channels.length === 0) {

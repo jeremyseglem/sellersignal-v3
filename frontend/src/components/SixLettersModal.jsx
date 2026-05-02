@@ -1,9 +1,17 @@
 import { useState, useMemo } from 'react';
 import { generateSixLetters } from '../lib/sixLetters.js';
+import { useAuth } from '../lib/AuthContext.jsx';
 
 /**
  * SixLettersModal — renders the 6-letter sequence for a parcel in a
  * centered modal with a day-tab navigator across the top.
+ *
+ * Source priority for letter content:
+ *   1. Agent's voice-generated sequence from profile.generated_scripts
+ *      (set during /profile/voice onboarding) — the agent's own voice,
+ *      LLM-produced once and stored. Tokens substituted at render time.
+ *   2. Static templated sequence from sixLetters.js — the v1 default
+ *      that ships before any agent has voice-onboarded.
  *
  * Props:
  *   parcel:           the parcel object from ParcelDossier (owner_name,
@@ -22,18 +30,30 @@ export default function SixLettersModal({
   onClose,
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
+  const { profile } = useAuth();
 
-  const letters = useMemo(() => generateSixLetters({
-    owner_name:    parcel.owner_name,
-    address:       parcel.address,
-    city:          parcel.city,
-    owner_type:    parcel.owner_type,
-    tenure_years:  parcel.tenure_years,
-    is_absentee:   parcel.is_absentee,
-    is_out_of_state: parcel.is_out_of_state,
-    neighborhood:  parcel.city,
-  }, harvesterMatches || [], archetypeKey || null),
-  [parcel, harvesterMatches, archetypeKey]);
+  const letters = useMemo(() => {
+    // Try agent's voice-generated sequence first.
+    const agentLetters = agentLetterSequence(profile, archetypeKey, parcel, harvesterMatches);
+    if (agentLetters && agentLetters.length > 0) return agentLetters;
+
+    // Fall back to static templated sequence.
+    return generateSixLetters({
+      owner_name:    parcel.owner_name,
+      address:       parcel.address,
+      city:          parcel.city,
+      owner_type:    parcel.owner_type,
+      tenure_years:  parcel.tenure_years,
+      is_absentee:   parcel.is_absentee,
+      is_out_of_state: parcel.is_out_of_state,
+      neighborhood:  parcel.city,
+    }, harvesterMatches || [], archetypeKey || null);
+  }, [profile, parcel, harvesterMatches, archetypeKey]);
+
+  const usingAgentVoice = useMemo(
+    () => Boolean(agentLetterSequence(profile, archetypeKey, parcel, harvesterMatches)),
+    [profile, parcel, harvesterMatches, archetypeKey]
+  );
 
   const letter = letters[activeIdx];
   const mailAddr = parcel.owner_address
@@ -187,15 +207,17 @@ export default function SixLettersModal({
           }}>
             {letter.name}
           </div>
-          <div style={{
-            fontSize: 12,
-            color: 'var(--text-tertiary)',
-            fontStyle: 'italic',
-            marginBottom: 'var(--space-lg)',
-            fontFamily: 'var(--font-serif)',
-          }}>
-            Trigger: {letter.trigger}
-          </div>
+          {letter.trigger && (
+            <div style={{
+              fontSize: 12,
+              color: 'var(--text-tertiary)',
+              fontStyle: 'italic',
+              marginBottom: 'var(--space-lg)',
+              fontFamily: 'var(--font-serif)',
+            }}>
+              Trigger: {letter.trigger}
+            </div>
+          )}
 
           {/* Recipient block */}
           <div style={{
@@ -230,7 +252,9 @@ export default function SixLettersModal({
           gap: 'var(--space-md)',
         }}>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-            Templates are personalized from parcel data. No AI, no cost.
+            {usingAgentVoice
+              ? 'Letters in your voice. Lead-specific details substituted automatically.'
+              : 'Templates are personalized from parcel data. No AI, no cost.'}
           </div>
           <button
             onClick={() => {
@@ -253,4 +277,100 @@ export default function SixLettersModal({
       </div>
     </div>
   );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// agentLetterSequence — pulls the agent's voice-generated 6-letter
+// sequence for the given archetype, substitutes lead-specific tokens,
+// and returns it in the shape SixLettersModal expects:
+//   [{ num, name, dayLabel, trigger, body }, ...]
+//
+// Returns null when:
+//   - no profile (not signed in or profile not loaded yet)
+//   - profile has no generated_scripts at all
+//   - profile has generated_scripts but not for this archetype
+//   - the archetype block exists but has no letter_sequence array
+//
+// Token vocabulary matches the prompt construction in
+// backend/agent_voice/prompts.py:
+//   [PROPERTY_ADDRESS], [NEIGHBORHOOD], [RECIPIENT_NAME],
+//   [DECEDENT_NAME], [AGENT_NAME]
+// ─────────────────────────────────────────────────────────────────────
+function agentLetterSequence(profile, archetypeKey, parcel, harvesterMatches) {
+  if (!profile || !archetypeKey) return null;
+  const scripts = profile.generated_scripts;
+  if (!scripts || typeof scripts !== 'object') return null;
+
+  const block = scripts[archetypeKey];
+  if (!block || typeof block !== 'object') return null;
+  if (!Array.isArray(block.letter_sequence) || block.letter_sequence.length === 0) return null;
+
+  // Resolve lead tokens (same logic as agentGeneratedScripts in
+  // ParcelDossierV2.jsx — kept duplicated here so the modal works
+  // standalone without importing the dossier's helper).
+  const matches = harvesterMatches || [];
+  let pr = null, decedent = null;
+  for (const m of matches) {
+    if (!pr && m.personal_representative && m.personal_representative.name_first) {
+      pr = m.personal_representative;
+    }
+    if (!decedent && m.signal_type === 'probate') {
+      const parties = m.all_case_parties || [];
+      const dec = parties.find((p) => p.role === 'deceased' || p.role === 'decedent');
+      if (dec && (dec.name_first || dec.name_last)) decedent = dec;
+    }
+    if (pr && decedent) break;
+  }
+
+  const ownerName = parcel?.owner_name || '';
+  const looksLikeEntity = /\b(trust|llc|inc|corp|company|co\.?|partners|llp|lp)\b/i.test(ownerName);
+  const ownerFirst = (!looksLikeEntity && ownerName) ? ownerName.trim().split(/\s+/)[0] : null;
+
+  let recipientName;
+  if (archetypeKey === 'probate' && pr?.name_first) {
+    recipientName = pr.name_first;
+  } else if (archetypeKey === 'trust') {
+    recipientName = 'Trustees';
+  } else if (looksLikeEntity) {
+    recipientName = ownerName;
+  } else if (ownerFirst) {
+    recipientName = ownerFirst;
+  } else {
+    recipientName = 'Friend';
+  }
+
+  const decedentName = decedent
+    ? `${decedent.name_first || ''} ${decedent.name_last || ''}`.trim()
+    : 'your loved one';
+
+  const tokens = {
+    '[PROPERTY_ADDRESS]': parcel?.address || 'this property',
+    '[NEIGHBORHOOD]':     parcel?.city || 'the area',
+    '[RECIPIENT_NAME]':   recipientName,
+    '[DECEDENT_NAME]':    decedentName,
+    '[AGENT_NAME]':       profile.full_name || '',
+  };
+
+  function fill(s) {
+    if (typeof s !== 'string') return s;
+    let out = s;
+    for (const [tok, val] of Object.entries(tokens)) {
+      const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(esc, 'g'), val);
+    }
+    return out;
+  }
+
+  // Map agent's {day, title, body} shape onto the modal's expected
+  // {num, name, dayLabel, trigger, body} shape.
+  return block.letter_sequence
+    .filter(L => L && (L.body || L.title))
+    .map((L, idx) => ({
+      num:      idx + 1,
+      name:     L.title || `Letter ${idx + 1}`,
+      dayLabel: `Day ${L.day || (idx === 0 ? 1 : idx === 1 ? 30 : idx === 2 ? 60 : idx === 3 ? 90 : idx === 4 ? 135 : 180)}`,
+      trigger:  '',  // not used in agent-voice mode (the LLM doesn't emit a trigger field)
+      body:     fill(L.body || ''),
+    }));
 }
