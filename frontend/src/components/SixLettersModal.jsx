@@ -363,12 +363,15 @@ function agentLetterSequence(profile, archetypeKey, parcel, harvesterMatches) {
   }
 
   // Map agent's {day, title, body} shape onto the modal's expected
-  // {num, name, dayLabel, trigger, body} shape.
+  // {num, name, dayLabel, trigger, body} shape. Both title and body
+  // run through fill() so tokens like [PROPERTY_ADDRESS] in titles
+  // (e.g. "Regarding the property at [PROPERTY_ADDRESS]") get
+  // substituted, not displayed raw.
   return block.letter_sequence
     .filter(L => L && (L.body || L.title))
     .map((L, idx) => ({
       num:      idx + 1,
-      name:     L.title || `Letter ${idx + 1}`,
+      name:     fill(L.title || `Letter ${idx + 1}`),
       dayLabel: `Day ${L.day || (idx === 0 ? 1 : idx === 1 ? 30 : idx === 2 ? 60 : idx === 3 ? 90 : idx === 4 ? 135 : 180)}`,
       trigger:  '',  // not used in agent-voice mode (the LLM doesn't emit a trigger field)
       body:     fill(L.body || ''),

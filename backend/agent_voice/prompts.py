@@ -290,6 +290,18 @@ Use these placeholder tokens for lead-specific details (they will be substituted
 - [DECEDENT_NAME]    (probate only — the name of the deceased)
 - [AGENT_NAME]       (the agent's signature)
 
+Letter formatting requirements:
+
+EVERY letter in letter_sequence MUST open with a salutation that uses the [RECIPIENT_NAME] token. The first line of every letter body should be one of:
+- "Dear [RECIPIENT_NAME],"
+- "[RECIPIENT_NAME],"
+- "To the [RECIPIENT_NAME]," (use this form ONLY for trust archetype, where the recipient is "Trustees")
+- For probate where "the family" is the addressee instead of a named PR, use "To the family," — but only when [RECIPIENT_NAME] is not a person's first name (the system substitutes "Friend" as a fallback when the PR isn't identified, in which case "Dear Friend," is fine).
+
+After the salutation, blank line, then the letter body. End with a blank line, then [AGENT_NAME] on its own line as the signature.
+
+Do NOT skip the salutation. Do NOT bury the addressee in the second sentence. The recipient sees their name first.
+
 Phone script formatting: include "BEFORE YOU CALL" / "OPENER" / "REASON" / "LIKELY REACTIONS" (with 3 reaction branches: send-info / not-interested / busy) / "GRACEFUL EXIT" / "AFTER THE CALL" sections. The agent's spoken lines should be marked "YOU:".
 
 Door script formatting: include "BEFORE YOU KNOCK — JUDGMENT CALL" (with at least 2-3 specific situational rules: when to knock, when to leave a card without knocking) / "OPENER" / "LIKELY REACTIONS" / "LEAVE-BEHIND" sections.
