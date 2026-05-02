@@ -8,6 +8,18 @@ Agent profile API.
                                   territories grid to show 'claimed by
                                   Jeremy Seglem')
 
+  POST /api/agent/generate-scripts — runs the voice product generation:
+                                  reads voice_sample/stance/bio from the
+                                  agent's profile, runs 6 archetype LLM
+                                  calls in parallel, stores the result
+                                  in generated_scripts. Sets
+                                  voice_onboarding_completed_at.
+
+  PUT  /api/agent/edit-script — agent's edit of one generated script
+                                  (post-generation, the agent reviews
+                                  what the LLM produced and edits before
+                                  saving as canonical).
+
 Authentication is via the Bearer token in the Authorization header.
 The frontend sends the Supabase Auth session's access_token; this
 module verifies it via supabase.auth.get_user(token) and pulls the
@@ -43,6 +55,7 @@ router = APIRouter()
 # onboarding doesn't blow away other fields.
 
 class ProfileUpdate(BaseModel):
+    # Identity (existing)
     full_name:      Optional[str] = None
     phone:          Optional[str] = None
     brokerage:      Optional[str] = None
@@ -52,6 +65,11 @@ class ProfileUpdate(BaseModel):
     signature_url:  Optional[str] = None
     logo_url:       Optional[str] = None
     onboarding_completed_at: Optional[str] = None  # ISO timestamp
+
+    # Voice product (migration 014)
+    voice_sample:   Optional[str] = None
+    stance:         Optional[dict] = None  # JSONB — {key: value} per AGENT_VOICE_V1.md
+    bio:            Optional[dict] = None  # JSONB — {background, geographic_anchors, affiliations}
 
 
 # ── Endpoints ───────────────────────────────────────────────────
