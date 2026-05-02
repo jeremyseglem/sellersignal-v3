@@ -2131,3 +2131,313 @@ async def promote_match_review_deletion_endpoint(
                  'you want lead categories re-evaluated against the '
                  'reduced match set.'),
     }
+
+
+# ─── Agent voice generation — smoke test endpoint ─────────────────────
+# This is the prompt that will become POST /api/agent/generate-scripts
+# once the schema lands. For now it's a passthrough: takes voice/stance/
+# bio in the request body, constructs the prompt, calls Anthropic,
+# returns raw output. No auth-coupling, no DB write, no validation —
+# just lets us iterate the prompt against real model output before
+# committing to the surrounding infrastructure.
+#
+# Once we're satisfied with output quality:
+#   1. Migrate this prompt construction into a helper module
+#   2. Build POST /api/agent/generate-scripts that reads from the
+#      authenticated user's agent_profiles_v3 row
+#   3. Delete this endpoint
+
+_AGENT_VOICE_SYSTEM_PROMPT = """You are helping a real estate agent write seller outreach in their own voice.
+
+Your job is not to create a polished marketing template.
+Your job is to preserve the agent's actual tone, restraint, confidence, and way of speaking.
+
+Rules:
+- Sound like the agent, not like a copywriter.
+- Avoid salesy language.
+- Avoid "I hope this finds you well."
+- Avoid pressure.
+- Avoid overexplaining.
+- Do not invent credentials, statistics, or personal claims.
+- Use plain language.
+- The message should feel human, specific, and appropriate to the situation."""
+
+
+_ARCHETYPE_CONTEXT = {
+    'probate': """The recipient is the personal representative of an estate after a death — a family member (often spouse, adult child, or sibling) who has been appointed by the court to administer the deceased's affairs. They are dealing with grief AND administrative complexity simultaneously. The property may need to be sold, transferred to a beneficiary, or held; that decision belongs to the family on their timeline. The agent should NOT pressure, NOT assume the property will be sold, and NOT address the deceased.""",
+
+    'divorce': """The recipient is an owner navigating a divorce or asset division. The property may be subject to a settlement decision. This requires extreme discretion — the agent must NOT mention divorce directly, MUST NOT imply the agent has private knowledge of the situation, and should frame outreach around generic "property decisions during life transitions" without specifying what kind. The owner may not yet have decided whether to sell.""",
+
+    'investor': """The recipient is an institutional or investor owner (often an LLC, trust holding investment property, or out-of-area individual). The property is held as an asset, not a primary residence. Conversation expectations are business-tone — disposition timing, cap rate, 1031 considerations, off-market opportunity. The owner is sophisticated; do not over-explain market basics.""",
+
+    'trust': """The recipient is the trustee of a trust holding the property. The trustee may be the spouse, an adult child, a professional, or a family-elected representative. The decision about the property is FIDUCIARY — made on behalf of beneficiaries, in coordination with counsel and accountants, on the trust's timeline. Tone should be respectful of fiduciary duty, institutional rather than personal.""",
+
+    'longTenure': """The recipient is a long-time homeowner — typically 15+ years at the property — with no obvious distress signal or court filing. There is no urgent trigger. The goal is to start a relationship, not push for a listing. Tone should be soft, patient, locally credible. Avoid 'your home is worth' hype. Do not assume they want to sell or that life events are imminent.""",
+
+    'estateTransition': """The recipient is part of a family with a long-held property in a transition phase — multi-generational ownership, possible upcoming inheritance, or recent family changes that may affect the property. No court filing has occurred yet. Tone should be relational, family-aware, low-pressure.""",
+}
+
+
+_BIO_USAGE_RULES = """Bio material rules:
+
+- The agent has provided background information. Use it ONLY when it connects organically to this specific lead's parcel, neighborhood, or situation.
+
+- Most letters should NOT reference the agent's background at all. Default to silence on bio.
+
+- When background is referenced, it should appear once, briefly, in service of the lead — never as preamble or self-introduction.
+
+- NEVER force a connection that isn't there. "As a fellow Bellevue resident" only works when the lead is in Bellevue AND the agent has named Bellevue in their geographic_anchors.
+
+- Bio material should NEVER reference the lead's personal details (their employer, their school, their family). Bio matches happen at the parcel/neighborhood level, not the person level.
+
+- Affiliations (brokerage, boards, press) belong in letter 4 or letter 6 of a sequence, not letter 1."""
+
+
+def _stance_to_behavior(stance: dict) -> str:
+    """Convert the stance vector into explicit behavioral instructions.
+    The LLM sees the behavioral instructions, not the raw keys. This
+    is what makes outputs deterministic per agent."""
+    lines = []
+
+    sa = stance.get('structural_acknowledgment', 'indirect')
+    if sa == 'direct':
+        lines.append('- It is acceptable to reference the situation explicitly (e.g., "I came across the probate filing"). The agent prefers being upfront about the source.')
+    elif sa == 'indirect':
+        lines.append('- Do not reference filings, court records, or the source of how the agent learned about this situation. Keep the source vague (e.g., "I work with families navigating decisions about a home").')
+    else:
+        lines.append('- The agent reads the situation case-by-case. Default to vague unless the lead context strongly justifies being explicit.')
+
+    tempo = stance.get('first_contact_tempo', 'first')
+    if tempo == 'first':
+        lines.append('- This agent values being early. Tone of letter 1 is timely, not delayed or hesitant.')
+    else:
+        lines.append('- This agent prefers to come in late and quiet. Letter 1 should acknowledge the volume of cold outreach and position itself as different.')
+
+    sub = stance.get('first_letter_substance', 'relationship')
+    if sub == 'substance':
+        lines.append('- Lead with substance and market knowledge in early letters, not introduction or relationship.')
+    else:
+        lines.append('- Lead with introduction and relationship in early letters. Substance and market data appear in later letters (60+ days in).')
+
+    length = stance.get('preferred_length', 'long_rare')
+    if length == 'short_frequent':
+        lines.append('- Letters should run SHORT — 3-5 sentences max per letter. Brevity is part of the voice.')
+    else:
+        lines.append('- Letters can run longer (5-12 sentences) — this agent prefers fewer, weightier touches over short frequent ones.')
+
+    fu = stance.get('follow_up_posture', 'cadence')
+    if fu == 'cadence':
+        lines.append('- Continue the cadence even without response. The full 6-letter sequence runs regardless of reply.')
+    else:
+        lines.append('- After 1-2 letters with no response, the sequence steps back. Letters 3-6 should reflect that posture (less frequent, more "standing offer" tone).')
+
+    pv = stance.get('price_voice', 'only_when_asked')
+    if pv == 'comfortable_early':
+        lines.append('- The agent is comfortable referencing specific values, comps, or dollar figures in early letters where useful.')
+    else:
+        lines.append('- Avoid specific numbers, comps, or valuations unless the lead has explicitly asked. Substance comes through framing, not numbers, in cold outreach.')
+
+    sp = stance.get('self_presentation', 'understated')
+    if sp == 'direct':
+        lines.append('- The agent will reference experience, transactions, and credentials directly when relevant to credibility.')
+    else:
+        lines.append('- Do not foreground the agent\'s experience or credentials. The work speaks. Letters should rarely reference the agent\'s background.')
+
+    ca = stance.get('competitor_acknowledgment', 'dont_reference')
+    if ca == 'acknowledge':
+        lines.append('- It is acceptable to acknowledge the agent\'s competition directly (e.g., "if you\'ve decided to work with someone else, that\'s fine"). Naming the elephant builds trust.')
+    else:
+        lines.append('- Do not reference other agents or competing offers. Focus on what this agent brings.')
+
+    dk = stance.get('door_knock_posture', 'signal_required')
+    if dk == 'cold_open':
+        lines.append('- Door scripts can assume the agent is comfortable cold-knocking. Default opener engages directly when someone answers.')
+    else:
+        lines.append('- Door scripts should default to leave-behind only — cards and notes left at the door, not active engagement, unless explicit signal indicates the recipient wants conversation.')
+
+    pp = stance.get('phone_posture', 'letter_first')
+    if pp == 'comfortable_cold':
+        lines.append('- Phone scripts assume the agent is comfortable calling cold as the first touch.')
+    else:
+        lines.append('- Phone scripts default to letter-first posture: the call comes only after a letter, or only after the recipient has signaled willingness.')
+
+    return '\n'.join(lines)
+
+
+def _format_bio(bio: dict) -> str:
+    """Format bio dict into the prompt-block. Returns 'No bio provided.'
+    when empty — the prompt rules already say to default to silence on
+    bio, so empty just makes that explicit."""
+    if not bio:
+        return 'No bio provided.'
+
+    parts = []
+
+    bg = bio.get('background', '').strip()
+    if bg:
+        parts.append(f'Background:\n{bg}')
+
+    anchors = bio.get('geographic_anchors', [])
+    if anchors:
+        anchor_lines = []
+        for a in anchors:
+            if isinstance(a, dict):
+                n = a.get('neighborhood', '').strip()
+                r = a.get('relationship', '').strip()
+                if n and r:
+                    anchor_lines.append(f'- {n}: {r}')
+                elif n:
+                    anchor_lines.append(f'- {n}')
+        if anchor_lines:
+            parts.append('Geographic anchors:\n' + '\n'.join(anchor_lines))
+
+    aff = bio.get('affiliations', '').strip()
+    if aff:
+        parts.append(f'Affiliations:\n{aff}')
+
+    if not parts:
+        return 'No bio provided.'
+    return '\n\n'.join(parts)
+
+
+def _build_voice_prompt(voice_sample: str, stance: dict, bio: dict,
+                        archetype: str) -> str:
+    """Construct the per-archetype user prompt."""
+    archetype_context = _ARCHETYPE_CONTEXT.get(archetype, _ARCHETYPE_CONTEXT['longTenure'])
+    behavior = _stance_to_behavior(stance)
+    bio_block = _format_bio(bio)
+
+    return f"""Here is how this agent communicates:
+
+{voice_sample.strip() if voice_sample else '(No voice sample provided — use a neutral, measured, professional voice as a default.)'}
+
+Behavioral implications for this agent (apply these strictly):
+{behavior}
+
+Agent bio (use only when organically relevant to the lead's parcel or neighborhood):
+
+{bio_block}
+
+{_BIO_USAGE_RULES}
+
+Now write this agent's outreach for the following situation:
+
+Archetype: {archetype}
+
+Context:
+{archetype_context}
+
+Write the full outreach package as a JSON object with these keys:
+
+{{
+  "letter_sequence": [
+    {{ "day": 1,   "title": "...", "body": "..." }},
+    {{ "day": 30,  "title": "...", "body": "..." }},
+    {{ "day": 60,  "title": "...", "body": "..." }},
+    {{ "day": 90,  "title": "...", "body": "..." }},
+    {{ "day": 135, "title": "...", "body": "..." }},
+    {{ "day": 180, "title": "...", "body": "..." }}
+  ],
+  "phone_script": "...",
+  "door_script": "..."
+}}
+
+Use these placeholder tokens for lead-specific details (they will be substituted at render time):
+- [PROPERTY_ADDRESS]
+- [NEIGHBORHOOD]
+- [RECIPIENT_NAME]   (the personal representative for probate, the trustee for trust, the owner for others)
+- [DECEDENT_NAME]    (probate only — the name of the deceased)
+- [AGENT_NAME]       (the agent's signature)
+
+Phone script formatting: include "BEFORE YOU CALL" / "OPENER" / "REASON" / "LIKELY REACTIONS" (with 3 reaction branches: send-info / not-interested / busy) / "GRACEFUL EXIT" / "AFTER THE CALL" sections. The agent's spoken lines should be marked "YOU:".
+
+Door script formatting: include "BEFORE YOU KNOCK — JUDGMENT CALL" (with at least 2-3 specific situational rules: when to knock, when to leave a card without knocking) / "OPENER" / "LIKELY REACTIONS" / "LEAVE-BEHIND" sections.
+
+Output only the JSON object. No preamble, no markdown fence."""
+
+
+@router.post("/voice-smoketest", dependencies=[Depends(require_admin)])
+async def voice_smoketest_endpoint(payload: dict):
+    """
+    Construct the agent-voice prompt from the supplied inputs, call
+    Anthropic, return raw output. No DB write, no auth-tied storage.
+    Pure passthrough so we can iterate the prompt against real model
+    output before building the surrounding infrastructure.
+
+    Request body:
+    {
+      "voice_sample": "...",
+      "stance": { ...10 keys... },
+      "bio": { background, geographic_anchors, affiliations },
+      "archetype": "probate" | "divorce" | "investor" | "trust" |
+                   "longTenure" | "estateTransition"
+    }
+
+    Returns:
+    {
+      "archetype": "...",
+      "model": "claude-sonnet-4-20250514",
+      "tokens_in": N, "tokens_out": N,
+      "raw_output": "...",       # the full string Anthropic returned
+      "parsed": { ... } | null,  # JSON.parse'd if it parses cleanly
+      "user_prompt": "...",      # the full constructed user prompt,
+                                 # for prompt-debugging
+    }
+
+    Errors out if the Anthropic SDK is unavailable or the API call fails.
+    """
+    voice_sample = payload.get('voice_sample', '')
+    stance = payload.get('stance', {}) or {}
+    bio = payload.get('bio', {}) or {}
+    archetype = payload.get('archetype', 'longTenure')
+
+    if archetype not in _ARCHETYPE_CONTEXT:
+        raise HTTPException(400, f"unknown archetype: {archetype}")
+
+    user_prompt = _build_voice_prompt(voice_sample, stance, bio, archetype)
+
+    try:
+        from anthropic import Anthropic
+    except ImportError as e:
+        raise HTTPException(503, f"Anthropic SDK not available: {e}")
+
+    client = Anthropic()
+
+    try:
+        resp = client.messages.create(
+            model='claude-sonnet-4-20250514',
+            max_tokens=4000,
+            system=_AGENT_VOICE_SYSTEM_PROMPT,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Anthropic API call failed: {e}")
+
+    raw_output = resp.content[0].text if resp.content else ''
+
+    # Try to JSON-parse — if it works, return parsed. If not, return null
+    # for parsed and let the caller eyeball raw_output.
+    parsed = None
+    try:
+        import json as _json
+        # Strip markdown code fences if the model added them despite instructions
+        clean = raw_output.strip()
+        if clean.startswith('```'):
+            # Remove first line (```json or ```) and last line (```)
+            lines = clean.split('\n')
+            if lines[0].startswith('```'): lines = lines[1:]
+            if lines and lines[-1].strip() == '```': lines = lines[:-1]
+            clean = '\n'.join(lines)
+        parsed = _json.loads(clean)
+    except Exception:
+        parsed = None
+
+    return {
+        'archetype': archetype,
+        'model': 'claude-sonnet-4-20250514',
+        'tokens_in': getattr(resp.usage, 'input_tokens', None),
+        'tokens_out': getattr(resp.usage, 'output_tokens', None),
+        'raw_output': raw_output,
+        'parsed': parsed,
+        'user_prompt': user_prompt,
+    }
