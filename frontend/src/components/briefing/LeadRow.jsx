@@ -164,9 +164,25 @@ function buildSignalHint(lead) {
 
   // Strongest signal: a harvester match with a date. Frame as
   // "Probate filed N weeks ago" / "Divorce filed N months ago".
+  //
+  // Strength tiebreak: if any STRICT match exists (and isn't flagged
+  // by the audit as suspicious), prefer it over weak/medium matches
+  // even if those are more recent. Otherwise the lead-row subtitle
+  // can disagree with the dossier header (e.g. row says "Divorce
+  // filed 2 days ago" because a weak surname-collision divorce hit
+  // 2 days ago, but the actual driver is a strict probate from 4
+  // days ago that made this Call Now). We surface what's driving
+  // the lead, not what's most recent.
   if (matches.length > 0) {
-    // Sort by matched_at desc, take the most recent
-    const dated = matches
+    const isAuthoritative = (m) =>
+      m.match_strength === 'strict'
+      && m.match_review_status !== 'needs_review'
+      && m.match_review_status !== 'likely_false_positive';
+
+    const authoritative = matches.filter(isAuthoritative);
+    const pool = authoritative.length > 0 ? authoritative : matches;
+
+    const dated = pool
       .filter((m) => m.matched_at && m.signal_type)
       .sort((a, b) => (b.matched_at || '').localeCompare(a.matched_at || ''));
     if (dated.length > 0) {
@@ -176,7 +192,7 @@ function buildSignalHint(lead) {
       return elapsed ? `${label} ${elapsed}` : label;
     }
     // Has matches but no dates — fall back to the type alone
-    const m = matches[0];
+    const m = pool[0] || matches[0];
     return SIGNAL_LABELS[m.signal_type] || _humanize(m.signal_type);
   }
 

@@ -1273,10 +1273,40 @@ function EvidenceSection({ dossier }) {
   const sales = dossier?.sales_history || [];
   const parcel = dossier?.parcel || {};
 
+  // Filter: when this parcel has a STRICT match of one signal type
+  // (e.g. strict probate with a confirmed family PR), hide any WEAK
+  // match of a DIFFERENT signal type. These cross-type weak matches
+  // are usually surname-token collisions from the matcher — e.g. a
+  // weak divorce match attaches to a parcel because someone with the
+  // same surname filed for divorce, unrelated to the parcel owner.
+  // Same-type weak matches are kept (a household can have multiple
+  // real probate filings over time). Standalone weak matches on a
+  // parcel with no strict driver are also kept (they're the parcel's
+  // only signal — better to show than hide).
+  //
+  // 'needs_review' strict matches are NOT treated as authoritative
+  // for filtering purposes — a strict match flagged as suspicious
+  // shouldn't be allowed to suppress other evidence.
+  const validStrictTypes = new Set(
+    matches
+      .filter(m => m.match_strength === 'strict'
+                && m.match_review_status !== 'needs_review'
+                && m.match_review_status !== 'likely_false_positive')
+      .map(m => m.signal_type)
+  );
+  const filteredMatches = matches.filter(m => {
+    if (m.match_strength === 'strict') return true;
+    if (m.match_strength !== 'weak') return true;  // medium kept as-is
+    // weak: keep only if no strict-of-different-type exists
+    if (validStrictTypes.size === 0) return true;
+    if (validStrictTypes.has(m.signal_type)) return true;
+    return false;
+  });
+
   const items = [];
 
   // Harvester matches
-  for (const m of matches) {
+  for (const m of filteredMatches) {
     const label = signalLabel(m.signal_type);
     const date = m.event_date || m.matched_at;
     const dateStr = formatDate(date);
