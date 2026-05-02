@@ -14,6 +14,7 @@ import {
   formatEquity,
   isWithinWaitWindow,
   waitWindowOpensDate,
+  resolveDefaultScripts,
 } from '../lib/archetypePlaybooks.js';
 import SixLettersModal from './SixLettersModal.jsx';
 import ClaimZipModal from './briefing/ClaimZipModal.jsx';
@@ -336,6 +337,7 @@ export default function ParcelDossierV2({ dossier, onClose }) {
         />
 
         <WhatToSaySection
+          dossier={dossier}
           deepSignal={deepSignal}
           deepSignalLoading={deepSignalLoading}
           deepSignalError={deepSignalError}
@@ -876,6 +878,7 @@ function ContactSection({ parcel, archetype, equityDollars, personalRep, onGetCo
 
 
 function WhatToSaySection({
+  dossier,
   deepSignal,
   deepSignalLoading,
   deepSignalError,
@@ -905,36 +908,87 @@ function WhatToSaySection({
     );
   }
 
-  // Have a Deep Signal — render its content
-  if (deepSignal && (deepSignal.motivation || deepSignal.call_script || deepSignal.mail_script)) {
+  // Always-on default scripts derived from structural data — addressed
+  // to the personal representative on probate leads, the trustee on
+  // trusts, the LLC on investor leads, etc. These render immediately
+  // without requiring an LLM call. Deep Signal output (when available)
+  // is preferred per-channel as an upgrade.
+  const defaults = resolveDefaultScripts(archetype, dossier);
+
+  // Build merged tabs: Deep Signal text wins per-channel when present,
+  // otherwise fall back to the template default. Each tab is keyed
+  // on whether it has any content at all (defaults always do).
+  const channels = [
+    { key: 'call', label: 'Phone',
+      content: deepSignal?.call_script || defaults?.phone || null,
+      isDeep: Boolean(deepSignal?.call_script) },
+    { key: 'mail', label: 'Letter',
+      content: deepSignal?.mail_script || defaults?.letter || null,
+      isDeep: Boolean(deepSignal?.mail_script) },
+    { key: 'door', label: 'Door',
+      content: deepSignal?.door_script || defaults?.door || null,
+      isDeep: Boolean(deepSignal?.door_script) },
+  ].filter((t) => t.content);
+
+  if (channels.length === 0) {
+    // No archetype matched and no Deep Signal — should be impossible
+    // given the general fallback, but handle defensively.
     return (
       <Section label="What to say">
-        <DeepSignalContent ds={deepSignal} />
+        <p style={{ color: 'var(--text-secondary)' }}>
+          No outreach script available for this lead yet.
+        </p>
       </Section>
     );
   }
 
-  // No Deep Signal yet — offer generation if eligible, otherwise a
-  // generic archetype-specific intro.
+  // Default tab: prefer Deep Signal's recommended best_channel, else
+  // the archetype's primary action ("send-letter" → 'mail'), else first.
+  const defaultTab =
+      deepSignal?.best_channel === 'mail' ? 'mail'
+    : deepSignal?.best_channel === 'door' ? 'door'
+    : deepSignal?.best_channel === 'call' ? 'call'
+    : archetype?.primaryAction?.kind === 'send-letter' ? 'mail'
+    : channels[0].key;
+
   return (
     <Section label="What to say">
-      {canGenerateDeepSignal ? (
-        <>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: 10 }}>
-            Generate a {archetype.tone}-tone outreach script tailored to
-            this lead's signals.
+      <ScriptTabs
+        channels={channels}
+        defaultTab={defaultTab}
+        deepSignalMotivation={deepSignal?.motivation}
+        deepSignalWhatNotToSay={deepSignal?.what_not_to_say}
+        deepSignalTimeline={deepSignal?.timeline}
+        deepSignalBestChannel={deepSignal?.best_channel}
+      />
+      {/* Generate Deep Signal button — kept available below the tabs
+          for future use when external enrichment (LinkedIn / news /
+          public records) is wired. With templates already producing
+          a working script, the button is now an upgrade option, not
+          a requirement to see anything. */}
+      {canGenerateDeepSignal && !deepSignal && (
+        <div style={{
+          marginTop: 16, paddingTop: 12,
+          borderTop: '1px solid var(--border)',
+        }}>
+          <p style={{
+            fontSize: 12, color: 'var(--text-secondary)',
+            marginBottom: 8, lineHeight: 1.4,
+          }}>
+            Looking for additional context (public records, professional
+            background, news mentions)?
           </p>
           <button
             onClick={onGenerateDeepSignal}
             disabled={deepSignalLoading}
             style={{
-              padding: '8px 14px',
-              fontSize: 12,
+              padding: '6px 12px',
+              fontSize: 11,
               fontWeight: 600,
-              border: 'none',
+              border: '1px solid var(--border)',
               borderRadius: 'var(--radius-md)',
-              background: 'var(--text)',
-              color: 'var(--bg-card)',
+              background: 'transparent',
+              color: 'var(--text)',
               cursor: deepSignalLoading ? 'wait' : 'pointer',
               opacity: deepSignalLoading ? 0.6 : 1,
               fontFamily: 'var(--font-sans)',
@@ -945,8 +999,7 @@ function WhatToSaySection({
           </button>
           {deepSignalError && (
             <div style={{
-              marginTop: 8,
-              fontSize: 12,
+              marginTop: 8, fontSize: 12,
               color: 'var(--call-now)',
               fontStyle: 'italic',
               fontFamily: 'var(--font-serif)',
@@ -954,11 +1007,128 @@ function WhatToSaySection({
               {deepSignalError}
             </div>
           )}
-        </>
-      ) : (
-        <ArchetypeIntroLetter archetype={archetype} />
+        </div>
       )}
     </Section>
+  );
+}
+
+
+function ScriptTabs({
+  channels,
+  defaultTab,
+  deepSignalMotivation,
+  deepSignalWhatNotToSay,
+  deepSignalTimeline,
+  deepSignalBestChannel,
+}) {
+  const [tab, setTab] = useState(
+    channels.find((c) => c.key === defaultTab) ? defaultTab : channels[0].key
+  );
+  const active = channels.find((c) => c.key === tab) || channels[0];
+
+  return (
+    <>
+      {/* Deep Signal motivation — only shown when there's a real
+          motivation from the LLM. Default scripts don't have a
+          motivation block — the structural copy in WHY THIS PERSON
+          covers that role above. */}
+      {deepSignalMotivation && (
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 14,
+          color: 'var(--text)',
+          lineHeight: 1.55,
+          marginBottom: 12,
+        }}>
+          {deepSignalMotivation}
+        </p>
+      )}
+      {(deepSignalTimeline || deepSignalBestChannel) && (
+        <p style={{
+          fontSize: 11,
+          color: 'var(--text-secondary)',
+          letterSpacing: '0.05em',
+          textTransform: 'uppercase',
+          marginBottom: 12,
+        }}>
+          {deepSignalTimeline && <>Timeline: {deepSignalTimeline}</>}
+          {deepSignalTimeline && deepSignalBestChannel && '   '}
+          {deepSignalBestChannel && <>Lead with: {deepSignalBestChannel}</>}
+        </p>
+      )}
+
+      {/* Tabs */}
+      <div style={{
+        display: 'flex',
+        gap: 16,
+        borderBottom: '1px solid var(--border)',
+        marginBottom: 12,
+      }}>
+        {channels.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => setTab(c.key)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              padding: '6px 0',
+              fontSize: 13,
+              fontWeight: tab === c.key ? 700 : 500,
+              color: tab === c.key ? 'var(--text)' : 'var(--text-secondary)',
+              borderBottom: tab === c.key
+                ? '2px solid var(--accent)'
+                : '2px solid transparent',
+              cursor: 'pointer',
+              fontFamily: 'var(--font-sans)',
+              letterSpacing: '0.02em',
+            }}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Active tab content. Whitespace preserved for letter line breaks. */}
+      <p style={{
+        fontFamily: 'var(--font-serif)',
+        fontSize: 14,
+        color: 'var(--text)',
+        lineHeight: 1.6,
+        whiteSpace: 'pre-wrap',
+        fontStyle: active.isDeep ? 'italic' : 'normal',
+      }}>
+        {active.content}
+      </p>
+
+      {deepSignalWhatNotToSay && (
+        <div style={{
+          marginTop: 16,
+          padding: 12,
+          background: 'var(--call-now-bg, #fef6f3)',
+          borderRadius: 'var(--radius-md)',
+        }}>
+          <div style={{
+            fontSize: 11,
+            fontWeight: 700,
+            color: 'var(--call-now)',
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+            marginBottom: 6,
+          }}>
+            What not to say
+          </div>
+          <p style={{
+            fontSize: 13,
+            color: 'var(--text-secondary)',
+            lineHeight: 1.5,
+            margin: 0,
+          }}>
+            {deepSignalWhatNotToSay}
+          </p>
+        </div>
+      )}
+    </>
   );
 }
 
