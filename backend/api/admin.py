@@ -2164,18 +2164,27 @@ Three fidelity rules that override everything else:
 
 2. DISTINCTIVE PHRASES from the voice sample should appear VERBATIM somewhere in the output, not paraphrased. If the sample says "That's your decision, on your timeline" — use that exact phrase, do not rewrite it as "the timing is yours" or "it's your call." The agent's signature moves are the most important voice signal.
 
-3. BANNED PHRASES — these are dead giveaways of LLM house style and must not appear:
-   - "I'd be honored" / "honored to"
-   - "navigating" (as in "navigating decisions")
-   - "I hope this finds you well"
-   - "weight of both" / "weight of this" / similar sentimental abstraction
-   - "during this difficult time"
-   - "if it ever does" (corny redundancy after a conditional)
-   - "I understand how complex this process can be"
-   - "I want you to know that..." (preamble)
-   - "Please don't hesitate to..." (formal cliche)
-   - "I'd love to..." / "I'd welcome the opportunity to..."
-   - Any sentence that begins with "Whether you..." or "Whether that's..." (LLM tic)
+3. NO TWIN SENTIMENTALITY. The default LLM warmth pattern is to pair two sentimental statements: "I hope X. I hope Y." or "I want you to know X. I want you to know Y." or "If you sold, I hope it went smoothly. If you held it, I hope it brings peace." This is a dead giveaway. The agent's voice produces ONE controlled sentence of warmth at most, then returns to substance. Never pair warmth statements. If you find yourself writing a second "I hope..." — delete the first and rewrite without either.
+
+BANNED PHRASES — these are dead giveaways of LLM house style. Any of these appearing in your output will fail the fidelity bar:
+- "I'd be honored" / "honored to" / "honored by"
+- "I'd welcome the chance" / "I'd welcome the opportunity" / "welcome the opportunity to"
+- "I'd love to" / "would love to"
+- "navigating" (as in "navigating decisions" or "navigating a transition")
+- "I hope this finds you well"
+- "weight of both" / "weight of this" / similar sentimental abstraction
+- "during this difficult time" / "in this difficult time"
+- "if it ever does" / "if it ever comes" (corny redundancy after a conditional)
+- "I understand how complex this process can be" / "I understand how difficult"
+- "I want you to know that..." / "I just want you to know..."
+- "I just wanted to make sure you knew" (wordy hedge)
+- "Please don't hesitate to..." (formal cliche)
+- "I hope it brings" / "I hope it brings peace" / "brings the family peace"
+- "I hope it went smoothly"
+- Any sentence beginning with "Whether you..." or "Whether that's..." (LLM tic)
+- "I imagine you've made" (presumptuous LLM warmth)
+- "respects your timeline" / "respects your process" (corporate)
+- Adjective stacking for warmth: "genuine," "heartfelt," "sincere," "thoughtful" used as filler
 
 Other rules:
 - Sound like the agent, not like a copywriter.
@@ -2184,8 +2193,51 @@ Other rules:
 - Avoid overexplaining.
 - Do not invent credentials, statistics, or personal claims.
 - Use plain words. Complexity comes from sentence structure, not vocabulary.
-- If you are tempted to add an adjective for warmth ("genuine," "heartfelt," "sincere," "thoughtful"), don't. The structure does the work; adjectives drain it.
+- If you are tempted to add an adjective for warmth, don't. The structure does the work; adjectives drain it.
 - Sign-offs that do warmth work the body should be doing ("Warm regards," "With sincere gratitude") are forbidden. End on the actual point or a flat closer."""
+
+
+# Post-generation enforcement: if output contains any banned phrase,
+# retry once with an emphatic instruction that names the violation.
+# Cheaper than a second full prompt redesign and catches the cases
+# where the LLM ignores the in-prompt list.
+_BANNED_REGEXES = [
+    r"\bI'd be honored\b",
+    r"\bhonored to\b",
+    r"\bI'd welcome the (chance|opportunity)\b",
+    r"\bwelcome the opportunity\b",
+    r"\bI'd love to\b",
+    r"\bwould love to\b",
+    r"\bnavigating\b",
+    r"I hope this finds you well",
+    r"\bweight of (both|this)\b",
+    r"\bduring this difficult time\b",
+    r"\bin this difficult time\b",
+    r"\bif it ever does\b",
+    r"\bif it ever comes\b",
+    r"I understand how (complex|difficult)",
+    r"\bI want you to know that\b",
+    r"\bI just want(ed)? to (make sure|let you know)\b",
+    r"\bPlease don't hesitate\b",
+    r"I hope it brings",
+    r"I hope it went smoothly",
+    r"^\s*Whether (you|that|that's|this)\b",
+    r"\bI imagine you've made\b",
+    r"\brespects your timeline\b",
+    r"\brespects your process\b",
+]
+
+
+def _detect_banned_phrases(text: str) -> list[str]:
+    """Return list of banned-phrase regexes that matched in text. Used
+    by the smoke-test endpoint and the eventual generate-scripts
+    endpoint to gate on output quality."""
+    import re
+    hits = []
+    for pat in _BANNED_REGEXES:
+        if re.search(pat, text, re.IGNORECASE | re.MULTILINE):
+            hits.append(pat)
+    return hits
 
 
 _ARCHETYPE_CONTEXT = {
@@ -2439,16 +2491,63 @@ async def voice_smoketest_endpoint(payload: dict):
         raise HTTPException(502, f"Anthropic API call failed: {e}")
 
     raw_output = resp.content[0].text if resp.content else ''
+    tokens_in = getattr(resp.usage, 'input_tokens', None)
+    tokens_out = getattr(resp.usage, 'output_tokens', None)
 
-    # Try to JSON-parse — if it works, return parsed. If not, return null
-    # for parsed and let the caller eyeball raw_output.
+    # Post-generation enforcement: scan for banned phrases. If any
+    # appear, fire one retry with an emphatic instruction that names
+    # the specific violations. Caps at one retry — if it still violates,
+    # return both attempts so we can see what the model did.
+    violations = _detect_banned_phrases(raw_output)
+    retry_output = None
+    retry_violations = None
+    retry_tokens_in = None
+    retry_tokens_out = None
+    if violations:
+        retry_msg = (
+            "Your previous output violated the BANNED PHRASES rule. "
+            "Specifically, these patterns appeared and must not:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+            + "\n\nRewrite the entire output. Same JSON structure, same "
+              "lead-specific token placeholders, same archetype context — "
+              "but do not use any of the patterns above. Replace each "
+              "with phrasing that fits the agent's actual cadence (em-dash, "
+              "short flat sentences after long ones, no twin sentimentality, "
+              "no LLM warmth tells). Output only the JSON object."
+        )
+        try:
+            retry_resp = client.messages.create(
+                model='claude-sonnet-4-20250514',
+                max_tokens=4000,
+                system=_AGENT_VOICE_SYSTEM_PROMPT,
+                messages=[
+                    {'role': 'user', 'content': user_prompt},
+                    {'role': 'assistant', 'content': raw_output},
+                    {'role': 'user', 'content': retry_msg},
+                ],
+            )
+            retry_output = retry_resp.content[0].text if retry_resp.content else ''
+            retry_violations = _detect_banned_phrases(retry_output)
+            retry_tokens_in = getattr(retry_resp.usage, 'input_tokens', None)
+            retry_tokens_out = getattr(retry_resp.usage, 'output_tokens', None)
+        except Exception:
+            # Retry failed for non-content reasons — keep first attempt.
+            retry_output = None
+
+    # The "winner" is the retry output if it has fewer violations; else
+    # the original. Caller can inspect both via the response.
+    final_output = retry_output if (
+        retry_output is not None
+        and retry_violations is not None
+        and len(retry_violations) < len(violations)
+    ) else raw_output
+
+    # Try to JSON-parse the final output.
     parsed = None
     try:
         import json as _json
-        # Strip markdown code fences if the model added them despite instructions
-        clean = raw_output.strip()
+        clean = final_output.strip()
         if clean.startswith('```'):
-            # Remove first line (```json or ```) and last line (```)
             lines = clean.split('\n')
             if lines[0].startswith('```'): lines = lines[1:]
             if lines and lines[-1].strip() == '```': lines = lines[:-1]
@@ -2460,9 +2559,16 @@ async def voice_smoketest_endpoint(payload: dict):
     return {
         'archetype': archetype,
         'model': 'claude-sonnet-4-20250514',
-        'tokens_in': getattr(resp.usage, 'input_tokens', None),
-        'tokens_out': getattr(resp.usage, 'output_tokens', None),
+        'tokens_in': tokens_in,
+        'tokens_out': tokens_out,
+        'retry_tokens_in': retry_tokens_in,
+        'retry_tokens_out': retry_tokens_out,
+        'first_attempt_violations': violations,
+        'retry_violations': retry_violations,
+        'used_retry': final_output is retry_output,
         'raw_output': raw_output,
+        'retry_output': retry_output,
+        'final_output': final_output,
         'parsed': parsed,
         'user_prompt': user_prompt,
     }
