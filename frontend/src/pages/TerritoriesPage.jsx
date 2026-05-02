@@ -128,7 +128,6 @@ export default function TerritoriesPage({ agent = null, onSignOut = null }) {
                     fontFamily: 'var(--font-sans)',
                   }}>
                     {z.parcel_count?.toLocaleString() || 0} parcels ·
-                    {' '}{z.investigated_count?.toLocaleString() || 0} investigated ·
                     {' '}{z.current_call_now_count || 0} on this week&rsquo;s CALL NOW
                   </div>
                 </div>
