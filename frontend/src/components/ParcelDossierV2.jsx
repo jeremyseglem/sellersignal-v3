@@ -384,6 +384,8 @@ export default function ParcelDossierV2({ dossier, onClose }) {
       {sixLettersOpen && (
         <SixLettersModal
           parcel={parcel}
+          harvesterMatches={dossier?.harvester_matches}
+          archetypeKey={archetype?.key}
           onClose={() => setSixLettersOpen(false)}
         />
       )}

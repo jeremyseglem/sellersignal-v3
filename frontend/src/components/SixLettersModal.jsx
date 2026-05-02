@@ -6,11 +6,21 @@ import { generateSixLetters } from '../lib/sixLetters.js';
  * centered modal with a day-tab navigator across the top.
  *
  * Props:
- *   parcel:   the parcel object from ParcelDossier (owner_name, address,
- *             city, owner_type, tenure_years, is_absentee, is_out_of_state)
- *   onClose:  () => void
+ *   parcel:           the parcel object from ParcelDossier (owner_name,
+ *                     address, city, owner_type, tenure_years,
+ *                     is_absentee, is_out_of_state)
+ *   harvesterMatches: optional — harvester_matches array from the dossier;
+ *                     used to resolve probate PR / decedent for addressing
+ *   archetypeKey:     optional — archetype.key from detectArchetype;
+ *                     dispatches to the right 6-letter sequence
+ *   onClose:          () => void
  */
-export default function SixLettersModal({ parcel, onClose }) {
+export default function SixLettersModal({
+  parcel,
+  harvesterMatches,
+  archetypeKey,
+  onClose,
+}) {
   const [activeIdx, setActiveIdx] = useState(0);
 
   const letters = useMemo(() => generateSixLetters({
@@ -22,7 +32,8 @@ export default function SixLettersModal({ parcel, onClose }) {
     is_absentee:   parcel.is_absentee,
     is_out_of_state: parcel.is_out_of_state,
     neighborhood:  parcel.city,
-  }), [parcel]);
+  }, harvesterMatches || [], archetypeKey || null),
+  [parcel, harvesterMatches, archetypeKey]);
 
   const letter = letters[activeIdx];
   const mailAddr = parcel.owner_address
