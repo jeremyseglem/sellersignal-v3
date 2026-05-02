@@ -25,6 +25,8 @@ import LeadRow from './LeadRow.jsx';
 export default function PipelineList({
   buildNowLeads,
   holdLeads,
+  buildNowTotal,
+  holdTotal,
   selectedPin,
   onPickLead,
 }) {
@@ -41,13 +43,14 @@ export default function PipelineList({
 
   if (merged.length === 0) return null;
 
-  // Display the underlying counts from the unmerged arrays so the
-  // header matches what the agent sees referenced from the oracle
-  // line above. Dedupe doesn't change these much in practice
-  // (Build Now and Holds are mostly disjoint), but we render the
-  // raw counts because that's what the agent's mental model expects.
-  const buildCount = (buildNowLeads || []).length;
-  const holdCount  = (holdLeads || []).length;
+  // Header counts: prefer the TRUE totals passed in from the briefing
+  // stats (true eligible-pool sizes from the backend before render-cap).
+  // Fall back to the local rendered-list lengths when totals aren't
+  // supplied — that keeps the component compatible with older callers
+  // and with backend versions that haven't yet shipped the *_total
+  // fields.
+  const buildCount = (buildNowTotal != null) ? buildNowTotal : (buildNowLeads || []).length;
+  const holdCount  = (holdTotal != null)     ? holdTotal     : (holdLeads || []).length;
 
   // Header parts. Both are conditional — a small ZIP could have only
   // pipeline or only watch-list leads. Render whichever exists.

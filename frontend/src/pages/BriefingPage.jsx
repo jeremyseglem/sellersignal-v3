@@ -147,10 +147,18 @@ function BriefingBody() {
   // neither bucket — Build Now is active pipeline, Holds are watch
   // list, and "X more building" reads as jargon to a cold visitor.
   const actionCount   = Math.min(actionLeads.length, 5);
+  // Prefer build_now_total / strategic_holds_total — these are the
+  // TRUE eligible-pool sizes the backend computes before applying
+  // the render-list cap. Fall back to *_count (rendered-list size)
+  // and finally to the local array length for backward compat.
   const buildNowCount =
-      briefing?.stats?.build_now_count ?? pipelineLeads.buildNow.length;
+      briefing?.stats?.build_now_total
+   ?? briefing?.stats?.build_now_count
+   ?? pipelineLeads.buildNow.length;
   const holdsCount    =
-      briefing?.stats?.strategic_holds_count ?? pipelineLeads.holds.length;
+      briefing?.stats?.strategic_holds_total
+   ?? briefing?.stats?.strategic_holds_count
+   ?? pipelineLeads.holds.length;
   const parcelCount   =
       briefing?.stats?.total_parcels
    ?? stats?.parcel_count
@@ -242,6 +250,8 @@ function BriefingBody() {
               <PipelineList
                 buildNowLeads={pipelineLeads.buildNow}
                 holdLeads={pipelineLeads.holds}
+                buildNowTotal={buildNowCount}
+                holdTotal={holdsCount}
                 selectedPin={selectedPin}
                 onPickLead={handlePickLead}
               />

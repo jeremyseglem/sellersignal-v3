@@ -714,6 +714,50 @@ def select_strategic_holds(leads, exclude_pins, used_owner_keys, n=2):
     return picks
 
 
+def count_build_now_eligible(leads, exclude_pins, used_owner_keys) -> int:
+    """Return the TRUE size of the Build Now eligible pool, without
+    capping or running the diversity/scoring logic. Mirrors the
+    `in_pool` filter inside select_build_now exactly. Used by the
+    briefings endpoint to report honest pipeline counts to the UI
+    alongside a smaller rendered list.
+
+    Owner-key dedup is intentional: the rendered list dedups by owner
+    surname (one lead per family), so the count must too — otherwise
+    Brian sees '892 in pipeline' but only 700 unique sellers.
+    """
+    seen_owner_keys = set()
+    count = 0
+    for L in leads:
+        if L.get('band') != 2: continue
+        if L['pin'] in exclude_pins: continue
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        if ok in seen_owner_keys: continue
+        if _has_blocker(L): continue
+        seen_owner_keys.add(ok)
+        count += 1
+    return count
+
+
+def count_strategic_holds_eligible(leads, exclude_pins, used_owner_keys) -> int:
+    """Return the TRUE size of the Strategic Holds eligible pool.
+    Mirrors the filter inside select_strategic_holds exactly."""
+    EXCLUDED_FAMILIES = ('financial_stress', 'investor_disposition')
+    seen_owner_keys = set()
+    count = 0
+    for L in leads:
+        if L.get('band') != 2: continue
+        if L['pin'] in exclude_pins: continue
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        if ok in seen_owner_keys: continue
+        if _has_blocker(L): continue
+        if L.get('signal_family') in EXCLUDED_FAMILIES: continue
+        seen_owner_keys.add(ok)
+        count += 1
+    return count
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  MAIN
 # ──────────────────────────────────────────────────────────────────────

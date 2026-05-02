@@ -576,6 +576,26 @@ async def get_briefing(
 
         call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys,
                                              n=cn_n)
+
+        # ── True pool sizes for header counts ──
+        # The rendered Build Now / Holds lists are capped (100 / 1000)
+        # for performance and curation. But the UI's "X in pipeline" /
+        # "X on watch list" header counts must reflect the TRUE pool
+        # size — Brian asked "how many leads are actually in my ZIP?"
+        # and seeing exactly 100 / 1000 across every ZIP feels broken.
+        # Helpers mirror the selector's eligibility filters exactly,
+        # including owner-key dedup so the count and the rendered list
+        # measure the same population.
+        #
+        # Order: call_now has already mutated used_owner_keys with its
+        # picks, so the build_now count correctly excludes families
+        # that call_now claimed. We count build_now BEFORE running
+        # select_build_now (which will further mutate used_owner_keys),
+        # then count holds AFTER select_build_now so its mutations
+        # are also reflected.
+        build_now_total = _ws.count_build_now_eligible(
+            leads, exclude_pins, used_owner_keys)
+
         # Build Now defaults to a cap of 100. The earlier Round 1 fix
         # removed an artificial 8-cap, but uncapped (n=None → 1000) made
         # Build Now eat the entire Band 2 pool, leaving Strategic Holds
@@ -586,6 +606,10 @@ async def get_briefing(
         # than a list dump.
         build_now_leads = _ws.select_build_now(leads, exclude_pins, used_owner_keys,
                                                n=bn_n if bn_n is not None else 100)
+
+        strategic_holds_total = _ws.count_strategic_holds_eligible(
+            leads, exclude_pins, used_owner_keys)
+
         hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
                                                     n=hd_n if hd_n is not None else 1000)
 
@@ -658,6 +682,12 @@ async def get_briefing(
             'call_now_count':      len(call_now_picks),
             'build_now_count':     len(build_now_picks),
             'strategic_holds_count': len(hold_picks),
+            # True eligible-pool sizes (before the 100 / 1000 render cap).
+            # The frontend header copy "N in pipeline · M on watch list"
+            # should read these, not the *_count fields above (which
+            # reflect the rendered list, not the true pool).
+            'build_now_total':         build_now_total,
+            'strategic_holds_total':   strategic_holds_total,
         }
 
         response = {
@@ -722,6 +752,8 @@ async def get_briefing_summary(zip_code: str = Depends(require_live_zip)):
         'call_now_count':   full['stats']['call_now_count'],
         'build_now_count':  full['stats']['build_now_count'],
         'strategic_holds_count': full['stats']['strategic_holds_count'],
+        'build_now_total':       full['stats'].get('build_now_total'),
+        'strategic_holds_total': full['stats'].get('strategic_holds_total'),
         'top_3':            full['playbook']['call_now'][:3],
     }
 
