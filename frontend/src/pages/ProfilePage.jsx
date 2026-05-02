@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { getAccessToken } from '../lib/supabase.js';
@@ -155,6 +156,8 @@ export default function ProfilePage() {
           <Field label="Logo URL"         value={form.logo_url}      onChange={change('logo_url')}      placeholder="https://…" />
         </Section>
 
+        <VoiceSection profile={profile} />
+
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -277,5 +280,83 @@ function Field({ label, value, onChange, placeholder, maxLength }) {
         }}
       />
     </div>
+  );
+}
+
+
+// VoiceSection — state-aware section linking to /profile/voice. When
+// the agent hasn't completed voice onboarding, leads with a stronger
+// CTA ("Set up your voice profile"). When complete, shows
+// "Voice profile complete" with a quieter Edit link. Discovers itself
+// from profile.voice_onboarding_completed_at.
+function VoiceSection({ profile }) {
+  const completed = Boolean(profile?.voice_onboarding_completed_at);
+
+  return (
+    <section style={{
+      marginBottom: 'var(--space-xl)',
+      padding: 'var(--space-lg)',
+      background: 'var(--bg-card)',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-lg)',
+    }}>
+      <h2 style={{
+        fontFamily: 'var(--font-display)',
+        fontSize: 18,
+        fontWeight: 600,
+        color: 'var(--text)',
+        margin: 0,
+        marginBottom: 'var(--space-xs)',
+      }}>
+        Your voice
+      </h2>
+      <p style={{
+        fontFamily: 'var(--font-serif)',
+        fontSize: 14,
+        color: 'var(--text-secondary)',
+        lineHeight: 1.55,
+        marginTop: 0,
+        marginBottom: 'var(--space-md)',
+      }}>
+        {completed
+          ? 'Your phone, letter, and door scripts are generated and rendering on every lead. Refine your voice profile or regenerate scripts anytime.'
+          : 'Generate phone, letter, and door scripts in your own voice. We ask how you sound, how you approach sellers, and what makes you you. Takes about ten minutes.'}
+      </p>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--space-md)',
+        flexWrap: 'wrap',
+      }}>
+        <Link
+          to="/profile/voice"
+          style={{
+            display: 'inline-block',
+            padding: '10px 18px',
+            fontSize: 13,
+            fontWeight: 600,
+            fontFamily: 'var(--font-sans)',
+            color: completed ? 'var(--text)' : 'var(--text-inverse, #fff)',
+            background: completed ? 'transparent' : 'var(--accent)',
+            border: completed ? '1px solid var(--border)' : 'none',
+            borderRadius: 'var(--radius-md)',
+            textDecoration: 'none',
+            letterSpacing: '0.02em',
+          }}
+        >
+          {completed ? 'Edit voice profile →' : 'Set up your voice profile →'}
+        </Link>
+        {completed && profile?.voice_onboarding_completed_at && (
+          <span style={{
+            fontSize: 12,
+            color: 'var(--text-tertiary)',
+            fontStyle: 'italic',
+            fontFamily: 'var(--font-serif)',
+          }}>
+            Last generated {new Date(profile.voice_onboarding_completed_at).toLocaleDateString()}
+          </span>
+        )}
+      </div>
+    </section>
   );
 }
