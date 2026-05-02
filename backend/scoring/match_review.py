@@ -97,6 +97,10 @@ def classify_match(filing_name: str, owner_name: str) -> tuple[str, str, float]:
 
     The gate runs in this order:
 
+      0. Sentinel/placeholder filing_name (e.g. tax foreclosure parcel-
+         level matches that have no real name to compare) → likely_valid.
+         The match was made by PIN, not by name; name-match logic
+         doesn't apply.
       1. Token overlap < 2 → likely_false_positive (insufficient evidence)
       2. Particles drove the overlap → likely_false_positive (particle_only)
       3. Trust-formatted → likely_valid (we trust soft-gate floor here)
@@ -107,6 +111,16 @@ def classify_match(filing_name: str, owner_name: str) -> tuple[str, str, float]:
       5. Different first-name token in same position → likely_false_positive
       6. Otherwise (e.g. one side missing middle) → needs_review
     """
+    # --- Step 0: parcel-level matches (tax foreclosure, etc.) carry a
+    # placeholder string in matched_party and are not name-based. They
+    # were made by PIN and have nothing to do with name disambiguation.
+    # Sentinel patterns we've observed in production:
+    #   "(Tax Foreclosure — parcel match)"
+    #   "(parcel match)"
+    fname_lower = (filing_name or '').lower()
+    if 'parcel match' in fname_lower or not filing_name.strip():
+        return (STATUS_LIKELY_VALID, REASON_CLEARED, 1.0)
+
     a_tokens = normalize_name(filing_name)
     b_tokens = normalize_name(owner_name)
     overlap = a_tokens & b_tokens

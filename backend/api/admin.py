@@ -2046,3 +2046,88 @@ async def match_review_queue_endpoint(
         'filtered_by_status': status,
         'filtered_by_zip': zip_code,
     }
+
+
+@router.post("/promote-match-review-deletion", dependencies=[Depends(require_admin)])
+async def promote_match_review_deletion_endpoint(
+    confirm: bool = False,
+    reason: Optional[str] = None,
+):
+    """
+    DELETE rows from raw_signal_matches_v3 whose shadow-mode verdict
+    matches the given reason (and is `likely_false_positive`).
+
+    This is the "promotion" step that turns a shadow-mode finding into a
+    real cleanup. Use this AFTER reviewing the queue endpoint output and
+    confirming the reason cohort is safe to remove.
+
+    Required:
+      ?reason=<tag>           e.g. 'insufficient_overlap',
+                                   'first_name_diff',
+                                   'middle_initial_disagree'
+
+    Optional:
+      ?confirm=true           required for any writes; default is dry-run
+
+    Behavior:
+      - Only deletes rows where match_review_status='likely_false_positive'
+        AND match_review_reason=<reason>.
+      - Does NOT delete other false-positive reasons; one promotion =
+        one named cohort. This keeps each cleanup step traceable.
+      - Does NOT touch raw_signals_v3 or parcels_v3 — the underlying
+        court filing is preserved, only the (probably-bad) parcel
+        attribution is removed.
+      - Is destructive. The deleted rows are gone; re-creating them
+        requires re-running the matcher against the original signals.
+
+    Returns row counts before/after.
+    """
+    if not reason:
+        raise HTTPException(400, "reason query param is required (e.g. ?reason=insufficient_overlap)")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase not configured.")
+
+    # Count what we'd delete
+    count_q = (supa.table('raw_signal_matches_v3')
+                  .select('id', count='exact')
+                  .eq('match_review_status', 'likely_false_positive')
+                  .eq('match_review_reason', reason)
+                  .limit(1)
+                  .execute())
+    n_to_delete = count_q.count or 0
+
+    if not confirm:
+        # Pull a sample for the dry-run report
+        sample = (supa.table('raw_signal_matches_v3')
+                     .select('id, pin, raw_signal_id, match_confidence_score')
+                     .eq('match_review_status', 'likely_false_positive')
+                     .eq('match_review_reason', reason)
+                     .limit(5)
+                     .execute())
+        return {
+            'dry_run': True,
+            'reason': reason,
+            'rows_matching': n_to_delete,
+            'sample_ids': [r['id'] for r in (sample.data or [])],
+            'note': f'Pass ?confirm=true to delete these {n_to_delete} rows.',
+        }
+
+    # Execute deletion
+    res = (supa.table('raw_signal_matches_v3')
+              .delete()
+              .eq('match_review_status', 'likely_false_positive')
+              .eq('match_review_reason', reason)
+              .execute())
+    deleted = len(res.data or [])
+
+    return {
+        'dry_run': False,
+        'reason': reason,
+        'rows_matched_before': n_to_delete,
+        'rows_deleted': deleted,
+        'note': ('Run /api/admin/rescore/{zip} for any affected ZIP if '
+                 'you want lead categories re-evaluated against the '
+                 'reduced match set.'),
+    }
