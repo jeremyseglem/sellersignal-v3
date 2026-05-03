@@ -21,9 +21,6 @@ import Logo from '../components/shell/Logo.jsx';
 //   4. Territory — condensed list, real availability count
 //   5. Footer CTA — direct, no metaphor
 
-const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED === 'true';
-
-
 export default function HomePage() {
   return (
     <SiteLayout mode="public" showFooter>
@@ -97,17 +94,8 @@ function Hero() {
           flexWrap: 'wrap',
           marginBottom: 'var(--space-lg)',
         }}>
-          {AUTH_REQUIRED ? (
-            <>
-              <Link to="/signup" style={ctaPrimary}>Request access</Link>
-              <Link to="/login"  style={ctaGhost}>Sign in</Link>
-            </>
-          ) : (
-            <>
-              <Link to="/territories" style={ctaPrimary}>Open the briefing</Link>
-              <Link to="/zip/98004"   style={ctaGhost}>Sample a territory</Link>
-            </>
-          )}
+          <Link to="/login" style={ctaPrimary}>Sign in</Link>
+          <Link to="/signup" style={ctaGhost}>Request access</Link>
         </div>
 
         <div style={{
@@ -436,11 +424,8 @@ function FooterCTA() {
           gap: 'var(--space-md)',
           flexWrap: 'wrap',
         }}>
-          {AUTH_REQUIRED ? (
-            <Link to="/signup" style={ctaPrimary}>Request access</Link>
-          ) : (
-            <Link to="/territories" style={ctaPrimary}>Open the briefing</Link>
-          )}
+          <Link to="/login" style={ctaPrimary}>Sign in</Link>
+          <Link to="/signup" style={ctaGhost}>Request access</Link>
         </div>
       </div>
     </section>
