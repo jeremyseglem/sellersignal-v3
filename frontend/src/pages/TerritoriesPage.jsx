@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { territory } from '../api/client.js';
+import { territory, safeErrorMessage } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 
@@ -34,7 +34,7 @@ export default function TerritoriesPage() {
   useEffect(() => {
     territory.status()
       .then(setData)
-      .catch((e) => setError(e?.detail?.detail || e?.message || 'Failed to load territories'));
+      .catch((e) => setError(safeErrorMessage(e, 'Failed to load territories')));
   }, []);
 
   async function confirmClaim() {
@@ -49,7 +49,7 @@ export default function TerritoriesPage() {
       setClaimModal(null);
       navigate(`/zip/${claimModal.zip_code}`);
     } catch (e) {
-      setClaimError(e?.detail?.detail || e?.message || 'Claim failed');
+      setClaimError(safeErrorMessage(e, 'Claim failed'));
     } finally {
       setClaiming(false);
     }

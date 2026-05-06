@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { getAccessToken } from '../lib/supabase.js';
-import { agentVoice } from '../api/client.js';
+import { agentVoice, safeErrorMessage } from '../api/client.js';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 
 /**
@@ -242,7 +242,7 @@ export default function VoiceOnboardingPage() {
         document.getElementById('voice-results')?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
     } catch (e) {
-      setError(e?.detail?.detail || e?.message || 'Generation failed.');
+      setError(safeErrorMessage(e, 'Generation failed.'));
     } finally {
       setGenerating(false);
     }

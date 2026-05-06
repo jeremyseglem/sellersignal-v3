@@ -10,14 +10,15 @@ import { getAccessToken } from '../lib/supabase.js';
 const API_BASE = '/api';
 
 async function request(path, options = {}) {
+  const { headers: optHeaders, ...rest } = options;
   const url = `${API_BASE}${path}`;
   const resp = await fetch(url, {
     credentials: 'include',
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...(options.headers || {}),
+      ...(optHeaders || {}),
     },
-    ...options,
   });
 
   if (!resp.ok) {
@@ -31,6 +32,28 @@ async function request(path, options = {}) {
   }
 
   return resp.json();
+}
+
+/**
+ * safeErrorMessage — coerce an arbitrary error (especially the
+ * structured detail blob FastAPI returns on 422 validation errors)
+ * into a string suitable for rendering as a React child.
+ *
+ * FastAPI 422 shape is: {"detail": [{"type", "loc", "msg", "input"}]}
+ * Rendering that array directly causes React error #31. This helper
+ * extracts the first .msg from the array, or falls through to the
+ * usual string-detail / err.message paths.
+ */
+export function safeErrorMessage(err, fallback = 'Something went wrong') {
+  const detail = err?.detail?.detail ?? err?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail[0]?.msg) {
+    // Surface the first validation error in human form
+    const loc = Array.isArray(detail[0].loc) ? detail[0].loc.join('.') : '';
+    return loc ? `${detail[0].msg} (${loc})` : detail[0].msg;
+  }
+  if (typeof detail === 'object' && detail?.message) return detail.message;
+  return err?.message || fallback;
 }
 
 /**
