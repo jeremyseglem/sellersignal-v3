@@ -1164,7 +1164,6 @@ KC_ZIP_TO_CITY = {
     "98052": "Redmond",
     "98103": "Seattle",
     "98105": "Seattle",
-    "98136": "Seattle",
     "98112": "Seattle",
     "98136": "Seattle",
     "98199": "Seattle",
