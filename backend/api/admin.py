@@ -1289,6 +1289,7 @@ _canon_job: Optional[dict] = None
 DEFAULT_CANON_ROSTER = [
     "98005", "98006", "98007", "98033", "98040",
     "98052", "98105", "98112", "98199", "98039",  # 98039 last as a no-op (already done)
+    "98103", "98136",  # added 2026-05-07 — new ZIPs from this session's build
 ]
 CANON_BATCH_LIMIT = 500
 
