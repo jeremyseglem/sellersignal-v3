@@ -825,6 +825,151 @@ async def ereal_sales(pin: str = Path(..., pattern=r'^[0-9A-Z]+$')):
 
 # ─── Reband (re-run band assignment after reclassify) ────────────────────────
 
+# ─── ZIP build pipeline — register / ingest / publish ───────────────────────
+# These three complete the end-to-end build pipeline so a new ZIP can be
+# added entirely via HTTP. The other steps (canonicalize, reclassify-
+# archetypes, reband) already exist as endpoints above. The full sequence
+# for adding a new ZIP via curl is:
+#
+#   POST /api/admin/register/{zip}          (this file)
+#   POST /api/admin/ingest/{zip}            (this file)
+#   POST /api/admin/canonicalize/{zip}?limit=500  (loop, existing endpoint)
+#   POST /api/admin/reclassify-archetypes/{zip}   (existing endpoint)
+#   POST /api/admin/reband/{zip}                  (existing endpoint)
+#   POST /api/admin/publish/{zip}?force=true      (this file)
+
+@router.post("/register/{zip_code}", dependencies=[Depends(require_admin)])
+async def register_zip(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    market_key: str = "WA_KING",
+    city: Optional[str] = None,
+    state: str = "WA",
+    source_url: Optional[str] = None,
+):
+    """
+    Add a ZIP to zip_coverage_v3 with status=in_development. Idempotent —
+    returns success-no-op if the ZIP is already registered.
+
+    For King County ZIPs: city defaults from KC_ZIP_TO_CITY if not given.
+    source_url defaults to the standard KC ArcGIS endpoint if not given.
+
+    This is step 1 of the build pipeline. After this, run /ingest/{zip}.
+    """
+    from backend.ingest.zip_builder import cmd_register
+    import io
+    import contextlib
+
+    # Default city from the KC map for known KC ZIPs
+    if city is None:
+        city = KC_ZIP_TO_CITY.get(zip_code)
+        if city is None and market_key == "WA_KING":
+            raise HTTPException(
+                400,
+                f"ZIP {zip_code} not in KC_ZIP_TO_CITY. Pass ?city=... "
+                f"explicitly, or add it to the map in admin.py.",
+            )
+        if city is None:
+            city = "Unknown"
+
+    # Default source URL for KC if not given
+    if source_url is None and market_key == "WA_KING":
+        source_url = (
+            "https://gismaps.kingcounty.gov/arcgis/rest/services/"
+            "Property/KingCo_Parcels/MapServer/0"
+        )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cmd_register(zip_code, market_key, city, state, source_url)
+
+    output = buf.getvalue()
+    if rc != 0:
+        raise HTTPException(500, f"Register failed: {output}")
+    return {
+        "ok": True,
+        "zip_code": zip_code,
+        "market_key": market_key,
+        "city": city,
+        "state": state,
+        "source_url": source_url,
+        "log": output,
+    }
+
+
+@router.post("/ingest/{zip_code}", dependencies=[Depends(require_admin)])
+async def ingest_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
+    """
+    Pull parcels from the market's ArcGIS source into parcels_v3.
+    Paginates against the live KC GIS endpoint, parses each feature,
+    upserts. Idempotent — re-running just refreshes the rows.
+
+    Wall-clock: ~2-3 minutes for a 10K-parcel ZIP. Should comfortably
+    fit under Railway's 10-minute HTTP timeout for any KC ZIP. If a
+    larger market needs background-task handling later, follow the
+    rematch_autofill pattern.
+
+    This is step 2 of the build pipeline. ZIP must be registered first.
+    After this, run /canonicalize/{zip} (loop), /reclassify-archetypes/
+    {zip}, /reband/{zip}, /publish/{zip}.
+    """
+    from backend.ingest.zip_builder import cmd_ingest
+    import io
+    import contextlib
+
+    # cmd_ingest internally calls asyncio.run(...) which would conflict
+    # with FastAPI's running event loop. Run it in a thread so its
+    # nested loop is on its own.
+    import asyncio
+    buf = io.StringIO()
+
+    def _run():
+        with contextlib.redirect_stdout(buf):
+            return cmd_ingest(zip_code)
+
+    rc = await asyncio.to_thread(_run)
+
+    output = buf.getvalue()
+    if rc != 0:
+        raise HTTPException(500, f"Ingest failed: {output}")
+    return {"ok": True, "zip_code": zip_code, "log": output}
+
+
+@router.post("/publish/{zip_code}", dependencies=[Depends(require_admin)])
+async def publish_zip(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    force: bool = False,
+):
+    """
+    Flip zip_coverage_v3.status from in_development to live, making the
+    ZIP claimable by agents and visible in /api/coverage.
+
+    cmd_publish enforces safety checks unless ?force=true:
+      - parcels_ingested_at, archetypes_classified_at, bands_assigned_at,
+        first_investigation_at all stamped
+      - parcel_count > 0
+      - investigated_count > 0
+
+    For ZIPs where investigation hasn't been run (most of the 11
+    existing live ZIPs are in this state), use ?force=true. Tier-2
+    archetype leads work without investigation; only Deep Signal
+    enrichment requires it.
+    """
+    from backend.ingest.zip_builder import cmd_publish
+    import io
+    import contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cmd_publish(zip_code, force=force)
+
+    output = buf.getvalue()
+    if rc != 0:
+        raise HTTPException(500, f"Publish failed: {output}")
+    return {"ok": True, "zip_code": zip_code, "force": force, "log": output}
+
+
+# ─── Reband / reclassify (already wired) ─────────────────────────────────────
+
 @router.post("/reband/{zip_code}", dependencies=[Depends(require_admin)])
 async def reband_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
     """
@@ -1017,6 +1162,7 @@ KC_ZIP_TO_CITY = {
     "98039": "Medina",
     "98040": "Mercer Island",
     "98052": "Redmond",
+    "98103": "Seattle",
     "98105": "Seattle",
     "98112": "Seattle",
     "98199": "Seattle",
