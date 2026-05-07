@@ -65,6 +65,15 @@ async def lifespan(app: FastAPI):
     from backend.tasks.rematch_autofill import rematch_autofill_loop
     rematch_autofill_task = asyncio.create_task(rematch_autofill_loop())
 
+    # Snohomish SCOPI tenure autofill — fills last_transfer_date for
+    # 98290 parcels missing tenure data. Required because the bulk
+    # Snohomish Sales Excel only goes back 5 years, so ~74% of
+    # parcels would otherwise classify as `unknown` tenure. SCOPI's
+    # per-parcel detail page exposes full sale history; this loop
+    # scrapes it. Idle/disabled by default until SCOPI_AUTOFILL_ENABLED=true.
+    from backend.tasks.snohomish_tenure_autofill import snohomish_tenure_autofill_loop
+    snohomish_tenure_autofill_task = asyncio.create_task(snohomish_tenure_autofill_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
@@ -72,6 +81,7 @@ async def lifespan(app: FastAPI):
     obit_autofill_task.cancel()
     treasury_autofill_task.cancel()
     rematch_autofill_task.cancel()
+    snohomish_tenure_autofill_task.cancel()
     try:
         await autofill_task
     except asyncio.CancelledError:
@@ -86,6 +96,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await rematch_autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await snohomish_tenure_autofill_task
     except asyncio.CancelledError:
         pass
 

@@ -2365,3 +2365,82 @@ async def voice_smoketest_endpoint(payload: dict):
         voice_sample, stance, bio, archetype)
     result['model'] = 'claude-sonnet-4-20250514'
     return result
+
+
+# ─── Snohomish SCOPI tenure autofill ────────────────────────────────────────
+@router.get("/snohomish-tenure-autofill-status",
+            dependencies=[Depends(require_admin)])
+async def snohomish_tenure_autofill_status():
+    """
+    Status of the SCOPI tenure autofill background task. Returns the
+    same shape as the rematch-autofill-status endpoint:
+      enabled, started_at, last_tick_at, last_tick_result, total_*,
+      consecutive_errors, parcels_remaining, config.
+    """
+    from backend.tasks.snohomish_tenure_autofill import get_state
+    return get_state()
+
+
+@router.post("/snohomish-tenure-scrape-batch",
+             dependencies=[Depends(require_admin)])
+async def snohomish_tenure_scrape_batch(
+    batch_size: int = 25,
+    confirm: bool = False,
+):
+    """
+    Manually scrape one batch of Snohomish parcels missing tenure data
+    (without going through the background loop). Useful for testing
+    SCOPI scraper end-to-end against the production database before
+    flipping SCOPI_AUTOFILL_ENABLED=true.
+
+    Synchronous — returns when the batch finishes. Each parcel takes
+    ~1.5 seconds (form GET + search POST + politeness delay), so
+    batch_size up to ~25 fits comfortably under Railway's 10-min
+    HTTP timeout.
+
+    Args:
+      batch_size — how many parcels to scrape this call (max 100).
+      confirm    — must be true to proceed (writes to parcels_v3).
+
+    Returns batch result + count of parcels still pending after.
+    """
+    if not confirm:
+        raise HTTPException(400,
+            "This writes last_transfer_date / tenure_checked_at on Snohomish "
+            "parcels. Pass ?confirm=true to proceed.")
+    if batch_size < 1 or batch_size > 100:
+        raise HTTPException(400, "batch_size must be between 1 and 100")
+
+    import asyncio
+    from backend.tasks.snohomish_tenure_autofill import (
+        _run_tick, _count_pending, BATCH_SIZE,
+    )
+    import backend.tasks.snohomish_tenure_autofill as _mod
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+
+    pending_before = _count_pending(supa)
+    if pending_before is None:
+        raise HTTPException(503,
+            "tenure_checked_at column not found — apply schema/017 migration "
+            "in Supabase before running this endpoint.")
+
+    # Temporarily override BATCH_SIZE for this one call
+    original_batch_size = _mod.BATCH_SIZE
+    _mod.BATCH_SIZE = batch_size
+    try:
+        result = await asyncio.to_thread(_run_tick, supa)
+    finally:
+        _mod.BATCH_SIZE = original_batch_size
+
+    pending_after = _count_pending(supa)
+
+    return {
+        "ok":              True,
+        "batch_size":      batch_size,
+        "pending_before":  pending_before,
+        "pending_after":   pending_after,
+        "result":          result,
+    }
