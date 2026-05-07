@@ -86,7 +86,7 @@ export default function TerritoriesPage() {
           fontSize: 15, fontStyle: 'italic', marginTop: 'var(--space-xs)',
           lineHeight: 1.5,
         }}>
-          <Subhead role={data?.role} myZip={data?.my_zip} />
+          <Subhead role={data?.role} myZip={data?.my_zip} zipCount={data?.zips?.length} />
         </p>
       </header>
 
@@ -145,9 +145,10 @@ export default function TerritoriesPage() {
 // Subcomponents
 // ──────────────────────────────────────────────────────────────────
 
-function Subhead({ role, myZip }) {
+function Subhead({ role, myZip, zipCount }) {
   if (role === 'operator') {
-    return (<>Watching all 11 ZIPs in real time. Click any to open the briefing.</>);
+    const n = zipCount ?? 0;
+    return (<>Watching all {n} ZIP{n === 1 ? '' : 's'} in real time. Click any to open the briefing.</>);
   }
   if (myZip) {
     return (<>Your territory is {myZip}. Click below to open this week&rsquo;s playbook.</>);
