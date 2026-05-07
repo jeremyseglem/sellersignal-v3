@@ -145,10 +145,10 @@ def _update_parcel(supa, pin: str, sale_date: Optional[date],
     }
     if sale_date is not None:
         tenure_years = round((today - sale_date).days / 365.25, 1)
-        payload["last_transfer_date"] = sale_date.isoformat()
-        payload["tenure_years"]       = tenure_years
+        payload["last_transfer_date"]  = sale_date.isoformat()
+        payload["tenure_years"]        = tenure_years
         if sale_price is not None and sale_price > 0:
-            payload["sale_price"] = str(sale_price)
+            payload["last_transfer_price"] = sale_price
     # If no sale_date, we leave last_transfer_date NULL but DO stamp
     # tenure_checked_at so the parcel won't be re-scraped.
     (supa.table("parcels_v3")
