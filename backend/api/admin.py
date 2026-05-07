@@ -1406,14 +1406,40 @@ def _run_canonicalize_all(roster: list[str]) -> None:
 
 
 @router.post("/canonicalize-all", dependencies=[Depends(require_admin)])
-async def canonicalize_all(background_tasks: BackgroundTasks):
+async def canonicalize_all(
+    background_tasks: BackgroundTasks,
+    zips: Optional[str] = None,
+):
     """
-    Long-running multi-ZIP canonicalize. Loops the roster in 500-parcel
+    Long-running multi-ZIP canonicalize. Loops a roster in 500-parcel
     batches and persists progress so a slow run doesn't hit the Railway
     edge-proxy timeout. Call once, poll /canonicalize-all/status to
     track. Idempotent — re-running picks up where the prior run left off.
+
+    Roster:
+      - Default: DEFAULT_CANON_ROSTER (all 12 KC ZIPs in coverage)
+      - Override: pass ?zips=98103,98136 to scope to specific ZIPs
+
+    Each ZIP in the roster must be in zip_coverage_v3 — the loop will
+    raise on unknown ZIPs.
     """
     global _canon_job
+
+    # Resolve the roster — explicit override or default
+    if zips:
+        roster = [z.strip() for z in zips.split(",") if z.strip()]
+        # Validate format (5 digits each)
+        for z in roster:
+            if not (len(z) == 5 and z.isdigit()):
+                raise HTTPException(
+                    400,
+                    f"Invalid ZIP in ?zips: {z!r}. Expected comma-separated "
+                    "5-digit ZIPs, e.g. ?zips=98103,98136.",
+                )
+        if not roster:
+            raise HTTPException(400, "?zips parameter is empty.")
+    else:
+        roster = list(DEFAULT_CANON_ROSTER)
 
     with _canon_lock:
         if _canon_job is not None and _canon_job.get("status") == "running":
@@ -1424,21 +1450,20 @@ async def canonicalize_all(background_tasks: BackgroundTasks):
             "started_at":   datetime.now(timezone.utc).isoformat(),
             "completed_at": None,
             "status":       "running",
-            "roster":       list(DEFAULT_CANON_ROSTER),
+            "roster":       list(roster),
             "current_zip":  None,
             "zips":         {z: {"batches_run": 0, "processed": 0,
                                   "cost_usd": 0.0, "low_conf": 0}
-                              for z in DEFAULT_CANON_ROSTER},
+                              for z in roster},
             "errors":       [],
         }
 
-    background_tasks.add_task(_run_canonicalize_all, list(DEFAULT_CANON_ROSTER))
+    background_tasks.add_task(_run_canonicalize_all, list(roster))
 
     return {
         "ok":               True,
-        "message":          f"Canonicalize-all started for {len(DEFAULT_CANON_ROSTER)} ZIPs.",
-        "estimated_cost":   "~$32 USD (Haiku 4.5 tokens, ~$0.0005/parcel × ~64K parcels)",
-        "estimated_hours":  "20-25 (rate-limited at ~50 req/min)",
+        "message":          f"Canonicalize-all started for {len(roster)} ZIP(s): {', '.join(roster)}",
+        "roster":           roster,
         "poll_url":         "/api/admin/canonicalize-all/status",
         "job":              _canon_snapshot(),
     }
