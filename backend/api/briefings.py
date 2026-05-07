@@ -188,6 +188,7 @@ async def get_briefing(
     force_rebuild: bool = Query(False,
         description="Bypass cache and recompute from scratch"),
     authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
 ):
     """
     Full briefing for a ZIP. Returns:
@@ -198,8 +199,20 @@ async def get_briefing(
     # ── Territory gate ─────────────────────────────────────────
     # Operators see all ZIPs; agents see only their assigned_zip.
     # Unauthenticated requests are rejected here (Bearer required).
-    user = _user_from_authorization(authorization)
-    _require_zip_access(user, zip_code)
+    #
+    # Server-to-self exception: the X-Admin-Key fallback exists so
+    # refresh-counts (and similar internal HTTP loopback calls) can
+    # invoke this endpoint without faking a JWT. Admin key already
+    # grants god-mode via /api/admin/*, so this doesn't expand the
+    # effective blast radius. The proper fix is making those callers
+    # invoke the briefing builder in-process instead of going through
+    # HTTP — tracked as a followup.
+    import os as _os
+    _admin_env = (_os.environ.get('ADMIN_KEY') or '').strip()
+    _is_server_call = bool(_admin_env and x_admin_key and x_admin_key == _admin_env)
+    if not _is_server_call:
+        user = _user_from_authorization(authorization)
+        _require_zip_access(user, zip_code)
     # ── Cache check ──
     # The cache key includes every input that materially changes the
     # response, so two requests with different limits or dedup flags
