@@ -370,8 +370,18 @@ async def fetch_parcels_for_zip(
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         while len(all_features) < SAFETY_CAP:
+            # Build the WHERE clause. Snohomish stores SITUSZIP as the
+            # full ZIP+4 string ("98290-1234"), not the 5-digit code,
+            # so an equality filter only catches rows missing the +4
+            # — a small minority. Use LIKE for Snohomish; equality for
+            # KC's 5-digit ZIP5 field.
+            zip_field = config['zip_field']
+            if market_key == 'WA_SNOHOMISH':
+                where_clause = f"{zip_field} LIKE '{zip_code}%'"
+            else:
+                where_clause = f"{zip_field}='{zip_code}'"
             params = {
-                'where': f"{config['zip_field']}='{zip_code}'",
+                'where': where_clause,
                 'outFields': config['out_fields'],
                 'returnGeometry': 'true',
                 'outSR': '4326',  # WGS84 for Leaflet
