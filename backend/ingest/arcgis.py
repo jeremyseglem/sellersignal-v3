@@ -83,6 +83,52 @@ MARKET_CONFIGS = {
         ),
         'default_state': 'WA',
     },
+
+    # ── Snohomish County ───────────────────────────────────────────────
+    # Snohomish exposes far more data than King County does. The public
+    # ArcGIS Hub-backed Parcels FeatureServer includes OWNERNAME,
+    # OWNERLINE1-3, OWNERCITY/STATE/ZIP, TAXPRNAME, full situs address
+    # components, and market values directly. No bulk CSV join needed
+    # for the basic ingest — owner names come straight from the layer.
+    #
+    # Sales history (for tenure_years and last sale price) lives in a
+    # separate Snohomish Sales Excel published quarterly. That join is
+    # done client-side by the build_98290_owners.py script (etc.) and
+    # fed in via /seed-from-json. Same end shape as the KC pipeline.
+    #
+    # Field reference (from FeatureServer/0?f=json on 2026-05-07):
+    #   PARCEL_ID                 -> pin
+    #   OWNERNAME                 -> owner_name (raw)
+    #   TAXPRNAME                 -> taxpayer (used for absentee fallback)
+    #   SITUSHOUSE/PREFX/STRT/    -> address components
+    #     TTYP/POSTD/UNIT
+    #   SITUSCITY                 -> city
+    #   SITUSSTATE                -> state
+    #   SITUSZIP                  -> zip (filter field)
+    #   OWNERCITY/STATE           -> owner_city / owner_state
+    #   MKLND                     -> land_value
+    #   MKIMP                     -> building_value
+    #   MKTTL                     -> total_value (already summed)
+    #   USECODE                   -> prop_type (e.g. "111 Single Family ...")
+    #   GIS_ACRES                 -> acres
+    #   X_COORD / Y_COORD         -> NOT lat/lng; these are state-plane
+    #                                coordinates. Lat/lng comes from
+    #                                geometry centroid instead.
+    'WA_SNOHOMISH': {
+        'url': (
+            'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/'
+            'arcgis/rest/services/Parcels/FeatureServer/0/query'
+        ),
+        'zip_field': 'SITUSZIP',
+        'out_fields': (
+            'PARCEL_ID,OWNERNAME,TAXPRNAME,'
+            'SITUSLINE1,SITUSHOUSE,SITUSPREFX,SITUSSTRT,SITUSTTYP,'
+            'SITUSPOSTD,SITUSUNIT,SITUSCITY,SITUSSTATE,SITUSZIP,'
+            'OWNERCITY,OWNERSTATE,'
+            'MKLND,MKIMP,MKTTL,USECODE,GIS_ACRES,STATUS'
+        ),
+        'default_state': 'WA',
+    },
 }
 
 PAGE_SIZE = 2000
@@ -358,6 +404,14 @@ async def fetch_parcels_for_zip(
 
 
 def _parse_feature(feature: dict, zip_code: str, market_key: str, config: dict) -> dict:
+    # Per-market dispatch. Each market's ArcGIS layer has different
+    # field names; rather than parameterize one parser with a field-map
+    # (more general but more code to read), we route to a per-market
+    # function and keep each one tight to its source schema.
+    if market_key == 'WA_SNOHOMISH':
+        return _parse_feature_snohomish(feature, zip_code, market_key, config)
+    # Default = WA_KING (the original implementation, unchanged below).
+
     """
     Convert a raw ArcGIS feature into a parcels_v3 row dict.
 
@@ -458,6 +512,114 @@ def _parse_feature(feature: dict, zip_code: str, market_key: str, config: dict) 
         # is_vacant_land: building value 0 means no improvements ≈ vacant
         'is_vacant_land':   not bool(_parse_value(attrs.get('APPR_IMPR'))),
     }
+
+
+def _parse_feature_snohomish(feature: dict, zip_code: str, market_key: str, config: dict) -> dict:
+    """
+    Parse a Snohomish County Parcels FeatureServer record into a
+    parcels_v3 row dict.
+
+    Differs from the KC parser in two material ways:
+
+    1. **Includes owner_name and owner_type.** Snohomish exposes
+       OWNERNAME directly on the public ArcGIS layer (KC strips it).
+       So this parser populates owner fields straight from ingest —
+       no separate eReal Property / seed-from-json step strictly
+       required for Phase 1. (We still run seed-from-json for tenure
+       and sale price which the parcel layer doesn't carry.)
+
+    2. **Address comes from situs components.** SITUSLINE1 is often
+       blank or set to "UNKNOWN ADDRESS"; the actual address has to
+       be assembled from SITUSHOUSE + SITUSPREFX + SITUSSTRT +
+       SITUSTTYP + SITUSPOSTD + SITUSUNIT.
+
+    Field map:
+      PARCEL_ID                 -> pin
+      OWNERNAME                 -> owner_name (raw + normalized)
+      TAXPRNAME                 -> not stored (KC compatibility — owner
+                                    fields are the canonical owner here)
+      situs components          -> address
+      SITUSCITY                 -> city
+      SITUSSTATE                -> state (with WA fallback)
+      OWNERCITY                 -> owner_city
+      OWNERSTATE                -> owner_state
+      MKLND                     -> land_value
+      MKIMP                     -> building_value
+      MKTTL                     -> total_value (already summed by source)
+      USECODE                   -> prop_type
+      GIS_ACRES                 -> acres
+      geometry centroid         -> lat, lng (X_COORD/Y_COORD are state
+                                    plane, not WGS84 — don't use directly)
+    """
+    attrs = feature.get('attributes', {}) or {}
+    geom  = feature.get('geometry', {}) or {}
+
+    pin = (attrs.get('PARCEL_ID') or '').strip()
+
+    # Build situs address from components. Fall back to SITUSLINE1 if
+    # we can't reconstruct (some commercial / DNR parcels list only
+    # "UNKNOWN ADDRESS" — keep whatever the source said).
+    parts = [
+        attrs.get('SITUSHOUSE'),
+        attrs.get('SITUSPREFX'),
+        attrs.get('SITUSSTRT'),
+        attrs.get('SITUSTTYP'),
+        attrs.get('SITUSPOSTD'),
+        attrs.get('SITUSUNIT'),
+    ]
+    address = ' '.join(p.strip() for p in parts if p and str(p).strip())
+    if not address:
+        address = (attrs.get('SITUSLINE1') or '').strip()
+
+    site_city  = (attrs.get('SITUSCITY')  or '').strip()
+    site_state = (attrs.get('SITUSSTATE') or '').strip() or config['default_state']
+
+    owner_name_raw = (attrs.get('OWNERNAME') or '').strip()
+    owner_city     = (attrs.get('OWNERCITY')  or '').strip()
+    owner_state    = (attrs.get('OWNERSTATE') or '').strip()
+
+    # Lat/lng: X_COORD/Y_COORD are WA state-plane (huge values like
+    # 1333466.93). They are NOT lat/lng. Use the geometry centroid
+    # instead, which the FeatureServer returns in WGS84 when we ask
+    # for it (returnGeometry=true).
+    lat, lng = _extract_lat_lng(geom)
+
+    # Absentee heuristic: same logic as KC. Different city → absentee.
+    is_absentee = bool(owner_city and site_city
+                       and owner_city.upper() != site_city.upper())
+    is_out_of_state = bool(owner_state) and owner_state.upper() != site_state.upper()
+
+    # Use code is "111 Single Family Residence - Detached" — strip the
+    # numeric prefix to get a clean prop_type. Many downstream consumers
+    # match on substring so leaving the full string is fine too.
+    prop_type = (attrs.get('USECODE') or '').strip() or None
+
+    return {
+        'pin':              pin,
+        'zip_code':         zip_code,
+        'market_key':       market_key,
+        'address':          address,
+        'city':             site_city or None,
+        'state':            site_state,
+        # Snohomish exposes owner directly — populate it (KC parser
+        # intentionally omits these to preserve eReal Property values).
+        'owner_name':       _normalize_owner_display_name(owner_name_raw) if owner_name_raw else None,
+        'owner_name_raw':   owner_name_raw or None,
+        'owner_type':       _derive_owner_type(owner_name_raw),
+        'owner_city':       owner_city or None,
+        'owner_state':      owner_state or None,
+        'lat':              lat,
+        'lng':              lng,
+        'total_value':      _parse_value(attrs.get('MKTTL')),
+        'land_value':       _parse_value(attrs.get('MKLND')),
+        'building_value':   _parse_value(attrs.get('MKIMP')),
+        'acres':            _parse_float(attrs.get('GIS_ACRES')),
+        'prop_type':        prop_type,
+        'is_absentee':      is_absentee,
+        'is_out_of_state':  is_out_of_state,
+        'is_vacant_land':   not bool(_parse_value(attrs.get('MKIMP'))),
+    }
+
 
 
 def site_state_from_city(city: str) -> Optional[str]:

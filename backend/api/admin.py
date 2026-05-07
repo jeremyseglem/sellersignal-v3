@@ -859,6 +859,14 @@ async def register_zip(
     import io
     import contextlib
 
+    # Auto-detect Snohomish ZIPs so the caller can use the same
+    # /api/admin/register/{zip} pattern as KC without passing
+    # market_key. Explicit query params still override.
+    if zip_code in SNO_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "WA_SNOHOMISH"
+        if city is None:
+            city = SNO_ZIP_TO_CITY[zip_code]
+
     # Default city from the KC map for known KC ZIPs
     if city is None:
         city = KC_ZIP_TO_CITY.get(zip_code)
@@ -876,6 +884,12 @@ async def register_zip(
         source_url = (
             "https://gismaps.kingcounty.gov/arcgis/rest/services/"
             "Property/KingCo_Parcels/MapServer/0"
+        )
+    # Default source URL for Snohomish if not given
+    if source_url is None and market_key == "WA_SNOHOMISH":
+        source_url = (
+            "https://services6.arcgis.com/z6WYi9VRHfgwgtyW/"
+            "arcgis/rest/services/Parcels/FeatureServer/0"
         )
 
     buf = io.StringIO()
@@ -1169,6 +1183,15 @@ KC_ZIP_TO_CITY = {
     "98199": "Seattle",
 }
 
+# Snohomish County ZIPs. Phase 1 — only 98290 (Snohomish/Lake Stevens area).
+# Adding more SnoCo ZIPs is a config-only change here plus generating the
+# corresponding owners JSON via build_98290_owners.py with a different
+# TARGET_ZIP. The market_key is WA_SNOHOMISH and the ArcGIS endpoint lives
+# in MARKET_CONFIGS.
+SNO_ZIP_TO_CITY = {
+    "98290": "Snohomish",
+}
+
 
 @router.post("/seed-from-json/{zip_code}",
              dependencies=[Depends(require_admin)])
@@ -1208,25 +1231,33 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
     # (backend/api/admin.py -> backend/ -> repo root).
     repo_root = PathLib(__file__).resolve().parent.parent.parent
 
-    # 98004 uses the original baseline filename; new ZIPs use the
-    # generated filename pattern.
-    if zip_code == "98004":
-        seed_path = repo_root / "data" / "seeds" / "wa-king-98004.json"
+    # Per-county seed-file dispatch. Adding a new county = add the ZIP
+    # to its *_ZIP_TO_CITY dict above; the file path and market_key
+    # follow from that.
+    if zip_code in SNO_ZIP_TO_CITY:
+        market_key = "WA_SNOHOMISH"
+        city = SNO_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"wa-snohomish-{zip_code}-owners.json"
     else:
-        seed_path = repo_root / "data" / "seeds" / f"wa-king-{zip_code}-owners.json"
+        market_key = "WA_KING"
+        city = KC_ZIP_TO_CITY.get(zip_code, "Bellevue")
+        # 98004 uses the original baseline filename; new KC ZIPs use the
+        # generated filename pattern.
+        if zip_code == "98004":
+            seed_path = repo_root / "data" / "seeds" / "wa-king-98004.json"
+        else:
+            seed_path = repo_root / "data" / "seeds" / f"wa-king-{zip_code}-owners.json"
 
     if not seed_path.exists():
         raise HTTPException(404,
             f"Seed file not found: {seed_path.name}. Available seeds live "
             f"in data/seeds/. Add the JSON to that directory and redeploy.")
 
-    city = KC_ZIP_TO_CITY.get(zip_code, "Bellevue")
-
     try:
         rows = load_parcels_from_json(
             json_path=str(seed_path),
             zip_code=zip_code,
-            market_key="WA_KING",
+            market_key=market_key,
             default_state="WA",
             default_city=city,
         )
