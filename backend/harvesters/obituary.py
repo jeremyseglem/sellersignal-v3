@@ -320,18 +320,18 @@ class DignityMemorialObituariesSource(ObituarySource):
         "/obituaries/seattle-wa",   # Seattle + west-side KC
         # ── Snohomish County (added 2026-05-08) ─────────────────────
         # SCI/Dignity-affiliated funeral homes in Snohomish County
-        # surface obituaries here. We cast a wide net across the four
-        # population centers — Everett (largest), Lynnwood (south),
-        # Edmonds (south-coastal), and Marysville (north). Decedent
-        # residence cities won't always match these locations exactly
-        # (a resident of Snohomish town might be served by a Lynnwood
-        # funeral home), but the matcher's job is to filter; ours is
-        # to harvest.
+        # surface obituaries here. Snohomish-wa is the most important —
+        # Bauer Funeral Chapel (701 1st St, Snohomish 98290 — the
+        # primary funeral home actually IN Snohomish town) syndicates
+        # to /obituaries/snohomish-wa. Missing this URL last night was
+        # why we got 0 matches against 98290 parcels.
         #
-        # The Snohomish town ZIP (98290) is small (~9k pop) and may
-        # not have its own Dignity location, so we lean on the
-        # county-wide funnel: most Snohomish-town residents end up
-        # served by one of these regional homes when they pass.
+        # The other 4 cities cover the Snohomish County population
+        # centers — Everett (largest), Lynnwood (south), Edmonds
+        # (south-coastal), Marysville (north). Decedent residence
+        # cities won't always match these locations exactly, but the
+        # matcher's job is to filter; ours is to harvest.
+        "/obituaries/snohomish-wa",     # ← the one that matters most for 98290
         "/obituaries/everett-wa",
         "/obituaries/lynnwood-wa",
         "/obituaries/edmonds-wa",
@@ -463,6 +463,170 @@ class DignityMemorialObituariesSource(ObituarySource):
                 time.sleep(0.05)
 
 
+# ─── Source: Snohomish County Tribune (snoho.com) ─────────────────────
+
+class SnohoTribuneObituariesSource(ObituarySource):
+    """
+    Snohomish County Tribune obituary listings at snoho.com/obituaries/.
+
+    Why this source matters: this is the local newspaper of record for
+    Snohomish town (98290) and surrounding rural Snohomish County. The
+    Tribune publishes obits for residents who actually lived in 98290 —
+    the geographic match to our coverage that Dignity Memorial's regional
+    pages don't reliably hit.
+
+    Site is a WordPress install behind Cloudflare's email-protection
+    script (NOT a Cloudflare challenge — they're different things). The
+    obit listing page returns full server-side rendered HTML with no
+    bot detection.
+
+    Listing format: each obit is a div.item with id="oNNN", containing:
+      - <h4><a href="/obituaries/YYYY/mon/DD/slug/">Decedent Name</a></h4>
+      - <p>Excerpt text...</p>
+      - <ul class="footer">
+          <li><a>Share</a></li>
+          <li>Month DD, YYYY</li>   ← publish date
+        </ul>
+
+    Detail URL pattern: /obituaries/YYYY/mon/DD/slug/
+    where mon is lowercase month abbreviation (jan, feb, mar, ...)
+
+    We parse everything from the listing HTML — no detail fetches needed
+    for the data we care about (name, publish date, excerpt, residence
+    city when mentioned in the excerpt).
+
+    Note on city extraction: the Tribune writes obits in a consistent
+    style — "X of [City]" or "of [City], Washington" tends to be in
+    the first sentence of the excerpt. We extract that with a regex
+    rather than fetch the detail page (saves ~50 round trips per run).
+    """
+
+    name = "snoho_tribune"
+    BASE = "https://www.snoho.com"
+    LISTING_URL = "/obituaries/"
+
+    # Detail URL extraction: /obituaries/YYYY/mon/DD/slug/
+    OBIT_URL_RE = re.compile(
+        r"^/obituaries/(\d{4})/([a-z]{3})/(\d{1,2})/([a-z0-9-]+)/?$"
+    )
+    MONTH_ABBREV = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    # Publish-date in footer: "May 6, 2026" or "January 22, 2026"
+    PUB_DATE_RE = re.compile(
+        r"\b(January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)\s+(\d{1,2}),\s+(\d{4})\b",
+        re.IGNORECASE,
+    )
+    MONTH_NAME_TO_NUM = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    # Resident city extraction: "X of [City], [State]"
+    # E.g. "Lynette Rose, 70, of Snohomish, Washington gained..."
+    CITY_RE = re.compile(
+        r"\bof\s+([A-Z][a-zA-Z\s\-'.]{2,40}?),\s+(?:WA|Washington)\b"
+    )
+    # Age extraction: "X, NN, of"  or  "X, age NN," or "X (age NN)"
+    AGE_RE = re.compile(r",\s*(?:age\s+)?(\d{2,3}),")
+
+    def fetch(self, since: date, until: date) -> Iterator[ObituaryRecord]:
+        session = self._session()
+        # snoho.com serves brotli-encoded responses by default (their
+        # nginx is configured for it). The requests library doesn't
+        # auto-decode brotli without the optional `brotli` package
+        # installed, so override Accept-Encoding to ask only for
+        # gzip/deflate which is always supported.
+        session.headers["Accept-Encoding"] = "gzip, deflate"
+
+        url = self.BASE + self.LISTING_URL
+        log.info(f"[{self.name}] fetching {url}")
+        try:
+            r = session.get(url, timeout=30)
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            log.warning(f"[{self.name}] failed {url}: {e}")
+            return
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # Each obit is a <div class="item" id="oNNN">. Walk those.
+        items = soup.find_all("div", class_="item", id=re.compile(r"^o\d+"))
+        log.info(f"[{self.name}] found {len(items)} obit cards on listing")
+
+        for item in items:
+            # Name + detail URL
+            h4 = item.find("h4")
+            if not h4:
+                continue
+            a = h4.find("a", href=True)
+            if not a:
+                continue
+            href = a["href"]
+            m = self.OBIT_URL_RE.match(href)
+            if not m:
+                continue
+            year, mon_abbr, day_str, slug = m.groups()
+            try:
+                publish_date = date(
+                    int(year),
+                    self.MONTH_ABBREV[mon_abbr.lower()],
+                    int(day_str),
+                )
+            except (KeyError, ValueError):
+                publish_date = None
+
+            # Filter by since/until window
+            if publish_date and (publish_date < since or publish_date > until):
+                continue
+
+            decedent_name = a.get_text(strip=True)
+            if not decedent_name:
+                continue
+
+            # Excerpt
+            p = item.find("p")
+            excerpt = p.get_text(strip=True) if p else ""
+
+            # Resident city from excerpt
+            city = None
+            cm = self.CITY_RE.search(excerpt)
+            if cm:
+                city_raw = cm.group(1).strip().rstrip(",")
+                # Only accept reasonable city names — single line, not a sentence
+                if len(city_raw) < 40 and "\n" not in city_raw:
+                    city = city_raw
+
+            # Age
+            age = None
+            am = self.AGE_RE.search(excerpt)
+            if am:
+                try:
+                    age = int(am.group(1))
+                except ValueError:
+                    pass
+
+            obit_url = self.BASE + href
+
+            yield ObituaryRecord(
+                decedent_name=decedent_name,
+                source_name=self.name,
+                obit_url=obit_url,
+                death_date=None,        # Not in listing — would need detail fetch
+                publish_date=publish_date,
+                age_at_death=age,
+                city=city,
+                funeral_home=None,      # Not in listing
+                survivors_raw=None,     # Not in listing
+                obit_text_excerpt=excerpt[:500] if excerpt else None,
+            )
+
+            # Politeness — small delay between iterations
+            time.sleep(0.05)
+
+
 # ─── Source: Legacy.com Bellevue (DEPRECATED — Cloudflare blocks Railway) ─
 
 class LegacyBellevueObituariesSource(ObituarySource):
@@ -549,6 +713,7 @@ class ObituaryHarvester(BaseHarvester):
         self.sources = sources or [
             SeattleTimesObituariesSource(),
             DignityMemorialObituariesSource(),
+            SnohoTribuneObituariesSource(),
             # LegacyBellevueObituariesSource() — deprecated, Cloudflare blocks Railway
         ]
 
