@@ -315,8 +315,27 @@ class DignityMemorialObituariesSource(ObituarySource):
     name = "dignity_memorial"
     BASE = "https://www.dignitymemorial.com"
     LISTING_URLS = [
+        # ── King County ─────────────────────────────────────────────
         "/obituaries/bellevue-wa",  # Eastside KC
         "/obituaries/seattle-wa",   # Seattle + west-side KC
+        # ── Snohomish County (added 2026-05-08) ─────────────────────
+        # SCI/Dignity-affiliated funeral homes in Snohomish County
+        # surface obituaries here. We cast a wide net across the four
+        # population centers — Everett (largest), Lynnwood (south),
+        # Edmonds (south-coastal), and Marysville (north). Decedent
+        # residence cities won't always match these locations exactly
+        # (a resident of Snohomish town might be served by a Lynnwood
+        # funeral home), but the matcher's job is to filter; ours is
+        # to harvest.
+        #
+        # The Snohomish town ZIP (98290) is small (~9k pop) and may
+        # not have its own Dignity location, so we lean on the
+        # county-wide funnel: most Snohomish-town residents end up
+        # served by one of these regional homes when they pass.
+        "/obituaries/everett-wa",
+        "/obituaries/lynnwood-wa",
+        "/obituaries/edmonds-wa",
+        "/obituaries/marysville-wa",
     ]
     # Match obit detail URLs: /obituaries/<city>-wa/<slug>-<digits>
     OBIT_URL_RE = re.compile(
