@@ -75,3 +75,7 @@ frontend/.next/
 
 # Railway
 .railway/
+
+# Backend lib package — must not be excluded by the generic /lib pattern below
+!backend/lib/
+!backend/lib/**
