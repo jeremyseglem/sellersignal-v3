@@ -2450,3 +2450,48 @@ async def snohomish_tenure_scrape_batch(
         "pending_after":   pending_after,
         "result":          result,
     }
+
+
+# ─── Territory release notifications ───────────────────────────────────────
+@router.post("/test-release-notification/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def test_release_notification(
+    zip_code: str = Path(..., pattern=r"^\d{5}$"),
+    test_email: Optional[str] = None,
+    dry_run: bool = False,
+    confirm: bool = False,
+):
+    """
+    Fire the territory-release email flow against a ZIP. Three modes:
+
+    1. dry_run=true        — render the email but don't send. Returns
+                              the formatted subject+html+text for
+                              inspection. Safe to call anytime.
+
+    2. test_email=...      — send the email to a single address only,
+                              not the real wait list. Wait list is
+                              NOT marked notified. Useful for verifying
+                              Resend delivery + branding before the
+                              release endpoint is wired up.
+
+    3. (default real mode) — emails everyone on the wait list and
+                              marks them notified. Requires confirm=true.
+
+    Args:
+      zip_code   — 5-digit ZIP
+      test_email — single address to email instead of the wait list
+      dry_run    — render only, no send, no mark
+      confirm    — required for the real-mode path
+    """
+    if not (dry_run or test_email or confirm):
+        raise HTTPException(400,
+            "Real-mode call writes notified_at on subscribers and emails "
+            "them. Pass ?confirm=true to proceed, OR ?dry_run=true to "
+            "preview, OR ?test_email=... to send to one address only.")
+
+    from backend.lib.territory_notify import notify_zip_release
+    return notify_zip_release(
+        zip_code,
+        test_email=test_email,
+        dry_run=dry_run,
+    )
