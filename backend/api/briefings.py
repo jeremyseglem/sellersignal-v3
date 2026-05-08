@@ -80,12 +80,18 @@ def _briefing_cache_set(key: tuple, value: dict):
 
 
 # ── New-this-week helpers ──────────────────────────────────────────
-# Used in _shape_pick to flag leads whose earliest harvester match
-# occurred within the last 7 days. The match record's matched_at
-# field comes from raw_signal_matches_v3 and is set the moment the
-# matcher first ties a court filing / obit / treasury notice to a
-# parcel. That timestamp IS "lead birth" for event-driven CALL NOW
-# leads.
+# Used in _shape_pick to flag leads whose underlying signal event
+# (probate filing, divorce filing, obituary publication, treasury
+# notice) occurred within the last 7 days.
+#
+# We use event_date — when the filing/event actually happened in the
+# real world — not matched_at, which is when our system first surfaced
+# it. matched_at gets reset whenever we re-run the matcher (e.g. after
+# a new ZIP comes online or canonicalize completes for previously-
+# uncovered owners), which would otherwise make every rematched case
+# falsely show as "new this week" even when the underlying filing is
+# months old. matched_at is kept as a fallback for the rare signal
+# that has no event_date populated.
 #
 # Structural BUILD NOW leads don't go through harvester matching;
 # their archetype is computed live from parcel attributes. They have
@@ -97,7 +103,7 @@ from typing import Optional
 
 
 def _earliest_match_at(investigation: dict) -> Optional[str]:
-    """Earliest matched_at across an investigation's harvester_matches,
+    """Earliest event_date across an investigation's harvester_matches,
     as an ISO-8601 string. Returns None when the investigation has no
     matches (i.e., this is a structural BUILD NOW lead, not an event-
     driven CALL NOW lead).
@@ -105,7 +111,14 @@ def _earliest_match_at(investigation: dict) -> Optional[str]:
     matches = (investigation or {}).get('harvester_matches') or []
     if not matches:
         return None
-    timestamps = [m.get('matched_at') for m in matches if m.get('matched_at')]
+    # Prefer event_date (when the filing happened) over matched_at
+    # (when our system found it). Fall back to matched_at only for
+    # signals with no event_date populated.
+    timestamps = [
+        m.get('event_date') or m.get('matched_at')
+        for m in matches
+        if m.get('event_date') or m.get('matched_at')
+    ]
     if not timestamps:
         return None
     # ISO-8601 strings sort lexically — earliest is min().

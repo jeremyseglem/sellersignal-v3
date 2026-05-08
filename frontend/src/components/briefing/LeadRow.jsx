@@ -182,13 +182,22 @@ function buildSignalHint(lead) {
     const authoritative = matches.filter(isAuthoritative);
     const pool = authoritative.length > 0 ? authoritative : matches;
 
+    // Display & sort by event_date — when the probate/divorce/obit
+    // actually happened in the real world — not matched_at, which is
+    // when our system first surfaced it. matched_at gets reset
+    // whenever we re-run the matcher (e.g. after a new ZIP comes
+    // online), which would otherwise make every rematched case look
+    // brand new even when the underlying filing is months old.
+    // matched_at is kept as a fallback for the rare signal that has
+    // no event_date populated.
+    const eventDate = (m) => m.event_date || m.matched_at;
     const dated = pool
-      .filter((m) => m.matched_at && m.signal_type)
-      .sort((a, b) => (b.matched_at || '').localeCompare(a.matched_at || ''));
+      .filter((m) => eventDate(m) && m.signal_type)
+      .sort((a, b) => (eventDate(b) || '').localeCompare(eventDate(a) || ''));
     if (dated.length > 0) {
       const m = dated[0];
       const label = SIGNAL_LABELS[m.signal_type] || _humanize(m.signal_type);
-      const elapsed = _elapsed(m.matched_at);
+      const elapsed = _elapsed(eventDate(m));
       return elapsed ? `${label} ${elapsed}` : label;
     }
     // Has matches but no dates — fall back to the type alone
