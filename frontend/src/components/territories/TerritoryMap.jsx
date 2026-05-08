@@ -49,15 +49,21 @@ import { zipPolygons, notifications, safeErrorMessage } from '../../api/client.j
  */
 
 // ─── Status helpers ──────────────────────────────────────────────────────
+// Maps the API's three-state response to our three-state UI vocabulary.
+//   API: 'mine' | 'claimed_by_other' | 'available'
+//   UI:  'mine' | 'claimed'          | 'available'
+// (Differs from /api/agent/territory-status only in the second name —
+// API uses 'claimed_by_other' for clarity, UI uses 'claimed' for terseness.)
 function statusForZip(zip, myZip, zipRecord) {
+  // If the record is missing entirely (polygon present but ZIP not in
+  // our coverage payload), treat as available — defensive default.
+  if (!zipRecord) return 'available';
+  const apiStatus = zipRecord.status;
+  if (apiStatus === 'mine') return 'mine';
+  if (apiStatus === 'claimed_by_other') return 'claimed';
+  if (apiStatus === 'available') return 'available';
+  // Fallback: my_zip match, then default to available.
   if (myZip && zip === myZip) return 'mine';
-  // The territory-status payload uses claimed_by_user_id (truthy = claimed).
-  // Fall back to a couple alternate keys in case the API shape evolves.
-  const claimed =
-    zipRecord?.claimed_by_user_id ||
-    zipRecord?.claimed_by ||
-    zipRecord?.is_claimed;
-  if (claimed) return 'claimed';
   return 'available';
 }
 
@@ -527,7 +533,7 @@ const STYLES = {
     borderRadius: 'var(--radius-md)',
     overflow: 'hidden',
     border: '1px solid var(--border)',
-    background: 'var(--bg-base)',
+    background: 'var(--bg-card)',
   },
   map: { width: '100%', height: '100%' },
   errorBanner: {
@@ -537,7 +543,7 @@ const STYLES = {
     color: '#9E4B3C', fontSize: 13, zIndex: 600,
   },
   loadingOverlay: {
-    position: 'absolute', inset: 0, background: 'var(--bg-base)',
+    position: 'absolute', inset: 0, background: 'var(--bg-card)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     flexDirection: 'column', gap: 12, zIndex: 500,
   },
@@ -556,14 +562,14 @@ const STYLES = {
   // ── Stats card (desktop) ──
   cardDesktop: {
     position: 'absolute', top: 24, right: 24, width: 360,
-    background: 'var(--bg-base)', border: '1px solid var(--border)',
+    background: 'var(--bg-card)', border: '1px solid var(--border)',
     borderRadius: 4, boxShadow: '0 8px 24px rgba(44,36,24,0.12)',
     zIndex: 1000, overflow: 'hidden',
   },
   // ── Stats card (mobile bottom sheet) ──
   cardMobile: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
-    background: 'var(--bg-base)', borderTop: '1px solid var(--border)',
+    background: 'var(--bg-card)', borderTop: '1px solid var(--border)',
     borderRadius: '8px 8px 0 0',
     boxShadow: '0 -4px 16px rgba(44,36,24,0.16)',
     zIndex: 1000, overflow: 'hidden',
@@ -612,13 +618,13 @@ const STYLES = {
 
   cardFoot: {
     padding: '16px 24px 22px',
-    background: 'var(--bg-soft, #EDE5DC)',
+    background: 'var(--bg-input)',
     borderTop: '1px solid var(--border)',
   },
   btnPrimary: {
     display: 'block', width: '100%', padding: '14px 18px',
     border: 'none', borderRadius: 2,
-    background: '#8B6914', color: 'var(--bg-base, #F5F0EB)',
+    background: '#8B6914', color: 'var(--bg-card)',
     fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600,
     textTransform: 'uppercase', letterSpacing: '2px', cursor: 'pointer',
     boxShadow: '0 2px 8px rgba(44,36,24,0.08)',
@@ -626,7 +632,7 @@ const STYLES = {
   btnPrimaryDark: {
     display: 'block', width: '100%', padding: '14px 18px',
     border: 'none', borderRadius: 2,
-    background: 'var(--text, #2C2418)', color: 'var(--bg-base, #F5F0EB)',
+    background: 'var(--text, #2C2418)', color: 'var(--bg-card)',
     fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600,
     textTransform: 'uppercase', letterSpacing: '2px', cursor: 'pointer',
   },
@@ -639,7 +645,7 @@ const STYLES = {
   },
   notifyInput: {
     width: '100%', padding: '12px 14px', borderRadius: 2,
-    border: '1px solid var(--border)', background: 'var(--bg-base)',
+    border: '1px solid var(--border)', background: 'var(--bg-card)',
     fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--text)',
     outline: 'none',
   },
@@ -692,10 +698,10 @@ const INLINE_CSS = `
   font-size: 11px;
   color: var(--text, #2C2418);
   text-shadow:
-    -1px -1px 0 var(--bg-base, #F5F0EB),
-     1px -1px 0 var(--bg-base, #F5F0EB),
-    -1px  1px 0 var(--bg-base, #F5F0EB),
-     1px  1px 0 var(--bg-base, #F5F0EB);
+    -1px -1px 0 var(--bg-card),
+     1px -1px 0 var(--bg-card),
+    -1px  1px 0 var(--bg-card),
+     1px  1px 0 var(--bg-card);
   letter-spacing: 0.5px;
   white-space: nowrap;
 }
