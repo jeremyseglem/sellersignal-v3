@@ -270,6 +270,21 @@ export default function TerritoryMap({
     ? statusForZip(selected, myZip, selectedZip)
     : null;
 
+  // Track whether the card has had a chance to mount. Triggering the
+  // transition requires entering the DOM in an "off" state and then
+  // toggling to "on" on the next frame — otherwise CSS transitions
+  // never fire because the element starts at the final position.
+  const [cardEntered, setCardEntered] = useState(false);
+  useEffect(() => {
+    if (selected) {
+      // Microtask delay so the next paint catches the off→on flip
+      const id = requestAnimationFrame(() => setCardEntered(true));
+      return () => cancelAnimationFrame(id);
+    } else {
+      setCardEntered(false);
+    }
+  }, [selected]);
+
   return (
     <div style={STYLES.wrap}>
       {/* Inline styles for Leaflet label and hover transitions. Component
@@ -299,6 +314,8 @@ export default function TerritoryMap({
           role={role}
           isNarrow={isNarrow}
           defaultEmail={defaultEmail}
+          entered={cardEntered}
+          agentHasTerritory={!!myZip}
           onClose={() => setSelected(null)}
           onOpenBriefing={() => navigate(`/zip/${selected}`)}
           onClaim={() => {
@@ -314,7 +331,8 @@ export default function TerritoryMap({
 // ─── Stats card (right-side card on desktop, bottom sheet on mobile) ────
 function StatsCard({
   zip, zipRecord, status, role, isNarrow,
-  defaultEmail, onClose, onOpenBriefing, onClaim,
+  defaultEmail, entered, agentHasTerritory,
+  onClose, onOpenBriefing, onClaim,
 }) {
   const styleByStatus = {
     mine:      { accent: '#8B6914', label: 'Your territory' },
@@ -326,7 +344,18 @@ function StatsCard({
   const callNow = zipRecord?.current_call_now_count || 0;
   const city    = zipRecord?.city || '—';
 
-  const cardStyle = isNarrow ? STYLES.cardMobile : STYLES.cardDesktop;
+  // Slide-in transform. Off-state pushes the card 20px off-screen in
+  // the appropriate direction; on-state lets transition settle to 0.
+  const offTransform = isNarrow ? 'translateY(20px)' : 'translateX(20px)';
+  const transitionStyle = {
+    transform:   entered ? 'none' : offTransform,
+    opacity:     entered ? 1 : 0,
+    transition:  'transform 220ms cubic-bezier(0.32,0.72,0.24,1.06), opacity 180ms ease',
+  };
+  const cardStyle = {
+    ...(isNarrow ? STYLES.cardMobile : STYLES.cardDesktop),
+    ...transitionStyle,
+  };
 
   return (
     <>
@@ -358,19 +387,20 @@ function StatsCard({
           {status === 'claimed' && (
             <NotifyMeForm zip={zip} defaultEmail={defaultEmail} />
           )}
-          {status === 'available' && (
-            <>
-              {role === 'agent' && (
-                <button onClick={onClaim} style={STYLES.btnPrimary}>
-                  Claim this territory
-                </button>
-              )}
-              {role === 'operator' && (
-                <button onClick={onOpenBriefing} style={STYLES.btnPrimaryDark}>
-                  Open briefing
-                </button>
-              )}
-            </>
+          {status === 'available' && role === 'agent' && !agentHasTerritory && (
+            <button onClick={onClaim} style={STYLES.btnPrimary}>
+              Claim this territory
+            </button>
+          )}
+          {status === 'available' && role === 'agent' && agentHasTerritory && (
+            <div style={STYLES.alreadyOwn}>
+              You already hold a territory. Each agent gets one exclusive ZIP.
+            </div>
+          )}
+          {status === 'available' && role === 'operator' && (
+            <button onClick={onOpenBriefing} style={STYLES.btnPrimaryDark}>
+              Open briefing
+            </button>
           )}
         </div>
       </div>
@@ -621,6 +651,13 @@ const STYLES = {
     fontSize: 14, lineHeight: 1.5, color: '#4F7B57',
     padding: '12px 14px', background: 'rgba(79,123,87,0.12)',
     borderRadius: 2,
+  },
+
+  alreadyOwn: {
+    fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+    fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)',
+    padding: '12px 14px', background: 'rgba(191,182,168,0.20)',
+    borderRadius: 2, textAlign: 'center',
   },
 
   // ── Legend ──
