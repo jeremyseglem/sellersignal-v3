@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { territory, safeErrorMessage } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
+import TerritoryMap from '../components/territories/TerritoryMap.jsx';
 
 /**
  * TerritoriesPage — the post-signin landing for both operators and
@@ -114,17 +115,18 @@ export default function TerritoriesPage() {
       )}
 
       {data && data.zips.length > 0 && (
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-          {data.zips.map((z) => (
-            <ZipCard
-              key={z.zip_code}
-              zip={z}
-              role={data.role}
-              myZip={data.my_zip}
-              onClickAvailable={() => setClaimModal(z)}
-            />
-          ))}
-        </ul>
+        <TerritoryMap
+          role={data.role}
+          myZip={data.my_zip}
+          zips={data.zips}
+          defaultEmail={profile?.email || ''}
+          onClaimRequest={(zipCode) => {
+            // Look up the full zip record from data and open the
+            // existing claim modal exactly as the old card grid did.
+            const z = data.zips.find((x) => x.zip_code === zipCode);
+            if (z) setClaimModal(z);
+          }}
+        />
       )}
 
       {claimModal && (

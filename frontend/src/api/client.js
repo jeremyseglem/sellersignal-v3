@@ -89,6 +89,26 @@ export const coverage = {
   stats:  (zip) => request(`/coverage/${zip}/stats`),
 };
 
+// ── ZIP polygons (for the territories map) ─────────────────────────
+
+export const zipPolygons = {
+  // Returns a GeoJSON FeatureCollection — one polygon per live ZIP
+  // in our coverage. The frontend caches this aggressively; the
+  // browser also honors the server's Cache-Control: max-age=3600.
+  list: () => request('/zip-polygons'),
+};
+
+// ── Notify-me when a territory releases ────────────────────────────
+
+export const notifications = {
+  subscribe: (zip_code, email) =>
+    request('/notifications/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ zip_code, email }),
+    }),
+  queueSize: (zip) => request(`/notifications/zip/${zip}/queue-size`),
+};
+
 // ── Briefings ──────────────────────────────────────────────────────
 
 export const briefings = {
