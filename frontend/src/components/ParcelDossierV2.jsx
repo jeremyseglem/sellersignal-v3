@@ -1315,6 +1315,8 @@ function EvidenceSection({ dossier }) {
       label,
       detail: dateStr,
       ref: m.document_ref,
+      source: evidenceSource(m),     // "Snohomish County Tribune", etc.
+      link: evidenceLink(m),         // clickable URL when ref is one
       strict: m.match_strength === 'strict',
     });
   }
@@ -1421,7 +1423,33 @@ function EvidenceSection({ dossier }) {
                 {item.detail}
               </div>
             )}
-            {item.ref && (
+            {item.source && (
+              <div style={{
+                color: 'var(--text-secondary)',
+                marginTop: 2,
+                fontSize: 11,
+                fontFamily: 'var(--font-sans)',
+              }}>
+                via {item.source}
+              </div>
+            )}
+            {item.link ? (
+              <div style={{
+                marginTop: 2,
+                fontSize: 10,
+                fontFamily: 'monospace',
+                wordBreak: 'break-all',
+              }}>
+                <a
+                  href={item.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                >
+                  {item.link.length > 60 ? item.link.slice(0, 60) + '…' : item.link}
+                </a>
+              </div>
+            ) : item.ref && (
               <div style={{
                 color: 'var(--text-tertiary)',
                 marginTop: 2,
@@ -1764,6 +1792,75 @@ function signalLabel(t) {
     tax_foreclosure:'Tax foreclosure filing',
   };
   return labels[t] || (t ? t.replace(/_/g, ' ') : 'Signal');
+}
+
+/**
+ * evidenceSource — extract a plain-English source label for the
+ * evidence trail.
+ *
+ * For obits, document_ref encodes the granular source as a
+ * colon-separated key:
+ *   "obit::DAVID EDWARD GREGORY::2026-05-01::seattle_times"
+ * The trailing token (after the last ::) is the source slug.
+ *
+ * For court records, signal_source / source_type carries the
+ * coarse origin ('wa_state_courts', 'kc_treasury_foreclosure',
+ * etc.). We map both to human-readable labels.
+ *
+ * Returns null when nothing useful is known — caller can hide the
+ * source line rather than render "Unknown source".
+ */
+function evidenceSource(m) {
+  // 1. Obits — parse document_ref last segment
+  if (m.signal_type === 'obituary' && typeof m.document_ref === 'string') {
+    const parts = m.document_ref.split('::');
+    if (parts.length >= 2) {
+      const slug = parts[parts.length - 1].trim().toLowerCase();
+      const obitLabels = {
+        seattle_times:           'Seattle Times Obituaries',
+        dignity_memorial:        'Dignity Memorial',
+        snoho_tribune:           'Snohomish County Tribune',
+        legacy_bellevue:         'Legacy.com (Bellevue)',
+      };
+      if (obitLabels[slug]) return obitLabels[slug];
+      // Fallback: humanize the slug
+      if (slug && slug !== 'unknown') {
+        return slug.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      }
+    }
+    return 'Newspaper or funeral home obituary';
+  }
+
+  // 2. Coarse source mapping from signal_source / source_type
+  const src = m.signal_source || m.source_type;
+  if (src) {
+    const coarseLabels = {
+      wa_state_courts:           'Washington State Courts',
+      kc_recorder:               'King County Recorder',
+      kc_assessor:               'King County Assessor',
+      kc_treasury_foreclosure:   'King County Tax Foreclosure',
+      obituary_rss:              'Newspaper or funeral home obituary',
+      legacy_com:                'Legacy.com',
+      wa_sos:                    'WA Secretary of State',
+    };
+    if (coarseLabels[src]) return coarseLabels[src];
+    return src.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  return null;
+}
+
+/**
+ * evidenceLink — extract a clickable URL from a match's document_ref,
+ * if any. Some sources put a real URL in document_ref (obit detail
+ * pages, court filing PDFs); others use opaque keys we shouldn't
+ * link.
+ */
+function evidenceLink(m) {
+  const ref = m.document_ref;
+  if (typeof ref !== 'string') return null;
+  if (ref.startsWith('http://') || ref.startsWith('https://')) return ref;
+  return null;
 }
 
 function humanEventLabel(ev) {

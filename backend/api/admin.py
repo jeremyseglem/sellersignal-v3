@@ -1530,12 +1530,39 @@ async def canonicalize_all_status():
                    .maybe_single()
                    .execute())
             total = (cov.data or {}).get('parcel_count') or 0
-            cnt = (supa.table('owner_canonical_v3')
-                   .select('pin', count='exact')
-                   .eq('zip_code', z)
-                   .limit(1)
-                   .execute())
-            canonicalized = cnt.count or 0
+            # owner_canonical_v3 has no zip_code column. Page through
+            # PINs in this ZIP, then count canonicalized rows in those PINs.
+            # Use a small page (200) to keep PostgREST URLs under Cloudflare's
+            # ~8KB limit, same lesson from _load_canonical_for_pins.
+            canonicalized = 0
+            offset = 0
+            PAGE = 1000
+            pins_in_zip: list = []
+            while True:
+                r = (supa.table('parcels_v3')
+                     .select('pin')
+                     .eq('zip_code', z)
+                     .range(offset, offset + PAGE - 1)
+                     .execute())
+                rows = r.data or []
+                if not rows:
+                    break
+                pins_in_zip.extend(p['pin'] for p in rows)
+                if len(rows) < PAGE:
+                    break
+                offset += PAGE
+                if offset > 50000:
+                    break
+            if pins_in_zip:
+                CHUNK = 200
+                for i in range(0, len(pins_in_zip), CHUNK):
+                    chunk = pins_in_zip[i : i + CHUNK]
+                    cnt = (supa.table('owner_canonical_v3')
+                           .select('pin', count='exact')
+                           .in_('pin', chunk)
+                           .limit(1)
+                           .execute())
+                    canonicalized += cnt.count or 0
             out[z] = {
                 "total":        total,
                 "canonicalized": canonicalized,
