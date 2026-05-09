@@ -170,28 +170,52 @@ async def _step_seed(zip_code: str, json_path: str):
 
 async def _step_canonicalize(zip_code: str):
     """
-    Canonicalize via the in-process cmd_canonicalize function.
+    Canonicalize via the programmatic backfill_zip function — same path
+    the existing /api/admin/canonicalize/{zip} endpoint uses (verified
+    working). Avoids cmd_canonicalize because that monkey-patches
+    sys.argv and calls a CLI argparse main(), which is fragile in
+    async/threaded context.
 
-    This is intentionally NOT the /canonicalize-all endpoint, which
-    spawns a separate background task that gets killed every time the
-    service redeploys. Running it inline keeps it bound to this
-    onboarding task — survives as long as the orchestrator does.
+    This step keeps the canonicalize work bound to this onboarding task
+    instead of spawning a separate background loop that gets killed by
+    deploys.
     """
-    from backend.ingest.zip_builder import cmd_canonicalize
+    from backend.ingest.backfill_owner_canonical import backfill_zip
 
-    def _run():
-        return _capture_stdout(
-            cmd_canonicalize, zip_code,
-            dry_run=False, limit=None, force=False,
-        )
+    def _run() -> tuple[int, str]:
+        try:
+            stats = backfill_zip(
+                zip_code=zip_code,
+                dry_run=False,
+                limit=None,
+                force=False,
+                sleep_ms=50,
+                verbose=False,   # don't spam stdout — orchestrator captures via state
+                concurrency=10,
+            )
+            # Render a one-line summary for the status feed
+            summary = (
+                f"eligible={stats.get('eligible')} "
+                f"already_done={stats.get('already_done')} "
+                f"processed={stats.get('processed')} "
+                f"low_conf={stats.get('low_conf')} "
+                f"errors={len(stats.get('errors') or [])} "
+                f"cost_usd={stats.get('cost_usd', 0):.2f} "
+                f"wall_time_s={stats.get('wall_time_s', 0):.1f}"
+            )
+            return 0, summary
+        except Exception as e:
+            import traceback
+            return 1, f"EXCEPTION: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+
     rc, output = await _retry(
         lambda: asyncio.to_thread(_run),
-        attempts=2,                # canonicalize is expensive — fewer retries
+        attempts=2,            # canonicalize is expensive — fewer retries
         backoff=30.0,
         label="canonicalize",
     )
     _set_step(zip_code, "canonicalize", "ok" if rc == 0 else "failed",
-              output.strip()[-1500:] if output else None)
+              output[-2000:] if output else None)
     if rc != 0:
         raise RuntimeError(f"canonicalize failed: {output}")
 
