@@ -393,7 +393,7 @@ def _process_one(
     # gate on. Without this bypass, the gate rejects every tax_foreclosure
     # match as "no surname overlap" and the feature silently produces
     # zero results.
-    if signal_type == "tax_foreclosure":
+    if signal_type in ("tax_foreclosure", "tax_delinquency"):
         gate_strengths: dict = {c["parcel_id"]: "strict" for c in candidates}
         filtered_candidates = candidates
     else:
