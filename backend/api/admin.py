@@ -1043,6 +1043,133 @@ async def reclassify_archetypes_zip(zip_code: str = Path(..., pattern=r'^\d{5}$'
     return {"ok": True, "zip_code": zip_code, "log": output}
 
 
+# ─── ZIP onboarding orchestrator ─────────────────────────────────────────────
+
+@router.post("/onboard-zip/{zip_code}", dependencies=[Depends(require_admin)])
+async def onboard_zip(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    market_key: str = "WA_KING",
+    city: str = "Bellevue",
+    state: str = "WA",
+):
+    """
+    Run the full end-to-end ZIP onboarding pipeline as a background task.
+
+    Replaces the manual sequence of register → seed → canonicalize →
+    classify → band → refresh-counts that we'd been running by hand
+    for every new ZIP, with all the partial-failure modes that comes with.
+
+    This endpoint:
+      - Returns immediately (202) with an in-progress status
+      - Spawns an asyncio task that runs the pipeline
+      - Each step uses the existing cmd_* functions (idempotent)
+      - Status is exposed via GET /onboard-status/{zip_code}
+
+    Prerequisites:
+      - data/seeds/wa-king-{zip_code}-owners.json must exist
+        (built locally from KC bulk data via build_kc_owners.py
+         pattern, then committed to the repo)
+
+    The pipeline takes ~30-60 minutes total per ZIP (canonicalize is
+    the slow step at $10-15 in Anthropic API costs).
+
+    NOT a deploy-resilient design — if Railway redeploys mid-pipeline,
+    the task dies and you'll need to re-trigger. Each step is
+    idempotent so re-running picks up where it left off.
+
+    Args:
+        zip_code:    5-digit ZIP
+        market_key:  WA_KING / WA_SNOHOMISH / etc. (sets canonicalizer rules)
+        city, state: defaults written to parcels_v3 for new rows
+
+    Returns:
+        202 Accepted with the initial status snapshot.
+    """
+    from backend.tasks import zip_onboarding
+    import asyncio
+
+    # Verify the seed JSON is in place — fail-fast before kicking off
+    json_path = f"/app/data/seeds/wa-king-{zip_code}-owners.json"
+    # Railway dist may not be at /app — try a few common paths
+    candidates = [
+        f"/app/data/seeds/wa-king-{zip_code}-owners.json",
+        f"data/seeds/wa-king-{zip_code}-owners.json",
+        f"/tmp/sellersignal-v3/data/seeds/wa-king-{zip_code}-owners.json",
+    ]
+    found_path = None
+    import os as _os
+    for cand in candidates:
+        if _os.path.exists(cand):
+            found_path = cand
+            break
+
+    if not found_path:
+        raise HTTPException(
+            400,
+            f"Seed JSON not found. Looked in: {candidates}. "
+            f"Build via build_kc_owners.py and commit to data/seeds/ first.",
+        )
+
+    # Don't restart a completed onboarding unless explicitly forced
+    existing = zip_onboarding.get_status(zip_code)
+    if existing.get("state") == "running":
+        return {
+            "ok":         True,
+            "message":    f"Onboarding already running for {zip_code}",
+            "status":     existing,
+        }
+
+    # Fire as background task
+    task = asyncio.create_task(
+        zip_onboarding.run_onboarding(
+            zip_code=zip_code,
+            json_path=found_path,
+            market_key=market_key,
+            city=city,
+            state=state,
+        )
+    )
+    # Don't await — return immediately
+    return {
+        "ok":         True,
+        "message":    f"Onboarding started for {zip_code}",
+        "json_path":  found_path,
+        "poll_url":   f"/api/admin/onboard-status/{zip_code}",
+        "status":     zip_onboarding.get_status(zip_code),
+    }
+
+
+@router.get("/onboard-status/{zip_code}", dependencies=[Depends(require_admin)])
+async def onboard_status(zip_code: str = Path(..., pattern=r'^\d{5}$')):
+    """
+    Return current onboarding pipeline status for a ZIP.
+
+    Status shape:
+        {
+            "zip_code":     "98038",
+            "state":        "running" | "completed" | "failed" | "not_started",
+            "started_at":   ISO timestamp,
+            "completed_at": ISO timestamp (if completed),
+            "elapsed_sec":  float,
+            "steps": {
+                "register":       "ok" | "running" | "pending" | "failed",
+                "seed":           ...,
+                "canonicalize":   ...,
+                "classify":       ...,
+                "band":           ...,
+                "refresh_counts": ...,
+            },
+            "last_step": "<name of most-recent step>",
+            "logs":      ["[HH:MM:SS] step: detail", ...],
+            "error":     "<exception message if failed>"
+        }
+
+    Returns the current snapshot — does NOT trigger anything.
+    """
+    from backend.tasks import zip_onboarding
+    return zip_onboarding.get_status(zip_code)
+
+
 # ─── Backfill tenure from sales history ──────────────────────────────────────
 
 @router.post("/backfill-tenure/{zip_code}",
