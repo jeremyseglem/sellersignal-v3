@@ -455,8 +455,61 @@ def _has_actionable_contact_status(L):
                for m in court)
 
 
+def _has_actionable_tax_delinquency_tier(L):
+    """Contract rule 7: when a tax_delinquency match is the only
+    Call-Now-eligible pressure on the lead, only the 'priority' tier
+    qualifies. Monitoring tier (single-year delinquency or under $5K
+    unpaid) defers to Build Now with a tax-stress tag.
+
+    Rationale: tax delinquency is a continuum, not a binary event.
+    Single-year unpaid bills are often payment lag rather than genuine
+    distress. Multi-year delinquency with substantial unpaid amounts
+    ($5K+) is a real pre-foreclosure signal where the agent has a
+    bounded window — those go to Call Now. Lighter delinquency surfaces
+    in Build Now where it ages until either resolved or escalated.
+
+    Tier is set by the tax_delinquency harvester per its own logic
+    (multi-year + $5K+ = priority, else monitoring). It lives on the
+    raw_signals_v3 row's raw_data and is plumbed through the harvester
+    overlay sidecar.
+
+    This rule applies ONLY to tax_delinquency. Other signal types
+    (probate, divorce, obituary, tax_foreclosure) don't carry a tier
+    classification — for them this rule passes through.
+
+    Combination logic: if the lead has tax_delinquency AND another
+    Call-Now-eligible signal type (e.g., a probate filing on the same
+    parcel), the other signal can carry the lead into Call Now even
+    if tax_delinquency is monitoring tier. The lead rides whichever
+    signal qualifies it, not gated by the weakest one.
+    """
+    inv = L.get('investigation') or {}
+    matches = inv.get('harvester_matches') or []
+
+    td_matches = [m for m in matches if m.get('signal_type') == 'tax_delinquency']
+    if not td_matches:
+        # No tax_delinquency match — rule doesn't apply
+        return True
+
+    # Does any other non-tax_delinquency strict match qualify the lead?
+    other_eligible = any(
+        m.get('signal_type') in _CONTRACT_PRESSURE_TYPES
+        and m.get('signal_type') != 'tax_delinquency'
+        and m.get('match_strength') == 'strict'
+        for m in matches
+    )
+    if other_eligible:
+        return True
+
+    # tax_delinquency is the sole eligible pressure — require priority tier
+    return any(
+        (m.get('raw_data') or {}).get('tier') == 'priority'
+        for m in td_matches
+    )
+
+
 def eligible_for_call_now(L):
-    """Enforce the 6-rule CALL NOW contract on a lead.
+    """Enforce the 7-rule CALL NOW contract on a lead.
 
     Returns True only if every rule passes. Returns False otherwise —
     the lead is NOT deleted from the inventory, just blocked from
@@ -477,6 +530,9 @@ def eligible_for_call_now(L):
         return False
     # Rule 6: court-record contact_status must be actionable
     if not _has_actionable_contact_status(L):
+        return False
+    # Rule 7: tax_delinquency tier must be priority (when sole pressure)
+    if not _has_actionable_tax_delinquency_tier(L):
         return False
     return True
 

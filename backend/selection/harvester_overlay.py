@@ -233,6 +233,11 @@ def build_investigation_overlay(
                 "document_ref":   sig.get("document_ref"),
                 "party_names":    sig.get("party_names"),
                 "matched_at":     m.get("matched_at"),
+                # raw_data carries harvester-specific metadata (tier,
+                # delinquent_years, unpaid_dollars, senior_flag for
+                # tax_delinquency; analogous fields for other types).
+                # Selector rules and dossier rendering both consume this.
+                "raw_data":       sig.get("raw_data"),
             }
             for sig, m in resolved
         ],
