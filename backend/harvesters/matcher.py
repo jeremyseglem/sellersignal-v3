@@ -646,6 +646,53 @@ def _dispatch_tax_foreclosure(row, owners_db, use_codes):
     }]
 
 
+def _dispatch_tax_delinquency(row, owners_db, use_codes):
+    """
+    KC Delinquent Taxes matching — parcel-only, parallel to
+    _dispatch_tax_foreclosure but for earlier delinquency stages
+    (1-2 years overdue, before formal foreclosure).
+
+    Same matching logic: parcel identity is the signal, name-matching is
+    bypassed. Same eligibility filters: residential prop type, no HOA.
+
+    The only difference from tax_foreclosure dispatch is the
+    signal_family label and the rich tier/amount metadata carried in
+    the trigger_hint — downstream selectors and dossier rendering use
+    these to differentiate priority vs monitoring tax-stress leads.
+    """
+    hint = row.get('property_hint') or {}
+    pin = (hint.get('parcel_id') or '').strip()
+    if not pin:
+        return []
+
+    if pin not in owners_db:
+        return []
+
+    if not _is_eligible_prop_type(use_codes.get(pin, {}).get('prop_type', '')):
+        return []
+    if _is_hoa_parcel(owners_db.get(pin, {})):
+        return []
+
+    raw_data = row.get('raw_data') or {}
+
+    return [{
+        "parcel_id":     pin,
+        "signal_family": "tax_delinquency",
+        "trigger_hint": {
+            "case_number":      row.get('document_ref'),
+            "filing_date":      (row.get('event_date') or ''),
+            "parcel_id":        pin,
+            "source":           "kc_delinquent_taxes_soda",
+            "tier":             raw_data.get('tier'),
+            "delinquent_years": raw_data.get('delinquent_years'),
+            "unpaid_dollars":   raw_data.get('unpaid_dollars'),
+            "senior_flag":      raw_data.get('senior_flag'),
+            # Authoritative billing-record feed → strict by default
+            "match_strength":   "strict",
+        },
+    }]
+
+
 _DISPATCH = {
     "divorce":      _dispatch_divorce,
     "probate":      _dispatch_probate,
@@ -661,6 +708,12 @@ _DISPATCH = {
     # IS the match. This is the first signal type in the system that
     # matches by property rather than by party.
     "tax_foreclosure": _dispatch_tax_foreclosure,
+    # KC Delinquent Taxes: same parcel-only pattern as tax_foreclosure,
+    # different stage of the lifecycle (1-2yr delinquent vs 3+yr formal
+    # foreclosure). Reuses the same dispatch function — the property-
+    # type and HOA filters apply identically; only the signal_family
+    # label differs and that's set in trigger_hint by the dispatch.
+    "tax_delinquency": _dispatch_tax_delinquency,
     # Future: nod, lis_pendens, trustee_sale (via match_recorder_to_parcels),
     # llc_officer_change
 }

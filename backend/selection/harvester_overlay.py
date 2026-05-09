@@ -76,7 +76,7 @@ _PRESSURE_TABLE = {
 # Signal families that are "life events" vs "financial". Feeds the
 # has_life_event / has_financial flags on the investigation shape.
 _LIFE_EVENT_SIGNALS = {"probate", "obituary", "divorce"}
-_FINANCIAL_SIGNALS  = {"tax_foreclosure"}
+_FINANCIAL_SIGNALS  = {"tax_foreclosure", "tax_delinquency"}
 
 
 def _match_to_display(signal: dict, match: dict) -> str:

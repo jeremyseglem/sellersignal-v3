@@ -321,6 +321,7 @@ _CONTRACT_PRESSURE_TYPES = {
     'obituary',
     'divorce',
     'tax_foreclosure',
+    'tax_delinquency',        # KC delinquent-taxes feed (1-2yr overdue)
     'trustee_sale',           # future harvester
     'nod',                    # future harvester
     'lis_pendens',            # future harvester

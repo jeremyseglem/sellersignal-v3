@@ -31,6 +31,7 @@ from . import matcher
 from .base import RawSignal
 from .kc_superior_court import KCSuperiorCourtHarvester
 from .kc_treasury import KCTreasuryForeclosureHarvester
+from .kc_delinquent_taxes import KCDelinquentTaxesHarvester
 from .obituary import ObituaryHarvester
 from backend.api.db import get_supabase_client
 
@@ -46,6 +47,10 @@ HARVESTERS = {
     # Accepts the case_types arg for interface compatibility but ignores it
     # (the Treasury feed has no sub-types).
     "kc_treasury":       lambda _unused:    KCTreasuryForeclosureHarvester(),
+    # KC Delinquent Taxes: parcel-only signal, complements kc_treasury by
+    # catching earlier delinquency stages (1-2 years overdue) before formal
+    # foreclosure (3+ years). Same Socrata pattern, different dataset.
+    "kc_delinquent_taxes": lambda _unused:  KCDelinquentTaxesHarvester(),
     # Future: "kc_recorder" (captcha-blocked — see kc_treasury.py comments),
     # "wa_sos", "zillow_sitemap"
 }
