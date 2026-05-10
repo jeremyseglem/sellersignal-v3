@@ -325,7 +325,7 @@ async def get_briefing(
                 s_res = (supa.table('raw_signals_v3')
                          .select('id, source_type, signal_type, '
                                  'trust_level, party_names, event_date, '
-                                 'document_ref')
+                                 'document_ref, raw_data')
                          .in_('id', chunk)
                          .execute())
                 for r in (s_res.data or []):
