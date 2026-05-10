@@ -162,6 +162,11 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
             'owner_name':     (p.get('owner_name') or '').upper(),
             'co_owner_name':  '',  # parcels_v3 doesn't split co-owner separately
             'canonicalized':  canonical_by_pin.get(pin),
+            # zip_code preserved here so per-source-type dispatchers can
+            # consult it for rollout allowlists. Used by tax_delinquency
+            # to confine matches to enabled ZIPs even when the matcher
+            # itself runs unfiltered (e.g. via the rematch_autofill task).
+            'zip_code':       p.get('zip_code') or '',
         }
         use_codes[pin] = {
             'prop_type': p.get('prop_type') or 'R',  # default to residential
@@ -646,6 +651,38 @@ def _dispatch_tax_foreclosure(row, owners_db, use_codes):
     }]
 
 
+def _get_signal_enabled_zips(signal_type: str) -> Optional[set]:
+    """Per-source-type ZIP allowlist for Phase 1 rollout safety.
+
+    Reads env var <SIGNAL>_ENABLED_ZIPS (e.g. TAX_DELINQUENCY_ENABLED_ZIPS).
+    Returns a set of ZIP strings, or None if not configured (gate open).
+
+    When configured, the dispatcher confines matches to the listed ZIPs
+    even when the matcher runs unfiltered (e.g. via rematch_autofill
+    which ignores zip_filter to keep the entire raw_signals_v3 backlog
+    moving). This is the architectural fix for the "test ZIP only"
+    discipline of Phase 1 signal rollouts: instead of relying on the
+    caller to scope by zip_filter (which the autofill task doesn't),
+    the gate lives next to the dispatcher itself.
+
+    Existing signal types (probate, divorce, obituary, tax_foreclosure)
+    have no env var configured — the gate is closed (returns None) and
+    they behave exactly as before. Only NEW signal types in rollout
+    set their env var; once a signal type is fully rolled out across
+    all covered ZIPs, the env var is removed and the gate goes back to
+    fully open.
+
+    Empty / missing env var → returns None (gate fully open, no filter).
+    Comma-separated list of ZIPs → returns the set.
+    """
+    import os as _os
+    env_key = f"{signal_type.upper()}_ENABLED_ZIPS"
+    raw = _os.environ.get(env_key, "").strip()
+    if not raw:
+        return None
+    return {z.strip() for z in raw.split(",") if z.strip()}
+
+
 def _dispatch_tax_delinquency(row, owners_db, use_codes):
     """
     KC Delinquent Taxes matching — parcel-only, parallel to
@@ -667,6 +704,18 @@ def _dispatch_tax_delinquency(row, owners_db, use_codes):
 
     if pin not in owners_db:
         return []
+
+    # Per-source ZIP allowlist gate. When TAX_DELINQUENCY_ENABLED_ZIPS
+    # is set in the environment (e.g. "98077,98038"), this dispatcher
+    # only emits matches for parcels in those ZIPs — even when the
+    # matcher runs unfiltered (rematch_autofill task). Empty env var
+    # means the gate is fully open. See _get_signal_enabled_zips for
+    # rationale and rollout discipline.
+    enabled_zips = _get_signal_enabled_zips('tax_delinquency')
+    if enabled_zips is not None:
+        parcel_zip = (owners_db.get(pin, {}) or {}).get('zip_code', '')
+        if parcel_zip not in enabled_zips:
+            return []
 
     if not _is_eligible_prop_type(use_codes.get(pin, {}).get('prop_type', '')):
         return []
