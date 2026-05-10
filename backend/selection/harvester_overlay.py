@@ -64,6 +64,14 @@ _PRESSURE_TABLE = {
     ("obituary",        "strict"): 3,
     ("divorce",         "strict"): 3,
     ("tax_foreclosure", "strict"): 3,
+    # tax_delinquency: KC Treasury delinquent-taxes feed (1-2yr overdue,
+    # earlier stage than tax_foreclosure). Pressure 3 here gets every
+    # match into the Call Now consideration pipeline; Rule 7 in
+    # weekly_selector downgrades monitoring-tier matches (single-year
+    # or under $5K unpaid) so they fall through to Build Now / Holds.
+    # Without this entry _highest_pressure returns 0 and the lead falls
+    # straight to Holds without ever reaching the eligibility rules.
+    ("tax_delinquency", "strict"): 3,
 
     # Weak matches — surname-only, heir inference, common-surname
     # collisions. Still surface, but don't promote to call_now.
@@ -71,6 +79,7 @@ _PRESSURE_TABLE = {
     ("obituary",        "weak"): 2,
     ("divorce",         "weak"): 2,
     ("tax_foreclosure", "weak"): 2,
+    ("tax_delinquency", "weak"): 2,
 }
 
 # Signal families that are "life events" vs "financial". Feeds the
