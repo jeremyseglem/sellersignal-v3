@@ -1,9 +1,11 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 
-import HomePage        from './pages/HomePage.jsx';
-import LoginPage       from './pages/LoginPage.jsx';
-import SignupPage      from './pages/SignupPage.jsx';
-import TerritoriesPage from './pages/TerritoriesPage.jsx';
+import HomePage            from './pages/HomePage.jsx';
+import LoginPage           from './pages/LoginPage.jsx';
+import SignupPage          from './pages/SignupPage.jsx';
+import ForgotPasswordPage  from './pages/ForgotPasswordPage.jsx';
+import ResetPasswordPage   from './pages/ResetPasswordPage.jsx';
+import TerritoriesPage     from './pages/TerritoriesPage.jsx';
 import BriefingPage    from './pages/BriefingPage.jsx';
 import ProfilePage     from './pages/ProfilePage.jsx';
 import VoiceOnboardingPage from './pages/VoiceOnboardingPage.jsx';
@@ -15,11 +17,13 @@ import { useAuth } from './lib/AuthContext.jsx';
 // Application routes for the V3 React SPA.
 //
 // Public routes (no auth):
-//   /            — marketing landing page
-//   /login       — magic-link sign-in
-//   /signup      — magic-link 'request access'
-//   /privacy     — privacy policy
-//   /terms       — terms of service
+//   /                — marketing landing page
+//   /login           — email + password sign-in, with magic-link fallback
+//   /signup          — email + password 'request access'
+//   /forgot-password — request a password-reset email
+//   /reset-password  — landing page from reset email; sets new password
+//   /privacy         — privacy policy
+//   /terms           — terms of service
 //
 // Authenticated routes (gated via <AuthGate>):
 //   /territories — agent's territory list
@@ -39,11 +43,13 @@ export default function App() {
   return (
     <Routes>
       {/* Public marketing + auth */}
-      <Route path="/"        element={<HomePage    />} />
-      <Route path="/login"   element={<LoginPage   />} />
-      <Route path="/signup"  element={<SignupPage  />} />
-      <Route path="/privacy" element={<PrivacyPage />} />
-      <Route path="/terms"   element={<TermsPage   />} />
+      <Route path="/"                element={<HomePage           />} />
+      <Route path="/login"           element={<LoginPage          />} />
+      <Route path="/signup"          element={<SignupPage         />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password"  element={<ResetPasswordPage  />} />
+      <Route path="/privacy"         element={<PrivacyPage        />} />
+      <Route path="/terms"           element={<TermsPage          />} />
 
       {/* Authenticated app surfaces */}
       <Route
