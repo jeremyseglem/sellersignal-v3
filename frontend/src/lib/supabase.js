@@ -60,52 +60,6 @@ export async function sendMagicLink(email, { redirectTo } = {}) {
   if (error) throw error;
 }
 
-// ── Password auth ───────────────────────────────────────────────
-// Added alongside magic-link to sidestep corporate email scanners
-// (Microsoft Defender Safe Links, etc.) that pre-fetch and consume
-// one-time-use magic-link tokens before the user can click them.
-//
-// "Confirm email" must be DISABLED in the Supabase dashboard for
-// signUpWithPassword to return a session immediately. Otherwise the
-// user has to click a confirmation email link — which is exactly the
-// scanner-consumption problem this whole change exists to avoid.
-
-export async function signUpWithPassword(email, password) {
-  if (!supabase) {
-    throw new Error('Authentication is not configured. Contact the SellerSignal team.');
-  }
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) throw error;
-  return data;
-}
-
-export async function signInWithPassword(email, password) {
-  if (!supabase) {
-    throw new Error('Authentication is not configured. Contact the SellerSignal team.');
-  }
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  return data;
-}
-
-export async function sendPasswordReset(email, { redirectTo } = {}) {
-  if (!supabase) {
-    throw new Error('Authentication is not configured. Contact the SellerSignal team.');
-  }
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: redirectTo || `${window.location.origin}/reset-password`,
-  });
-  if (error) throw error;
-}
-
-export async function updatePassword(newPassword) {
-  if (!supabase) {
-    throw new Error('Authentication is not configured. Contact the SellerSignal team.');
-  }
-  const { error } = await supabase.auth.updateUser({ password: newPassword });
-  if (error) throw error;
-}
-
 export async function signOut() {
   if (!supabase) return;
   await supabase.auth.signOut();
