@@ -1,37 +1,76 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
-import { sendMagicLink, supabaseConfigured } from '../lib/supabase.js';
+import { signUpWithPassword, supabaseConfigured } from '../lib/supabase.js';
 
-// SignupPage — magic-link 'request access' flow. Same underlying
-// Supabase signInWithOtp call as LoginPage; the difference is purely
-// presentational. This page frames the action as 'requesting beta
-// access' rather than 'signing in,' which matches the marketing
-// copy and the invite-only positioning.
+// SignupPage — email + password 'request access' flow. Replaces the
+// previous magic-link-only signup, which would have been broken on
+// corporate Outlook inboxes (Microsoft Defender Safe Links
+// pre-fetches and consumes one-time-use magic-link tokens before the
+// user can click them).
 //
-// Once magic link auth completes, a row in agent_profiles_v3 is
-// auto-created by the database trigger (see schema/010_agent_profiles.sql).
-// The user lands on /territories — empty until an admin assigns them
-// a ZIP. Future iteration adds an invite-code requirement; for beta
-// we hand-pick agents and let anyone with an email through.
+// "Confirm email" is DISABLED in the Supabase Auth dashboard, so
+// signUp returns a session immediately. The user lands on
+// /territories signed in — empty until an admin assigns them a ZIP.
+//
+// Account creation is permissive (anyone with an email can sign up)
+// because beta is invite-only at the ZIP-assignment layer rather
+// than at the account-creation layer. Creating an account does not
+// give anyone access to data.
+//
+// Once Supabase Auth inserts the new auth.users row, the database
+// trigger create_agent_profile_on_signup creates the matching
+// agent_profiles_v3 row (same path as the previous magic-link flow,
+// so nothing schema-side needs to change).
 export default function SignupPage() {
-  const redirectTo = `${window.location.origin}/territories`;
+  const navigate = useNavigate();
 
-  const [email, setEmail]       = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [sent, setSent]         = useState(false);
-  const [error, setError]       = useState(null);
+  const [error, setError] = useState(null);
+
+  // Client-side validation. Server is the real authority (Supabase
+  // enforces its own minimum), but catching mismatches up front
+  // saves a round trip.
+  const validate = () => {
+    if (password.length < 8) {
+      return 'Password must be at least 8 characters.';
+    }
+    if (password !== confirm) {
+      return 'Passwords do not match.';
+    }
+    return null;
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!email || submitting) return;
+    if (!email || !password || !confirm || submitting) return;
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
-      await sendMagicLink(email, { redirectTo });
-      setSent(true);
+      await signUpWithPassword(email, password);
+      // Confirm-email is off in Supabase, so signUp returns a session
+      // and AuthContext's onAuthStateChange picks it up. Navigate to
+      // territories so the user sees their (empty) dashboard.
+      navigate('/territories');
     } catch (err) {
-      setError(err.message || 'Could not send confirmation link.');
+      // Common cases:
+      //   - "User already registered" (existing magic-link account
+      //     trying to sign up again) — point them to /login.
+      //   - Supabase password policy violations (rare with 8+ chars).
+      const msg = err.message || 'Could not create account.';
+      if (/already registered|already exists/i.test(msg)) {
+        setError('An account with that email already exists. Try signing in instead.');
+      } else {
+        setError(msg);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -57,8 +96,9 @@ export default function SignupPage() {
           lineHeight: 1.6,
           marginBottom: 'var(--space-xl)',
         }}>
-          Beta is invite-only with one agent per ZIP. Enter your email
-          and we&rsquo;ll send you a confirmation link.
+          Beta is invite-only with one agent per ZIP. Create your
+          account below — a member of the team will assign your
+          territory.
         </p>
 
         {!supabaseConfigured && (
@@ -71,54 +111,53 @@ export default function SignupPage() {
           </div>
         )}
 
-        {sent ? (
-          <div style={confirmStyle}>
-            <div style={{
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: '0.12em',
-              textTransform: 'uppercase',
-              color: 'var(--accent)',
-              marginBottom: 8,
-              fontFamily: 'var(--font-sans)',
-            }}>
-              Check your email
-            </div>
-            <div style={{
-              fontFamily: 'var(--font-serif)',
-              fontSize: 14,
-              color: 'var(--text)',
-              lineHeight: 1.6,
-            }}>
-              We sent a confirmation link to <strong>{email}</strong>.
-              Click it to finish creating your account.
-            </div>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit}>
-            <label style={labelStyle}>Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@brokerage.com"
-              autoFocus
-              disabled={submitting || !supabaseConfigured}
-              style={inputStyle}
-            />
-            {error && (
-              <div style={errorStyle}>{error}</div>
-            )}
-            <button
-              type="submit"
-              disabled={submitting || !email || !supabaseConfigured}
-              style={primaryButtonStyle(submitting || !email || !supabaseConfigured)}
-            >
-              {submitting ? 'Sending…' : 'Send confirmation link'}
-            </button>
-          </form>
-        )}
+        <form onSubmit={handleSubmit}>
+          <label style={labelStyle}>Email</label>
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@brokerage.com"
+            autoFocus
+            disabled={submitting || !supabaseConfigured}
+            style={inputStyle}
+          />
+          <label style={{ ...labelStyle, marginTop: 'var(--space-md)' }}>
+            Password
+          </label>
+          <input
+            type="password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="At least 8 characters"
+            disabled={submitting || !supabaseConfigured}
+            style={inputStyle}
+          />
+          <label style={{ ...labelStyle, marginTop: 'var(--space-md)' }}>
+            Confirm password
+          </label>
+          <input
+            type="password"
+            required
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="Re-enter your password"
+            disabled={submitting || !supabaseConfigured}
+            style={inputStyle}
+          />
+          {error && (
+            <div style={errorStyle}>{error}</div>
+          )}
+          <button
+            type="submit"
+            disabled={submitting || !email || !password || !confirm || !supabaseConfigured}
+            style={primaryButtonStyle(submitting || !email || !password || !confirm || !supabaseConfigured)}
+          >
+            {submitting ? 'Creating account\u2026' : 'Create account'}
+          </button>
+        </form>
 
         <div style={{
           marginTop: 'var(--space-xl)',
@@ -137,9 +176,7 @@ export default function SignupPage() {
 }
 
 
-// Same styles as LoginPage. Could be hoisted into a shared file
-// later but duplication is fine while the auth flow is still
-// settling.
+// ── Form styles (mirror LoginPage) ──────────────────────────────
 const labelStyle = {
   display: 'block',
   fontSize: 11,
@@ -198,11 +235,4 @@ const warnStyle = {
   borderRadius: 'var(--radius-sm)',
   fontSize: 13,
   fontFamily: 'var(--font-serif)',
-};
-
-const confirmStyle = {
-  padding: 'var(--space-lg)',
-  background: 'var(--bg-card)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-md)',
 };
