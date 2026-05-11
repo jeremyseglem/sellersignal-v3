@@ -4,6 +4,7 @@ import {
   briefings,
   map as mapApi,
   parcels as parcelsApi,
+  leadTags,
 } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import MapPanel from '../components/MapPanel.jsx';
@@ -100,6 +101,14 @@ function BriefingBody() {
   const [filterKey, setFilterKey]     = useState('all');
   const [sortKey, setSortKey]         = useState('default');
 
+  // Tag filter state. `availableTags` is the agent's distinct tag set
+  // for this ZIP (with counts) — drives the chip list. `selectedTags`
+  // is the agent's active filter. `tagFilteredPins` is the union of
+  // pins matching any selected tag (null = no tag filter active).
+  const [availableTags, setAvailableTags]     = useState([]);
+  const [selectedTags, setSelectedTags]       = useState([]);
+  const [tagFilteredPins, setTagFilteredPins] = useState(null);
+
   // Load briefing + map on ZIP change.
   // The previous version also called coverageApi.stats(zip) just for
   // city/state — that endpoint paginates parcels and investigations
@@ -109,11 +118,46 @@ function BriefingBody() {
   useEffect(() => {
     setBriefing(null); setMapData(null);
     setSelectedPin(null); setDossier(null); setError(null);
+    setSelectedTags([]); setTagFilteredPins(null); setAvailableTags([]);
 
     Promise.all([briefings.get(zip, false), mapApi.get(zip)])
       .then(([b, m]) => { setBriefing(b); setMapData(m); })
       .catch((e) => setError(e.detail?.message || e.message));
+
+    // Load this agent's distinct tags for this ZIP (chip list source).
+    // Independent of the briefing load — failure here just leaves the
+    // chip row empty; doesn't block briefing rendering.
+    leadTags.list(zip)
+      .then((r) => setAvailableTags(r.tags || []))
+      .catch(() => { /* not signed in or other; leave empty */ });
   }, [zip]);
+
+  // Whenever selectedTags changes, fetch the union of matching pins.
+  // Empty selection clears the filter (sets back to null).
+  useEffect(() => {
+    if (selectedTags.length === 0) {
+      setTagFilteredPins(null);
+      return;
+    }
+    let cancelled = false;
+    Promise.all(selectedTags.map((t) => leadTags.byTag(t, zip)))
+      .then((results) => {
+        if (cancelled) return;
+        const pins = new Set();
+        for (const r of results) {
+          for (const a of (r.assignments || [])) pins.add(a.pin);
+        }
+        setTagFilteredPins(pins);
+      })
+      .catch(() => { /* leave previous filter set */ });
+    return () => { cancelled = true; };
+  }, [selectedTags, zip]);
+
+  const handleToggleTag = (tag) => {
+    setSelectedTags((prev) => (
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    ));
+  };
 
   // Synthesize the 'stats' object from briefing for any downstream
   // reads that still expect it. Mirrors the shape coverageApi.stats
@@ -146,16 +190,21 @@ function BriefingBody() {
     const activeFilter = FILTER_OPTIONS.find((o) => o.key === filterKey) || FILTER_OPTIONS[0];
     const processSection = (leads) => {
       if (!leads) return [];
-      const searched = searchLeads(leads, searchQuery);
-      const filtered = searched.filter(activeFilter.matches);
-      return sortLeads(filtered, sortKey);
+      let cur = searchLeads(leads, searchQuery);
+      cur = cur.filter(activeFilter.matches);
+      // Tag filter: only keep leads whose pin is in the matching set.
+      // null = no tag filter active.
+      if (tagFilteredPins) {
+        cur = cur.filter((L) => tagFilteredPins.has(L.pin));
+      }
+      return sortLeads(cur, sortKey);
     };
     return {
       call_now:        processSection(briefing.playbook.call_now),
       build_now:       processSection(briefing.playbook.build_now),
       strategic_holds: processSection(briefing.playbook.strategic_holds),
     };
-  }, [briefing, searchQuery, filterKey, sortKey]);
+  }, [briefing, searchQuery, filterKey, sortKey, tagFilteredPins]);
 
   // ── Derived values for the new briefing components ──
   // Action list shows up to 5 Call Now leads, unfiltered. Pipeline
@@ -359,6 +408,9 @@ function BriefingBody() {
             onSortChange={setSortKey}
             filterOptions={FILTER_OPTIONS}
             sortOptions={SORT_OPTIONS}
+            availableTags={availableTags}
+            selectedTags={selectedTags}
+            onToggleTag={handleToggleTag}
           />
         )}
 

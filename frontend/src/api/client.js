@@ -204,6 +204,99 @@ export const leadInteractions = {
 };
 
 
+// ── Lead notes ────────────────────────────────────────────────────
+// Mutable free-text notes per (agent, parcel). Multiple notes per
+// parcel allowed; each has its own id, body, and created/updated
+// timestamps. Backed by lead_notes_v3 (migration 019).
+
+export const leadNotes = {
+  /**
+   * Create a new note. Returns the inserted row.
+   * @param {{pin: string, zip_code: string, body: string}} body
+   */
+  create: (body) => authedRequest('/lead-notes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  /**
+   * Update an existing note's body. Server auto-bumps updated_at.
+   * @param {string} id
+   * @param {string} body
+   */
+  update: (id, body) => authedRequest(`/lead-notes/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ body }),
+  }),
+
+  /**
+   * Delete a note. Returns {deleted: true, id}. RLS scoped to caller.
+   */
+  remove: (id) => authedRequest(`/lead-notes/${id}`, {
+    method: 'DELETE',
+  }),
+
+  /**
+   * List all this agent's notes on one parcel, newest first.
+   * Returns {pin, notes: [{id, body, created_at, updated_at, ...}, ...]}
+   */
+  byPin: (pin) => authedRequest(`/lead-notes/by-pin/${pin}`),
+};
+
+
+// ── Lead tags ─────────────────────────────────────────────────────
+// Flat (agent, pin, zip, tag) assignments. Agent's distinct tag
+// strings form their own private taxonomy — no shared taxonomy
+// table. Backed by lead_tags_v3 (migration 019).
+
+export const leadTags = {
+  /**
+   * Assign a tag to a parcel. Idempotent: re-adding an existing
+   * (pin, tag) returns the existing row rather than erroring.
+   * @param {{pin: string, zip_code: string, tag: string}} body
+   */
+  create: (body) => authedRequest('/lead-tags', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  /**
+   * Remove a tag assignment by id.
+   */
+  remove: (id) => authedRequest(`/lead-tags/${id}`, {
+    method: 'DELETE',
+  }),
+
+  /**
+   * List this agent's distinct tags with usage counts.
+   * Optionally filter by zip_code. Returns
+   * {tags: [{tag, count}, ...]} sorted by count desc, then alpha.
+   * Powers the briefing-page tag filter chip row.
+   */
+  list: (zip_code) => {
+    const qs = zip_code ? `?zip_code=${encodeURIComponent(zip_code)}` : '';
+    return authedRequest(`/lead-tags${qs}`);
+  },
+
+  /**
+   * All tags this agent has on one parcel.
+   * Returns {pin, tags: [{id, tag, created_at, ...}, ...]}.
+   */
+  byPin: (pin) => authedRequest(`/lead-tags/by-pin/${pin}`),
+
+  /**
+   * All pins this agent has assigned a given tag to.
+   * Optionally filter by zip_code. Returns
+   * {tag, zip_code, assignments: [{pin, zip_code, created_at, ...}, ...]}.
+   * Powers "search by tag" in the briefing UI.
+   */
+  byTag: (tag, zip_code) => {
+    const qs = zip_code ? `?zip_code=${encodeURIComponent(zip_code)}` : '';
+    return authedRequest(`/lead-tags/by-tag/${encodeURIComponent(tag)}${qs}`);
+  },
+};
+
+
 /**
  * agentVoice — agent voice product API.
  *

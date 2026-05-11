@@ -22,9 +22,15 @@ import { useState } from 'react';
  *
  * Props:
  *   searchQuery, onSearchChange — controlled input for free-text search
- *   filterKey, onFilterChange   — current filter chip + setter
+ *   filterKey, onFilterChange   — current category filter chip + setter
  *   sortKey, onSortChange       — current sort + setter
  *   filterOptions, sortOptions  — option arrays from BriefingPage
+ *   availableTags               — [{tag, count}, ...] this agent's tags
+ *                                  for this ZIP. Empty array hides the
+ *                                  tag row entirely (no tags yet).
+ *   selectedTags                — array of currently-active tag strings
+ *                                  (multi-select; union semantics)
+ *   onToggleTag(tag)            — toggle one tag in/out of selection
  */
 export default function MapExplorePanel({
   searchQuery,
@@ -35,6 +41,9 @@ export default function MapExplorePanel({
   onSortChange,
   filterOptions,
   sortOptions,
+  availableTags = [],
+  selectedTags = [],
+  onToggleTag,
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -131,6 +140,55 @@ export default function MapExplorePanel({
               </button>
             ))}
           </div>
+
+          {/* Tag filter row — only renders when this agent has at
+              least one tag in this ZIP. Multi-select with union
+              semantics: showing any lead matching any selected tag. */}
+          {availableTags.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: '0.1em',
+                textTransform: 'uppercase',
+                color: 'var(--text-tertiary)',
+                marginBottom: 6,
+                fontFamily: 'var(--font-sans)',
+              }}>
+                Your tags
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {availableTags.map((t) => {
+                  const active = selectedTags.includes(t.tag);
+                  return (
+                    <button
+                      key={t.tag}
+                      onClick={() => onToggleTag && onToggleTag(t.tag)}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: 11,
+                        fontFamily: 'var(--font-sans)',
+                        borderRadius: 999,
+                        border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                        background: active ? 'var(--accent-dim)' : 'transparent',
+                        color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {t.tag}
+                      <span style={{
+                        marginLeft: 4,
+                        opacity: 0.6,
+                        fontSize: 9,
+                      }}>
+                        {t.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <select
             value={sortKey}
             onChange={(e) => onSortChange(e.target.value)}

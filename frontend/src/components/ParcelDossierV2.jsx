@@ -17,6 +17,8 @@ import {
 } from '../lib/archetypePlaybooks.js';
 import SixLettersModal from './SixLettersModal.jsx';
 import ClaimZipModal from './briefing/ClaimZipModal.jsx';
+import LeadTagChips from './LeadTagChips.jsx';
+import LeadNotesSection from './LeadNotesSection.jsx';
 
 /**
  * ParcelDossierV2 — the v4 spec dossier.
@@ -203,6 +205,8 @@ export default function ParcelDossierV2({ dossier, onClose }) {
   const handleNotRelevant = guardCold(() => logEvent('not_relevant'));
   const handleReactivate = guardCold(() => logEvent('reactivated'));
   const handleExportCrm = guardCold(() => logEvent('sent_to_crm'));
+  const handleMarkCalled = guardCold(() => logEvent('called'));
+  const handleMarkMailed = guardCold(() => logEvent('mailed'));
   const handleOutcome = guardCold((outcome) => {
     // Map UI outcome label to event_type
     const mapping = {
@@ -253,6 +257,13 @@ export default function ParcelDossierV2({ dossier, onClose }) {
             onUndo={currentStatus === 'not_relevant' ? handleReactivate : null}
           />
         )}
+
+        <LeadTagChips
+          pin={dossier.pin}
+          zip_code={parcel.zip_code}
+          disabled={isColdVisitor}
+          onError={showHint}
+        />
 
         {streetViewUrl && streetViewOk && (
           <img
@@ -339,7 +350,17 @@ export default function ParcelDossierV2({ dossier, onClose }) {
           onExportCrm={handleExportCrm}
           onMarkWorking={handleMarkWorking}
           onNotRelevant={handleNotRelevant}
+          onMarkCalled={handleMarkCalled}
+          onMarkMailed={handleMarkMailed}
           onSixLetters={() => setSixLettersOpen(true)}
+        />
+
+        {/* ── Notes (mutable, multiple per lead) ──────────────── */}
+        <LeadNotesSection
+          pin={dossier.pin}
+          zip_code={parcel.zip_code}
+          disabled={isColdVisitor}
+          onError={showHint}
         />
 
         {/* ── History ────────────────────────────────────────── */}
@@ -1531,6 +1552,8 @@ function ActionButtons({
   onExportCrm,
   onMarkWorking,
   onNotRelevant,
+  onMarkCalled,
+  onMarkMailed,
   onSixLetters,
 }) {
   // Suppress primary send during wait window
@@ -1650,6 +1673,39 @@ function ActionButtons({
           </button>
         )}
       </div>
+
+      {/* Action log row — calls/mail are actions on a lead, not
+          funnel-status changes, so they live on their own row and
+          do not gate on currentStatus. */}
+      {onMarkCalled && onMarkMailed && (
+        <div style={{
+          display: 'flex',
+          gap: 0,
+          alignItems: 'center',
+          paddingTop: 6,
+        }}>
+          <button
+            onClick={onMarkCalled}
+            disabled={actionPending}
+            style={quietButtonStyle('var(--text-secondary)')}
+          >
+            Mark called
+          </button>
+          <span style={{
+            width: 1,
+            height: 12,
+            background: 'var(--border)',
+            margin: '0 4px',
+          }} />
+          <button
+            onClick={onMarkMailed}
+            disabled={actionPending}
+            style={quietButtonStyle('var(--text-secondary)')}
+          >
+            Mark mailed
+          </button>
+        </div>
+      )}
 
       {isColdVisitor && (
         <div style={{
@@ -1865,16 +1921,25 @@ function evidenceLink(m) {
 
 function humanEventLabel(ev) {
   const labels = {
+    // Funnel status
     working:             'Marked working',
     not_relevant:        'Marked not relevant',
     sent_to_crm:         'Exported to CRM',
+    // Contact outcomes
     got_response:        'Logged response',
     no_response:         'Logged no response',
     listing_discussion:  'Listing discussion',
     closed:              'Closed',
     reactivated:         'Reactivated',
+    // Actions (migration 019)
+    called:              'Called',
+    mailed:              'Mailer sent',
+    voicemail:           'Left voicemail',
+    skip_traced:         'Skip-traced',
   };
   const base = labels[ev.event_type] || ev.event_type;
-  if (ev.event_data?.label) return `${base}: ${ev.event_data.label}`;
+  // event_data.outcome for calls ("no answer", "spoke", etc.)
+  if (ev.event_data?.outcome) return `${base}: ${ev.event_data.outcome}`;
+  if (ev.event_data?.label)   return `${base}: ${ev.event_data.label}`;
   return base;
 }
