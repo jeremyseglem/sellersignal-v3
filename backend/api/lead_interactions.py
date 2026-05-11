@@ -48,17 +48,25 @@ router = APIRouter()
 # ── Models ──────────────────────────────────────────────────────
 
 # The vocabulary mirrors the CHECK constraint in
-# schema/011_lead_interactions.sql. Adding a new value here without
-# a matching schema migration will cause inserts to fail.
+# schema/011_lead_interactions.sql (extended by schema/019_lead_organization.sql).
+# Adding a new value here without a matching schema migration will
+# cause inserts to fail.
 _VALID_EVENT_TYPES = frozenset({
+    # Funnel status (migration 011)
     'working',
     'not_relevant',
     'sent_to_crm',
+    # Contact outcomes (migration 011)
     'got_response',
     'no_response',
     'listing_discussion',
     'closed',
     'reactivated',
+    # Actions performed on a lead (migration 019)
+    'called',
+    'mailed',
+    'voicemail',
+    'skip_traced',
 })
 
 
