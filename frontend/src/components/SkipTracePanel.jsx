@@ -70,11 +70,11 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
     setError(null);
   }, [pin]);
 
-  const runTrace = async () => {
+  const runTrace = async ({ force_refresh = false } = {}) => {
     setError(null);
     setLoading(true);
     try {
-      const r = await skipTrace.lookup(pin);
+      const r = await skipTrace.lookup(pin, { force_refresh });
       setResult(r);
       // Refresh status so monthly remaining updates after a fresh trace.
       skipTrace.status().then(setStatus).catch(() => {});
@@ -167,7 +167,10 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
       )}
 
       {result && (
-        <ResultsDisplay result={result} onRetry={runTrace} />
+        <ResultsDisplay
+          result={result}
+          onRetry={() => runTrace({ force_refresh: true })}
+        />
       )}
 
       {showAckModal && (

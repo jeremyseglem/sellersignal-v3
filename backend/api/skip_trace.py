@@ -462,6 +462,12 @@ async def cached(pin: str,
 
 class LookupRequest(BaseModel):
     pin: str = Field(..., min_length=1, max_length=64)
+    # When true, bypass the 30-day cache and run a fresh provider
+    # call. Wired to the "Refresh" link in the dossier panel — agents
+    # who think their cached data is stale (number changed, person
+    # moved) can force a re-trace. Costs the same as a normal fresh
+    # trace and counts against the monthly cap.
+    force_refresh: bool = False
 
 
 @router.post("/skip-trace/lookup")
@@ -472,31 +478,13 @@ async def lookup(payload: LookupRequest,
     Flow:
       1. Verify agent ack'd TCPA → 412 if not
       2. Check cache (30-day TTL) → return cached if fresh
+         (UNLESS payload.force_refresh is true)
       3. Check monthly cap → 429 if at limit
       4. Load parcel address from parcels_v3 → 404 if missing
-      5. Call Tracerfy
+      5. Call Tracerfy (PR-name search for probate, owner search else)
       6. Upsert result into cache
       7. Log skip_traced event
       8. Return result
-
-    Response shape (success):
-      {
-        source:           'cache' | 'fresh',
-        hit:              bool,
-        credits_deducted: int,
-        persons:          [Tracerfy person, ...],
-        retrieved_at:     ISO datetime of original fetch (cache or fresh),
-        expires_at:       ISO datetime when this result becomes stale,
-        monthly_used:     int (after this call),
-        monthly_cap:      int,
-      }
-
-    Error responses:
-      400 — bad input / parcel missing address fields
-      404 — pin not found in parcels_v3
-      412 — agent has not ack'd TCPA
-      429 — monthly cap reached
-      502 — provider error (retryable / non-retryable surfaced in body)
     """
     user = user_from_authorization(authorization)
     supa = get_supabase_client()
@@ -516,30 +504,31 @@ async def lookup(payload: LookupRequest,
             },
         )
 
-    # ── Step 2: cache check ────────────────────────────────────────
-    cached = _cached_result_if_fresh(supa, user.id, pin)
-    if cached:
-        # Log a cache-hit event so engagement still flows to My Leads,
-        # but skip the cap and skip the provider call.
-        zip_code = cached.get("zip_code") or ""
-        _log_skip_traced_event(
-            supa, user.id, pin, zip_code,
-            hit=bool(cached["hit"]),
-            credits_deducted=0,  # 0 because we didn't call the provider
-            source="cache",
-        )
-        is_op_cache = _is_operator(supa, user.id)
-        used = _count_fresh_this_month(supa, user.id)
-        return {
-            "source":           "cache",
-            "hit":              cached["hit"],
-            "credits_deducted": 0,
-            "persons":          cached["persons"] or [],
-            "retrieved_at":     cached["created_at"],
-            "expires_at":       cached["expires_at"],
-            "monthly_used":     used,
-            "monthly_cap":      None if is_op_cache else _MONTHLY_CAP,
-        }
+    # ── Step 2: cache check (skipped when force_refresh) ──────────
+    if not payload.force_refresh:
+        cached = _cached_result_if_fresh(supa, user.id, pin)
+        if cached:
+            # Log a cache-hit event so engagement still flows to My Leads,
+            # but skip the cap and skip the provider call.
+            zip_code = cached.get("zip_code") or ""
+            _log_skip_traced_event(
+                supa, user.id, pin, zip_code,
+                hit=bool(cached["hit"]),
+                credits_deducted=0,  # 0 because we didn't call the provider
+                source="cache",
+            )
+            is_op_cache = _is_operator(supa, user.id)
+            used = _count_fresh_this_month(supa, user.id)
+            return {
+                "source":           "cache",
+                "hit":              cached["hit"],
+                "credits_deducted": 0,
+                "persons":          cached["persons"] or [],
+                "retrieved_at":     cached["created_at"],
+                "expires_at":       cached["expires_at"],
+                "monthly_used":     used,
+                "monthly_cap":      None if is_op_cache else _MONTHLY_CAP,
+            }
 
     # ── Step 3: monthly cap ────────────────────────────────────────
     # Operators (Jeremy, Brian, etc.) are exempt from the cap.

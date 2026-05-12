@@ -347,10 +347,18 @@ export const skipTrace = {
    *
    * Throws on 412 (not ack'd), 429 (cap reached), 502 (provider error).
    * The caller is expected to handle each cleanly — see SkipTracePanel.
+   *
+   * @param {string} pin
+   * @param {{force_refresh?: boolean}} [opts] — pass force_refresh:true
+   *   from the "Refresh" link to bypass the cache and run a genuinely
+   *   fresh trace (spends credits, counts against monthly cap).
    */
-  lookup: (pin) => authedRequest('/skip-trace/lookup', {
+  lookup: (pin, opts = {}) => authedRequest('/skip-trace/lookup', {
     method: 'POST',
-    body: JSON.stringify({ pin }),
+    body: JSON.stringify({
+      pin,
+      force_refresh: !!opts.force_refresh,
+    }),
   }),
 
   /**
