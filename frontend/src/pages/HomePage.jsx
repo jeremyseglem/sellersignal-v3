@@ -13,20 +13,26 @@ import Logo from '../components/shell/Logo.jsx';
 //
 // Structure (top to bottom):
 //   1. Hero — number-led headline, oracle subhead
-//   2. Sample lead — single lead-row-style card with a real-looking
+//   2. Built by an agent — moat: not engineer-built, not investor-pitched
+//   3. Sample lead — single lead-row-style card with a real-looking
 //      entry (synthetic name, illustrative archetype labels, sample
 //      letter excerpt)
-//   3. Voice — what the system writes for the agent. Two short
+//   4. Voice — what the system writes for the agent. Two short
 //      paragraphs, one sample-letter excerpt.
-//   4. Territory — condensed list, real availability count
-//   5. Footer CTA — direct, no metaphor
+//   5. Two-sided personalization — moat: agent voice + lead-specific
+//      archetype treatment, not one-size-fits-all
+//   6. Territory — condensed list, real availability count, moat:
+//      one-agent-per-ZIP as structural exclusivity, not pricing
+//   7. Footer CTA — direct, no metaphor
 
 export default function HomePage() {
   return (
     <SiteLayout mode="public" showFooter>
       <Hero />
+      <BuiltByAgent />
       <SampleLead />
       <Voice />
+      <TwoSidedPersonalization />
       <Territory />
       <FooterCTA />
     </SiteLayout>
@@ -84,8 +90,9 @@ function Hero() {
           maxWidth: 640,
         }}>
           A weekly briefing of the property owners most likely to sell &middot;
-          surfaced from court records, ownership history, and structural
-          signals &middot; with first-touch outreach drafted in your own voice.
+          surfaced from court records and life events that signal change &middot;
+          with first-touch outreach drafted in your own voice. The first
+          lead-gen tool built by a working agent, for one agent at a time.
         </div>
 
         <div style={{
@@ -107,6 +114,65 @@ function Hero() {
         }}>
           Eleven territories live. Eight currently held. Three open.
         </div>
+      </div>
+    </section>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// BuiltByAgent — the credibility moat. Counter-positions vs typical
+// lead-gen tools that were built by engineers selling to investors
+// and retrofitted for agents. Sits right after the hero because it's
+// what reframes everything that follows: this product is not a
+// generic stack with an agent skin.
+// ─────────────────────────────────────────────────────────────────
+function BuiltByAgent() {
+  return (
+    <section style={{
+      background: 'var(--bg)',
+      padding: '80px 32px',
+      borderBottom: '1px solid var(--border)',
+    }}>
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+        <Eyebrow>The maker</Eyebrow>
+
+        <h2 style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: 'clamp(28px, 3.2vw, 38px)',
+          fontWeight: 600,
+          color: 'var(--text)',
+          lineHeight: 1.18,
+          letterSpacing: '-0.01em',
+          marginBottom: 'var(--space-md)',
+        }}>
+          Built by an agent.
+        </h2>
+
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 16,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.8,
+          marginBottom: 'var(--space-md)',
+        }}>
+          Most lead-gen tools are built by engineers selling to investors
+          and retrofitted for agents who never asked for them. SellerSignal
+          is the opposite.
+        </p>
+
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 16,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.8,
+        }}>
+          Every script, every signal, every choice about when to call
+          and when to wait &mdash; designed by a working agent against
+          the situations agents face every week. The difference between
+          a product that hands you a list and one that hands you a
+          strategy.
+        </p>
       </div>
     </section>
   );
@@ -136,7 +202,8 @@ function SampleLead() {
           letterSpacing: '-0.01em',
           marginBottom: 'var(--space-md)',
         }}>
-          Each lead surfaces a household at a moment that matters.
+          Each lead surfaces a household at a moment that matters &mdash;
+          and the person who actually makes the decision.
         </h2>
 
         <p style={{
@@ -147,9 +214,10 @@ function SampleLead() {
           marginBottom: 'var(--space-2xl)',
           maxWidth: 620,
         }}>
-          A real entry pulled from the briefing &mdash; with the first
-          letter that would be sent, drafted in the agent&rsquo;s voice.
-          Names below are illustrative.
+          Not the deceased homeowner. Not the LLC. The personal
+          representative, by name. A real entry from the briefing &mdash;
+          with the first letter that would be sent, drafted in the
+          agent&rsquo;s voice. Names below are illustrative.
         </p>
 
         {/* Lead-row style card — left rule + name + signal + body */}
@@ -303,6 +371,66 @@ function Voice() {
 
 
 // ─────────────────────────────────────────────────────────────────
+// TwoSidedPersonalization — the lead-side analytics moat. The Voice
+// section just established agent-side personalization (the script
+// sounds like the agent). This section establishes the other side:
+// each lead is treated differently based on signal type. A probate
+// is not a divorce is not a foreclosure. Six archetypes, six
+// approaches.
+// ─────────────────────────────────────────────────────────────────
+function TwoSidedPersonalization() {
+  return (
+    <section style={{
+      background: 'var(--bg)',
+      padding: '100px 32px',
+      borderBottom: '1px solid var(--border)',
+    }}>
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+        <Eyebrow>Both sides</Eyebrow>
+
+        <h2 style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: 'clamp(28px, 3.2vw, 38px)',
+          fontWeight: 600,
+          color: 'var(--text)',
+          lineHeight: 1.18,
+          letterSpacing: '-0.01em',
+          marginBottom: 'var(--space-md)',
+        }}>
+          Two-sided personalization.
+        </h2>
+
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 16,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.8,
+          marginBottom: 'var(--space-md)',
+        }}>
+          The agent&rsquo;s voice goes one way. The lead&rsquo;s
+          situation goes the other. A probate is not a divorce is not
+          a foreclosure is not an obituary &mdash; each one is a
+          different person at a different moment, with a different
+          need.
+        </p>
+
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 16,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.8,
+        }}>
+          SellerSignal treats them differently. Six archetypes, six
+          approaches. What to say, when to call, when to wait, when
+          to write instead. The opposite of one-size-fits-all.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────
 // Territory — condensed list, no per-ZIP grid
 // ─────────────────────────────────────────────────────────────────
 function Territory() {
@@ -334,9 +462,12 @@ function Territory() {
           lineHeight: 1.7,
           marginBottom: 'var(--space-lg)',
         }}>
-          Each territory is held by the agent who claims it. There is one
-          rolodex per ZIP, and one agent reading it. Additional markets
-          opening selectively.
+          Each territory is owned by one agent &mdash; entirely. The
+          data, the contact info, the briefing &mdash; yours alone.
+          Most lead-gen tools sell the same lead to ten buyers and
+          call it scale. SellerSignal sells one territory to one
+          agent and calls it ownership. Additional markets opening
+          selectively.
         </p>
 
         <div style={{
