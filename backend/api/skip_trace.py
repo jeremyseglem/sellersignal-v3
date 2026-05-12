@@ -155,10 +155,10 @@ def _get_pr_for_pin(supa, pin: str) -> dict[str, str] | None:
     try:
         # Step 1: find any court-record matches on this pin
         matches_res = (supa.table("raw_signal_matches_v3")
-                       .select("signal_id")
+                       .select("raw_signal_id")
                        .eq("pin", pin)
                        .execute())
-        signal_ids = [m["signal_id"] for m in (matches_res.data or [])]
+        signal_ids = [m["raw_signal_id"] for m in (matches_res.data or [])]
         if not signal_ids:
             return None
 
