@@ -109,9 +109,21 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
     });
   };
 
-  const monthlyText = status
-    ? `${status.monthly_remaining} of ${status.monthly_cap} skip-traces left this month`
-    : null;
+  // Display text for the monthly counter. Operators get null cap
+  // from the server; show "unlimited" rather than a count.
+  let monthlyText = null;
+  if (status) {
+    if (status.is_operator || status.monthly_cap == null) {
+      monthlyText = 'Unlimited skip-traces (operator)';
+    } else {
+      monthlyText = `${status.monthly_remaining} of ${status.monthly_cap} skip-traces left this month`;
+    }
+  }
+
+  // Disable the button only when a real cap exists and is reached.
+  const capReached = status
+    && !status.is_operator
+    && status.monthly_remaining === 0;
 
   return (
     <div style={containerStyle}>
@@ -120,7 +132,7 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
           <button
             type="button"
             onClick={handleTraceClick}
-            disabled={loading || (status && status.monthly_remaining === 0)}
+            disabled={loading || capReached}
             style={traceButtonStyle(loading)}
           >
             {loading ? 'Running skip-trace…' : 'Find owner contact info'}

@@ -106,6 +106,28 @@ def _count_fresh_this_month(supa, agent_id: str) -> int:
     return int(res.count or 0)
 
 
+def _is_operator(supa, agent_id: str) -> bool:
+    """True if this user is a platform operator (Jeremy, Brian, etc.).
+    Operators bypass the monthly skip-trace cap — they need unrestricted
+    access for product validation, demos, and beta-agent support.
+
+    Defaults to False on any failure: a missing profile or DB error
+    falls through to standard agent treatment rather than silently
+    handing out unlimited credits.
+    """
+    try:
+        res = (supa.table("agent_profiles_v3")
+               .select("role")
+               .eq("id", agent_id)
+               .limit(1)
+               .execute())
+        if res.data and res.data[0].get("role") == "operator":
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _load_parcel(supa, pin: str) -> dict[str, Any] | None:
     """Load the address fields needed for a trace. Returns None if
     the pin doesn't exist in parcels_v3.
@@ -227,10 +249,16 @@ async def status(authorization: Optional[str] = Header(None)):
         acked:              bool,
         ack_version:        str,
         monthly_used:       int,
-        monthly_cap:        int,
-        monthly_remaining:  int,
+        monthly_cap:        int | null,    # null = unlimited (operators)
+        monthly_remaining:  int | null,    # null = unlimited
         monthly_resets_at:  ISO datetime (start of next UTC month),
+        is_operator:        bool,
       }
+
+    Operators (Jeremy, Brian, etc.) have no cap — they need
+    unrestricted access for demos, product validation, and helping
+    beta agents. The UI shows "unlimited" rather than a counter for
+    these users.
 
     The UI reads this on dossier mount to know whether to show the
     TCPA modal or proceed straight to the skip-trace button.
@@ -241,6 +269,7 @@ async def status(authorization: Optional[str] = Header(None)):
         raise HTTPException(503, "Supabase unavailable")
 
     acked = _has_acked(supa, user.id)
+    is_op = _is_operator(supa, user.id)
     used = _count_fresh_this_month(supa, user.id)
 
     # Start of next month for the reset hint
@@ -254,9 +283,10 @@ async def status(authorization: Optional[str] = Header(None)):
         "acked":             acked,
         "ack_version":       _ACK_VERSION,
         "monthly_used":      used,
-        "monthly_cap":       _MONTHLY_CAP,
-        "monthly_remaining": max(0, _MONTHLY_CAP - used),
+        "monthly_cap":       None if is_op else _MONTHLY_CAP,
+        "monthly_remaining": None if is_op else max(0, _MONTHLY_CAP - used),
         "monthly_resets_at": next_reset.isoformat(),
+        "is_operator":       is_op,
     }
 
 
@@ -380,6 +410,7 @@ async def lookup(payload: LookupRequest,
             credits_deducted=0,  # 0 because we didn't call the provider
             source="cache",
         )
+        is_op_cache = _is_operator(supa, user.id)
         used = _count_fresh_this_month(supa, user.id)
         return {
             "source":           "cache",
@@ -389,12 +420,14 @@ async def lookup(payload: LookupRequest,
             "retrieved_at":     cached["created_at"],
             "expires_at":       cached["expires_at"],
             "monthly_used":     used,
-            "monthly_cap":      _MONTHLY_CAP,
+            "monthly_cap":      None if is_op_cache else _MONTHLY_CAP,
         }
 
     # ── Step 3: monthly cap ────────────────────────────────────────
+    # Operators (Jeremy, Brian, etc.) are exempt from the cap.
+    is_op = _is_operator(supa, user.id)
     used = _count_fresh_this_month(supa, user.id)
-    if used >= _MONTHLY_CAP:
+    if not is_op and used >= _MONTHLY_CAP:
         raise HTTPException(
             status_code=429,
             detail={
@@ -479,5 +512,5 @@ async def lookup(payload: LookupRequest,
         "retrieved_at":     cached_row["created_at"],
         "expires_at":       cached_row["expires_at"],
         "monthly_used":     used_after,
-        "monthly_cap":      _MONTHLY_CAP,
+        "monthly_cap":      None if is_op else _MONTHLY_CAP,
     }
