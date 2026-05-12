@@ -166,15 +166,37 @@ function ResultsDisplay({ result, onRetry }) {
   const { hit, persons, source, retrieved_at, expires_at } = result;
 
   if (!hit || !persons.length) {
+    // Build a helpful miss message. If we searched for a specific
+    // named PR (search_mode='person'), the miss almost certainly
+    // means the PR doesn't live at the property — common for
+    // probate cases where the PR is an adult child living elsewhere.
+    const searchedFor = result.searched_for;
+    const isPersonSearch = result.search_mode === 'person' && searchedFor;
     return (
       <div style={missStyle}>
-        <div style={missTitleStyle}>No contact data found</div>
+        <div style={missTitleStyle}>
+          {isPersonSearch
+            ? `${searchedFor} not found at this address`
+            : 'No contact data found'}
+        </div>
         <div style={missBodyStyle}>
-          Skip-trace returned no matches for this address. This can
-          happen for vacant properties, recently transferred ownership,
-          or addresses where the resident&rsquo;s identity isn&rsquo;t
-          public. Try again in 30 days, or contact this lead by mail
-          to the property address.
+          {isPersonSearch ? (
+            <>
+              The personal representative likely lives at a different
+              address — common in probate cases. Search probate court
+              records for the PR&rsquo;s home address, or try a
+              handwritten letter to the property address (often
+              forwarded to the PR by family members at the home).
+            </>
+          ) : (
+            <>
+              Skip-trace returned no matches for this address. This
+              can happen for vacant properties, recently transferred
+              ownership, or addresses where the resident&rsquo;s
+              identity isn&rsquo;t public. Try again in 30 days, or
+              contact this lead by mail to the property address.
+            </>
+          )}
         </div>
         {source === 'cache' && retrieved_at && (
           <div style={cacheNoteStyle}>

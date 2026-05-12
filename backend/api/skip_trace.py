@@ -140,6 +140,70 @@ def _load_parcel(supa, pin: str) -> dict[str, Any] | None:
     return res.data[0] if res.data else None
 
 
+def _get_pr_for_pin(supa, pin: str) -> dict[str, str] | None:
+    """For a probate parcel, return the Personal Representative's
+    first/last name from court records. Returns None for non-probate
+    parcels or probate cases where the PR isn't scraped yet.
+
+    Path: parcels_v3.pin → raw_signal_matches_v3 → raw_signals_v3
+    (document_ref = case_number) → case_parties_v3 (role='personal_
+    representative'). Mirrors the enrichment logic in parcels.py
+    around line 270.
+
+    Returns {name_first, name_last, name_raw, classification} or None.
+    """
+    try:
+        # Step 1: find any court-record matches on this pin
+        matches_res = (supa.table("raw_signal_matches_v3")
+                       .select("signal_id")
+                       .eq("pin", pin)
+                       .execute())
+        signal_ids = [m["signal_id"] for m in (matches_res.data or [])]
+        if not signal_ids:
+            return None
+
+        # Step 2: get document_ref (case_number) for KC court signals
+        signals_res = (supa.table("raw_signals_v3")
+                       .select("id, document_ref, source_type")
+                       .in_("id", signal_ids)
+                       .eq("source_type", "kc_superior_court")
+                       .execute())
+        case_numbers = [s["document_ref"] for s in (signals_res.data or [])
+                        if s.get("document_ref")]
+        if not case_numbers:
+            return None
+
+        # Step 3: find the PR row for any of those cases
+        parties_res = (supa.table("case_parties_v3")
+                       .select("name_raw, name_first, name_last, "
+                               "pr_classification")
+                       .in_("case_number", case_numbers)
+                       .eq("role", "personal_representative")
+                       .limit(1)
+                       .execute())
+        if not parties_res.data:
+            return None
+
+        p = parties_res.data[0]
+        first = (p.get("name_first") or "").strip()
+        last = (p.get("name_last") or "").strip()
+        if not first or not last:
+            # Name didn't parse cleanly — skip-trace can't use a
+            # half-name. Falls through to owner-search.
+            return None
+
+        return {
+            "name_first":     first,
+            "name_last":      last,
+            "name_raw":       p.get("name_raw"),
+            "classification": p.get("pr_classification"),
+        }
+    except Exception:
+        # Any DB hiccup here falls through to owner-search rather than
+        # blocking the trace entirely.
+        return None
+
+
 def _cached_result_if_fresh(supa, agent_id: str, pin: str
                              ) -> dict[str, Any] | None:
     """Return the cached row for (agent, pin) if it exists and isn't
@@ -465,10 +529,23 @@ async def lookup(payload: LookupRequest,
         )
 
     # ── Step 5: call Tracerfy ──────────────────────────────────────
+    # For probate leads with a known PR, search by the PR's name —
+    # not by find_owner. The property's owner-of-record in skip-trace
+    # data is typically the deceased homeowner, which is useless for
+    # contacting the actual decision-maker. The PR's name from court
+    # records is the right query.
+    pr = _get_pr_for_pin(supa, pin)
     try:
-        provider_result = tracerfy.lookup_owner(
-            address=address, city=city, state=state, zip_code=zip_code,
-        )
+        if pr:
+            provider_result = tracerfy.lookup_person(
+                first_name=pr["name_first"],
+                last_name=pr["name_last"],
+                address=address, city=city, state=state, zip_code=zip_code,
+            )
+        else:
+            provider_result = tracerfy.lookup_owner(
+                address=address, city=city, state=state, zip_code=zip_code,
+            )
     except TracerfyError as e:
         # Record the error in the cache so we can see the pattern later
         # via analytics. Errored rows DO NOT count against the cap and
@@ -513,4 +590,7 @@ async def lookup(payload: LookupRequest,
         "expires_at":       cached_row["expires_at"],
         "monthly_used":     used_after,
         "monthly_cap":      None if is_op else _MONTHLY_CAP,
+        "search_mode":      provider_result.get("search_mode"),
+        "searched_for":     (f"{pr['name_first']} {pr['name_last']}"
+                             if pr else None),
     }

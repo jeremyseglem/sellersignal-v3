@@ -87,12 +87,67 @@ def lookup_owner(
 ) -> dict[str, Any]:
     """Look up the property owner(s) at the given address.
 
-    This is the "find_owner: true" mode of the Tracerfy endpoint —
-    we provide an address and Tracerfy returns whoever owns or lives
-    there. We do not use the "find specific person" mode because our
-    parcel data has owner names that may be outdated (PR's, trusts,
-    etc.); the owner-finder gives Tracerfy the most freedom to find
-    the current resident.
+    Uses Tracerfy's find_owner=true mode: returns whoever owns or
+    lives at this address. Good for non-probate leads (obit,
+    divorce, treasury) where the target IS the property owner.
+
+    For probate leads where the target is the named Personal
+    Representative (who often doesn't live at the property), use
+    lookup_person() instead with the PR's name from court records.
+    """
+    return _do_lookup(
+        address=address, city=city, state=state, zip_code=zip_code,
+        find_owner=True,
+        first_name=None, last_name=None,
+    )
+
+
+def lookup_person(
+    first_name: str,
+    last_name: str,
+    address: str,
+    city: str,
+    state: str,
+    zip_code: str | None = None,
+) -> dict[str, Any]:
+    """Look up a specific named person associated with an address.
+
+    Uses Tracerfy's find_owner=false mode. The first_name/last_name
+    pair is required by the API. Tracerfy searches for someone
+    matching the name at this address. If the named person isn't
+    associated with this address (e.g., a probate PR who lives in
+    another state), the result will be a miss — no fallback to
+    owner-search is performed here, because that would double-charge
+    credits silently. The caller decides whether to retry differently.
+
+    Address is required even when the target person doesn't live
+    there — Tracerfy uses it as a search anchor.
+    """
+    first_name = (first_name or "").strip()
+    last_name = (last_name or "").strip()
+    if not first_name or not last_name:
+        raise TracerfyError(
+            "First name and last name are required for person lookup.",
+            retryable=False,
+        )
+    return _do_lookup(
+        address=address, city=city, state=state, zip_code=zip_code,
+        find_owner=False,
+        first_name=first_name, last_name=last_name,
+    )
+
+
+def _do_lookup(
+    *,
+    address: str,
+    city: str,
+    state: str,
+    zip_code: str | None,
+    find_owner: bool,
+    first_name: str | None,
+    last_name: str | None,
+) -> dict[str, Any]:
+    """Shared implementation for both lookup_owner() and lookup_person().
 
     Args:
         address: street address (e.g. "123 Main St")
@@ -101,6 +156,8 @@ def lookup_owner(
         zip_code: 5-digit ZIP. Optional but strongly recommended —
             Tracerfy's docs warn that without it, results may match a
             similarly-named property in the same city.
+        find_owner: True for owner search, False for person search.
+        first_name, last_name: required when find_owner=False.
 
     Returns:
         A dict with the following shape:
@@ -109,17 +166,8 @@ def lookup_owner(
             'credits_deducted': int,
             'persons':          list of person dicts (may be empty),
             'provider':         'tracerfy',
+            'search_mode':      'owner' or 'person',
             'raw':              the original Tracerfy response (for debugging),
-          }
-
-        Each person dict matches Tracerfy's schema:
-          {
-            'full_name': str, 'first_name': str, 'last_name': str,
-            'dob': str | None, 'age': str | None,
-            'deceased': bool, 'property_owner': bool, 'litigator': bool,
-            'mailing_address': {'street', 'city', 'state', 'zip'},
-            'phones': [{'number', 'type', 'dnc', 'carrier', 'rank'}, ...],
-            'emails': [{'email', 'rank'}, ...],
           }
 
     Raises:
@@ -151,10 +199,13 @@ def lookup_owner(
         "address":    address,
         "city":       city,
         "state":      state,
-        "find_owner": True,
+        "find_owner": find_owner,
     }
     if zip_code:
         body["zip"] = zip_code
+    if not find_owner:
+        body["first_name"] = first_name
+        body["last_name"] = last_name
 
     url = _BASE_URL + _LOOKUP_PATH
     headers = {
@@ -241,5 +292,6 @@ def lookup_owner(
         "credits_deducted": credits,
         "persons":          persons,
         "provider":         PROVIDER_NAME,
+        "search_mode":      "owner" if find_owner else "person",
         "raw":              data,
     }
