@@ -297,6 +297,26 @@ export const leadTags = {
 };
 
 
+// ── My Leads (active pipeline) ────────────────────────────────────
+// Aggregated view: every parcel this agent has any engagement on
+// (interaction, note, or tag), minus pins dismissed via not_relevant
+// or closed. Backed by GET /api/my-leads.
+
+export const myLeads = {
+  /**
+   * Returns the agent's full active pipeline:
+   *   {
+   *     leads: [{pin, zip_code, address, owner_name, status, tags,
+   *              notes_count, last_action_at, last_action_type, ...}, ...],
+   *     available_tags: [{tag, count}, ...],
+   *     totals: {working, listing_discussion, engaged, total}
+   *   }
+   * Sorted newest-touched-first by the server.
+   */
+  list: () => authedRequest('/my-leads'),
+};
+
+
 /**
  * agentVoice — agent voice product API.
  *

@@ -140,6 +140,9 @@ function AuthenticatedNav({ agent, isActive, onSignOut }) {
       <Link to="/territories" style={navBtnStyle('ghost', isActive('/territories'))}>
         Briefing
       </Link>
+      <Link to="/my-leads" style={navBtnStyle('ghost', isActive('/my-leads'))}>
+        My Leads
+      </Link>
       <Link to="/profile" style={navBtnStyle('ghost', isActive('/profile'))}>
         Profile
       </Link>

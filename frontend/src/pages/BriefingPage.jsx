@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   briefings,
   map as mapApi,
@@ -71,6 +71,7 @@ export default function BriefingPage(props) {
 function BriefingBody() {
   const { zip } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { profile } = useAuth();
 
   // ── Territory gate ────────────────────────────────────────────
@@ -117,7 +118,7 @@ function BriefingBody() {
   // saving the round trip.
   useEffect(() => {
     setBriefing(null); setMapData(null);
-    setSelectedPin(null); setDossier(null); setError(null);
+    setDossier(null); setError(null);
     setSelectedTags([]); setTagFilteredPins(null); setAvailableTags([]);
 
     Promise.all([briefings.get(zip, false), mapApi.get(zip)])
@@ -180,6 +181,15 @@ function BriefingBody() {
   }, [selectedPin]);
 
   const handlePickLead = (pin) => setSelectedPin(pin);
+
+  // Sync the ?pin= query param into selectedPin. Runs on initial
+  // load (so links from My Leads auto-open the dossier) AND when
+  // the agent navigates to a different pin within the same ZIP
+  // (e.g., clicking another lead in My Leads).
+  useEffect(() => {
+    const pinFromUrl = searchParams.get('pin');
+    if (pinFromUrl) setSelectedPin(pinFromUrl);
+  }, [searchParams]);
 
   // Apply search + filter + sort to each section. Filtered output
   // feeds the map (so pin highlights match what the agent searches),

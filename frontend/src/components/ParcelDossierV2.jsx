@@ -233,17 +233,31 @@ export default function ParcelDossierV2({ dossier, onClose }) {
       position: 'absolute',
       top: 0,
       right: 0,
+      // 100vh on mobile browsers includes the URL bar, so the bottom
+      // of the dossier ends up hidden under browser chrome. 100dvh
+      // (dynamic viewport height) accounts for that; vh stays as a
+      // fallback for older browsers.
       height: '100vh',
+      maxHeight: '100dvh',
       width: 460,
+      maxWidth: '100vw',
       background: 'var(--bg-card)',
       borderLeft: '1px solid var(--border)',
       boxShadow: 'var(--shadow-lg)',
-      overflow: 'auto',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      WebkitOverflowScrolling: 'touch',  // momentum on iOS
       zIndex: 1000,
     }}>
       <CloseButton onClose={onClose} />
 
-      <div style={{ padding: 'var(--space-lg)', paddingTop: 'var(--space-md)' }}>
+      <div style={{
+        padding: 'var(--space-lg)',
+        paddingTop: 'var(--space-md)',
+        // Bottom padding ensures the last section (History) doesn't
+        // collide with the viewport edge after the agent scrolls.
+        paddingBottom: 'calc(var(--space-lg) * 3)',
+      }}>
         <DossierHeader
           parcel={parcel}
           archetype={archetype}
@@ -1589,6 +1603,32 @@ function ActionButtons({
         </button>
       )}
 
+      {/* Call / mail — the most-used daily actions for an agent in
+          beta. Promoted above Export to CRM and Six Letters because
+          they're the things agents do every time they touch a lead. */}
+      {onMarkCalled && onMarkMailed && (
+        <div style={{
+          display: 'flex',
+          gap: 8,
+          marginBottom: 10,
+        }}>
+          <button
+            onClick={onMarkCalled}
+            disabled={actionPending}
+            style={primaryActionButtonStyle(actionPending)}
+          >
+            Mark called
+          </button>
+          <button
+            onClick={onMarkMailed}
+            disabled={actionPending}
+            style={primaryActionButtonStyle(actionPending)}
+          >
+            Mark mailed
+          </button>
+        </div>
+      )}
+
       <div style={{
         display: 'flex',
         gap: 8,
@@ -1674,39 +1714,6 @@ function ActionButtons({
         )}
       </div>
 
-      {/* Action log row — calls/mail are actions on a lead, not
-          funnel-status changes, so they live on their own row and
-          do not gate on currentStatus. */}
-      {onMarkCalled && onMarkMailed && (
-        <div style={{
-          display: 'flex',
-          gap: 0,
-          alignItems: 'center',
-          paddingTop: 6,
-        }}>
-          <button
-            onClick={onMarkCalled}
-            disabled={actionPending}
-            style={quietButtonStyle('var(--text-secondary)')}
-          >
-            Mark called
-          </button>
-          <span style={{
-            width: 1,
-            height: 12,
-            background: 'var(--border)',
-            margin: '0 4px',
-          }} />
-          <button
-            onClick={onMarkMailed}
-            disabled={actionPending}
-            style={quietButtonStyle('var(--text-secondary)')}
-          >
-            Mark mailed
-          </button>
-        </div>
-      )}
-
       {isColdVisitor && (
         <div style={{
           marginTop: 12,
@@ -1734,6 +1741,31 @@ function quietButtonStyle(hoverColor) {
     cursor: 'pointer',
     fontFamily: 'var(--font-sans)',
     transition: 'color var(--transition)',
+  };
+}
+
+
+/**
+ * primaryActionButtonStyle — used for "Mark called" / "Mark mailed".
+ * Visually stronger than the outlined "Export to CRM" button (filled
+ * background, larger text, more padding) but uses the warm-neutral
+ * fill rather than gold so it doesn't compete with the primary Send
+ * button above it.
+ */
+function primaryActionButtonStyle(pending) {
+  return {
+    flex: 1,
+    padding: '10px 14px',
+    fontSize: 13,
+    fontWeight: 600,
+    background: 'var(--bg-input)',
+    color: 'var(--text)',
+    border: '1px solid var(--border-strong)',
+    borderRadius: 'var(--radius-md)',
+    cursor: pending ? 'wait' : 'pointer',
+    fontFamily: 'var(--font-sans)',
+    letterSpacing: '0.01em',
+    opacity: pending ? 0.6 : 1,
   };
 }
 

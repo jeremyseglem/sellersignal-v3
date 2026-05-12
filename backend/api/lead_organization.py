@@ -361,3 +361,226 @@ async def list_pins_by_tag(
         'zip_code':    zip_code,
         'assignments': res.data or [],
     }
+
+
+# ════════════════════════════════════════════════════════════════════
+#  MY LEADS — agent's active pipeline view
+# ════════════════════════════════════════════════════════════════════
+
+# Funnel-status events. These are the event types that actually move
+# a lead through the agent's pipeline. Other event types ('called',
+# 'mailed', 'voicemail', 'skip_traced', 'got_response', 'no_response',
+# 'reactivated') are actions or outcomes, not status changes.
+_FUNNEL_STATUS_EVENTS = (
+    'working',
+    'listing_discussion',
+    'sent_to_crm',
+    'closed',
+    'not_relevant',
+)
+
+# Statuses that EXIT the pipeline. A lead with one of these as its
+# most recent funnel-status event does not appear in My Leads —
+# the agent has actively decided this lead is done.
+_EXIT_STATUSES = ('not_relevant', 'closed')
+
+
+@router.get("/my-leads")
+async def my_leads(
+    authorization: Optional[str] = Header(None),
+):
+    """List every parcel this agent has any engagement signal on,
+    minus dismissed/closed ones.
+
+    A pin enters this list when the agent has:
+      - any row in lead_interactions_v3 (called, mailed, working, etc.)
+      - any row in lead_notes_v3 (wrote a note)
+      - any row in lead_tags_v3 (assigned a tag)
+
+    A pin EXITS when its most recent funnel-status event is
+    'not_relevant' or 'closed'. Reactivation pulls it back in
+    because 'reactivated' is not in the exit set; the next
+    funnel-status event determines visibility.
+
+    Returns a flat list (frontend groups by status). One round-trip
+    to the database per signal table, no N+1.
+
+    Response shape:
+      {
+        leads: [
+          {pin, zip_code, address, owner_name, city, state,
+           total_value, status, status_at, tags, notes_count,
+           last_action_at, last_action_type},
+          ...
+        ],
+        available_tags: [{tag, count}, ...],
+        totals: {working, listing_discussion, engaged, total}
+      }
+    """
+    user = user_from_authorization(authorization)
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, 'Supabase unavailable')
+
+    agent_id = user.id
+
+    # ── Step 1: gather every engaged pin from the three signal tables.
+    # Pull (pin, created_at) so we can compute last_action_at across
+    # all sources, and (pin, event_type) so we can find last funnel
+    # status without a second query.
+    interactions = (supa.table('lead_interactions_v3')
+                    .select('pin, zip_code, event_type, created_at')
+                    .eq('agent_id', agent_id)
+                    .order('created_at', desc=True)
+                    .execute()).data or []
+    notes = (supa.table('lead_notes_v3')
+             .select('pin, zip_code, updated_at')
+             .eq('agent_id', agent_id)
+             .order('updated_at', desc=True)
+             .execute()).data or []
+    tag_rows = (supa.table('lead_tags_v3')
+                .select('pin, zip_code, tag, created_at')
+                .eq('agent_id', agent_id)
+                .order('created_at', desc=True)
+                .execute()).data or []
+
+    engaged_pins: set[str] = set()
+    for row in interactions: engaged_pins.add(row['pin'])
+    for row in notes:        engaged_pins.add(row['pin'])
+    for row in tag_rows:     engaged_pins.add(row['pin'])
+
+    if not engaged_pins:
+        return {
+            'leads':           [],
+            'available_tags':  [],
+            'totals':          {'working': 0, 'listing_discussion': 0,
+                                'engaged': 0, 'total': 0},
+        }
+
+    # ── Step 2: compute most-recent funnel-status event per pin.
+    # Iterate interactions in chronological order (already DESC by
+    # created_at from query) and keep the FIRST funnel-status event
+    # seen for each pin.
+    status_by_pin: dict[str, dict] = {}
+    for row in interactions:
+        et = row['event_type']
+        if et not in _FUNNEL_STATUS_EVENTS:
+            continue
+        pin = row['pin']
+        if pin in status_by_pin:
+            continue  # already have the newest
+        status_by_pin[pin] = {
+            'status':    et,
+            'status_at': row['created_at'],
+        }
+
+    # ── Step 3: filter out pins whose most-recent funnel status is
+    # in the exit set. Pins with no funnel status at all stay in
+    # (they're "engaged" — touched but not yet formally classified).
+    active_pins = [
+        p for p in engaged_pins
+        if status_by_pin.get(p, {}).get('status') not in _EXIT_STATUSES
+    ]
+
+    if not active_pins:
+        return {
+            'leads':           [],
+            'available_tags':  [],
+            'totals':          {'working': 0, 'listing_discussion': 0,
+                                'engaged': 0, 'total': 0},
+        }
+
+    # ── Step 4: hydrate parcel data for active pins.
+    parcels_res = (supa.table('parcels_v3')
+                   .select('pin, zip_code, address, owner_name, city, state, '
+                           'total_value, lat, lng')
+                   .in_('pin', active_pins)
+                   .execute()).data or []
+    parcel_by_pin = {row['pin']: row for row in parcels_res}
+
+    # ── Step 5: aggregate per-pin tags, note counts, and last_action.
+    tags_by_pin: dict[str, list[str]] = {}
+    for row in tag_rows:
+        if row['pin'] not in active_pins:
+            continue
+        tags_by_pin.setdefault(row['pin'], []).append(row['tag'])
+
+    note_counts: dict[str, int] = {}
+    for row in notes:
+        if row['pin'] not in active_pins:
+            continue
+        note_counts[row['pin']] = note_counts.get(row['pin'], 0) + 1
+
+    # last_action_at = max(timestamp from interactions, notes, tags)
+    # last_action_type = the source/type of that latest event
+    last_action: dict[str, tuple[str, str]] = {}  # pin -> (ts, type)
+    def record_last(pin, ts, type_label):
+        if not ts:
+            return
+        cur = last_action.get(pin)
+        if (cur is None) or (ts > cur[0]):
+            last_action[pin] = (ts, type_label)
+
+    for row in interactions:
+        if row['pin'] in active_pins:
+            record_last(row['pin'], row['created_at'], row['event_type'])
+    for row in notes:
+        if row['pin'] in active_pins:
+            record_last(row['pin'], row['updated_at'], 'noted')
+    for row in tag_rows:
+        if row['pin'] in active_pins:
+            record_last(row['pin'], row['created_at'], 'tagged')
+
+    # ── Step 6: assemble lead rows.
+    leads = []
+    for pin in active_pins:
+        parcel = parcel_by_pin.get(pin) or {}
+        status_info = status_by_pin.get(pin, {})
+        la = last_action.get(pin, (None, None))
+        leads.append({
+            'pin':              pin,
+            'zip_code':         parcel.get('zip_code'),
+            'address':          parcel.get('address'),
+            'owner_name':       parcel.get('owner_name'),
+            'city':             parcel.get('city'),
+            'state':            parcel.get('state'),
+            'total_value':      parcel.get('total_value'),
+            'lat':              parcel.get('lat'),
+            'lng':              parcel.get('lng'),
+            'status':           status_info.get('status'),       # may be None
+            'status_at':        status_info.get('status_at'),
+            'tags':             tags_by_pin.get(pin, []),
+            'notes_count':      note_counts.get(pin, 0),
+            'last_action_at':   la[0],
+            'last_action_type': la[1],
+        })
+
+    # Sort newest-touched first by default. Frontend can re-sort.
+    leads.sort(
+        key=lambda r: (r['last_action_at'] or ''),
+        reverse=True,
+    )
+
+    # ── Step 7: tag taxonomy + totals for the page header.
+    tag_counts: dict[str, int] = {}
+    for tags in tags_by_pin.values():
+        for t in tags:
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+    available_tags = sorted(
+        [{'tag': t, 'count': c} for t, c in tag_counts.items()],
+        key=lambda r: (-r['count'], r['tag'].lower()),
+    )
+
+    totals = {
+        'working':            sum(1 for L in leads if L['status'] == 'working'),
+        'listing_discussion': sum(1 for L in leads if L['status'] == 'listing_discussion'),
+        'sent_to_crm':        sum(1 for L in leads if L['status'] == 'sent_to_crm'),
+        'engaged':            sum(1 for L in leads if not L['status']),
+        'total':              len(leads),
+    }
+
+    return {
+        'leads':          leads,
+        'available_tags': available_tags,
+        'totals':         totals,
+    }

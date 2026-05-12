@@ -7,6 +7,7 @@ import ForgotPasswordPage  from './pages/ForgotPasswordPage.jsx';
 import ResetPasswordPage   from './pages/ResetPasswordPage.jsx';
 import TerritoriesPage     from './pages/TerritoriesPage.jsx';
 import BriefingPage    from './pages/BriefingPage.jsx';
+import MyLeadsPage     from './pages/MyLeadsPage.jsx';
 import ProfilePage     from './pages/ProfilePage.jsx';
 import VoiceOnboardingPage from './pages/VoiceOnboardingPage.jsx';
 import { PrivacyPage, TermsPage } from './pages/LegalPages.jsx';
@@ -65,6 +66,14 @@ export default function App() {
         element={
           <AuthGate>
             <AuthenticatedBriefing />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/my-leads"
+        element={
+          <AuthGate>
+            <MyLeadsPage />
           </AuthGate>
         }
       />
