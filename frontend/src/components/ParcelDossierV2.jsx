@@ -868,12 +868,15 @@ function ContactSection({ parcel, archetype, equityDollars, personalRep,
           </div>
         )}
 
-        {/* Skip-trace lives inside the Contact section. Hidden for
-            cold visitors (paywall gate). Hidden if we already have
-            confident on-area mailing info — the agent doesn't need
-            to spend a credit if the address is right there. Always
-            shown for out-of-area cases and pending-resolution cases. */}
-        {pin && !isColdVisitor && (!ownerOccupied || outOfArea) && (
+        {/* Skip-trace: the agent's path to phones and emails for
+            this lead. Always shown for authenticated agents — even
+            when the displayed mailing address looks complete, the
+            agent still doesn't have a phone number, and for probate
+            leads the displayed address is the property address
+            (which is misleading: the PR likely lives elsewhere).
+            Hidden only for cold visitors who haven't unlocked the
+            dossier. */}
+        {pin && !isColdVisitor && (
           <SkipTracePanel
             pin={pin}
             onAfterTrace={onAfterSkipTrace}
