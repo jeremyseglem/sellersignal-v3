@@ -403,6 +403,60 @@ async def ack_compliance(authorization: Optional[str] = Header(None)):
 
 
 # ════════════════════════════════════════════════════════════════════
+#  Cached endpoint — pure read of existing cache, no provider call
+# ════════════════════════════════════════════════════════════════════
+
+@router.get("/skip-trace/cached/{pin}")
+async def cached(pin: str,
+                  authorization: Optional[str] = Header(None)):
+    """Return the cached skip-trace result for this (agent, pin), if
+    one exists and is unexpired. Returns null if no cache.
+
+    Unlike /lookup, this endpoint:
+      - Never calls the provider (zero cost, never spends credits)
+      - Never logs a skip_traced event (the agent didn't take an action,
+        they just re-opened a dossier)
+      - Does not require TCPA ack — if data is already cached, the
+        agent already ack'd at the time of original trace
+      - Does not enforce the monthly cap
+
+    The frontend calls this on dossier mount to show any existing
+    cached result without making the agent click "Find owner contact
+    info" again.
+
+    Response (cache present):
+      {
+        cached:           true,
+        source:           'cache',
+        hit:              bool,
+        persons:          [...],
+        retrieved_at:     ISO datetime,
+        expires_at:       ISO datetime,
+      }
+
+    Response (no cache or expired):
+      {cached: false}
+    """
+    user = user_from_authorization(authorization)
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase unavailable")
+
+    row = _cached_result_if_fresh(supa, user.id, pin)
+    if not row:
+        return {"cached": False}
+
+    return {
+        "cached":       True,
+        "source":       "cache",
+        "hit":          row["hit"],
+        "persons":      row["persons"] or [],
+        "retrieved_at": row["created_at"],
+        "expires_at":   row["expires_at"],
+    }
+
+
+# ════════════════════════════════════════════════════════════════════
 #  Lookup endpoint — the actual trace
 # ════════════════════════════════════════════════════════════════════
 

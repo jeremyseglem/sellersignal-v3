@@ -34,18 +34,37 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
   const [error, setError]     = useState(null);
   const [showAckModal, setShowAckModal] = useState(false);
 
-  // Initial load: status + check if there's a cached result we should show.
-  // We don't preload cached results to avoid a flash of "no data" on every
-  // dossier open — the cache is fetched only when the agent clicks.
+  // Initial load: status + check for any existing cached result.
+  // Both fire in parallel — if a cached result exists, we render it
+  // immediately so the agent doesn't have to re-click "Find owner
+  // contact info" every time they re-open a dossier they've already
+  // traced.
   useEffect(() => {
     let cancelled = false;
     skipTrace.status()
       .then((s) => { if (!cancelled) setStatus(s); })
       .catch(() => { /* show idle state with no remaining count */ });
+    skipTrace.cached(pin)
+      .then((r) => {
+        if (cancelled) return;
+        if (r && r.cached) {
+          // Reshape into the same form runTrace() produces, so
+          // ResultsDisplay handles both identically.
+          setResult({
+            source:       'cache',
+            hit:          r.hit,
+            persons:      r.persons,
+            retrieved_at: r.retrieved_at,
+            expires_at:   r.expires_at,
+          });
+        }
+      })
+      .catch(() => { /* no cache; agent will see idle button */ });
     return () => { cancelled = true; };
   }, [pin]);
 
   // Reset result when pin changes (different parcel = different trace).
+  // The effect above will then re-fetch any cache for the new pin.
   useEffect(() => {
     setResult(null);
     setError(null);

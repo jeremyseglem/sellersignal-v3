@@ -352,6 +352,19 @@ export const skipTrace = {
     method: 'POST',
     body: JSON.stringify({ pin }),
   }),
+
+  /**
+   * Pure cache read — returns the existing cached trace for this
+   * parcel if one exists and is unexpired (30-day TTL). Never calls
+   * the provider, never spends credits, never logs an event.
+   *
+   * Response: {cached: true, source, hit, persons, retrieved_at,
+   *            expires_at} or {cached: false}.
+   *
+   * Used by the dossier on mount to auto-render existing skip-trace
+   * results without making the agent click again.
+   */
+  cached: (pin) => authedRequest(`/skip-trace/cached/${pin}`),
 };
 
 
