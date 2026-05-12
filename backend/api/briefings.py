@@ -34,6 +34,7 @@ re-computes because (zip, new_monday) isn't in the dict.
 Bypass: pass ?force_rebuild=true to skip the cache.
 """
 from collections import OrderedDict
+import time
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from datetime import datetime, date, timedelta, timezone
 from backend.api.db import get_supabase_client
@@ -59,21 +60,45 @@ router = APIRouter()
 _BRIEFING_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
 _BRIEFING_CACHE_MAX = 100
 
+# TTL: how long a cached briefing is considered fresh. Without this,
+# the cache holds entries until LRU eviction — which on a low-traffic
+# deploy means hours or days of stale data. The territories list page
+# reads zip_coverage_v3.current_call_now_count (a snapshot), and the
+# briefing reads the cached playbook; with no TTL the two drift apart
+# and agents see different numbers in different places.
+#
+# 5 minutes is the agreed bound: new matches landed by the harvester
+# or new statuses set by agents become visible within 5 min of any
+# refresh, and territories/briefing converge within the same window.
+_BRIEFING_CACHE_TTL_SEC = 300
+
 
 def _briefing_cache_get(key: tuple):
-    """Return cached briefing dict for this key, or None on miss.
-    On hit, mark as recently used (move to end). On miss, return None."""
-    if key in _BRIEFING_CACHE:
-        _BRIEFING_CACHE.move_to_end(key)
-        return _BRIEFING_CACHE[key]
-    return None
+    """Return cached briefing dict for this key, or None on miss or
+    on expired entry. On hit, mark as recently used (move to end).
+    On miss or expired, return None (and evict the expired entry so
+    we don't keep checking a dead row)."""
+    entry = _BRIEFING_CACHE.get(key)
+    if entry is None:
+        return None
+    cached_at, value = entry
+    age = time.time() - cached_at
+    if age > _BRIEFING_CACHE_TTL_SEC:
+        # Expired — evict and report miss
+        try:
+            del _BRIEFING_CACHE[key]
+        except KeyError:
+            pass
+        return None
+    _BRIEFING_CACHE.move_to_end(key)
+    return value
 
 
 def _briefing_cache_set(key: tuple, value: dict):
-    """Store value under key. If cache is at capacity, evict the
-    least-recently-used entry first (FIFO when no hits, LRU when
-    hits move things to the end)."""
-    _BRIEFING_CACHE[key] = value
+    """Store value under key with current timestamp. If cache is at
+    capacity, evict the least-recently-used entry first (FIFO when
+    no hits, LRU when hits move things to the end)."""
+    _BRIEFING_CACHE[key] = (time.time(), value)
     _BRIEFING_CACHE.move_to_end(key)
     while len(_BRIEFING_CACHE) > _BRIEFING_CACHE_MAX:
         _BRIEFING_CACHE.popitem(last=False)
@@ -758,11 +783,30 @@ async def get_briefing(
             'zip_meta':  zip_meta,
         }
 
-        # Cache the fully-shaped response. Subsequent requests for
-        # the same (zip, week, params) tuple skip the entire
-        # supabase + scoring pipeline above. The cache lives until
-        # the week rolls over (key contains week_monday_iso) or the
-        # process is recycled, whichever comes first.
+        # ── Snapshot writeback ─────────────────────────────────────
+        # The territories list page reads zip_coverage_v3.current_call_now_count
+        # as a fast at-a-glance counter. Updating that snapshot only when
+        # refresh-counts runs manually means it drifts from the live
+        # briefing playbook the moment any data changes. By writing the
+        # snapshot here on every fresh build, the two converge by
+        # construction: whenever an agent rebuilds a briefing (cache miss
+        # or week rollover), the territories page picks up the new count
+        # on its next load. Idempotent and small (single-row UPDATE).
+        try:
+            new_count = len(call_now_picks)
+            (supa.table('zip_coverage_v3')
+             .update({'current_call_now_count': new_count})
+             .eq('zip_code', zip_code)
+             .execute())
+        except Exception:
+            # Non-fatal: snapshot update is a convenience. If it fails,
+            # territories shows yesterday's number until the next rebuild
+            # or until refresh-counts is run manually.
+            pass
+
+        # Cache the fully-shaped response. Subsequent requests within
+        # the TTL window (5 min) for the same (zip, week, params)
+        # tuple skip the entire supabase + scoring pipeline above.
         _briefing_cache_set(cache_key, response)
         return response
 
