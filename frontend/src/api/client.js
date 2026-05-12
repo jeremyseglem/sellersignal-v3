@@ -317,6 +317,44 @@ export const myLeads = {
 };
 
 
+// ── Skip-trace ────────────────────────────────────────────────────
+// Wraps the Tracerfy-backed lookup with caching, monthly cap, and
+// TCPA acknowledgment. Backed by /api/skip-trace/* endpoints.
+
+export const skipTrace = {
+  /**
+   * Returns the agent's current eligibility:
+   *   {acked, ack_version, monthly_used, monthly_cap,
+   *    monthly_remaining, monthly_resets_at}
+   * UI calls this on dossier mount to decide whether to show the
+   * TCPA modal vs. proceed straight to the trace button.
+   */
+  status: () => authedRequest('/skip-trace/status'),
+
+  /**
+   * Record the one-time TCPA / DNC acknowledgment. Idempotent.
+   * Returns {acked, ack_version, acked_at}.
+   */
+  ackCompliance: () => authedRequest('/skip-trace/ack-compliance', {
+    method: 'POST',
+  }),
+
+  /**
+   * Run a skip-trace on a parcel. Returns either a cached or fresh
+   * result; both shapes are identical except for the `source` field.
+   * Response: {source, hit, credits_deducted, persons,
+   *            retrieved_at, expires_at, monthly_used, monthly_cap}
+   *
+   * Throws on 412 (not ack'd), 429 (cap reached), 502 (provider error).
+   * The caller is expected to handle each cleanly — see SkipTracePanel.
+   */
+  lookup: (pin) => authedRequest('/skip-trace/lookup', {
+    method: 'POST',
+    body: JSON.stringify({ pin }),
+  }),
+};
+
+
 /**
  * agentVoice — agent voice product API.
  *

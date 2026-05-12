@@ -19,6 +19,7 @@ import SixLettersModal from './SixLettersModal.jsx';
 import ClaimZipModal from './briefing/ClaimZipModal.jsx';
 import LeadTagChips from './LeadTagChips.jsx';
 import LeadNotesSection from './LeadNotesSection.jsx';
+import SkipTracePanel from './SkipTracePanel.jsx';
 
 /**
  * ParcelDossierV2 — the v4 spec dossier.
@@ -194,12 +195,20 @@ export default function ParcelDossierV2({ dossier, onClose }) {
     // a complete history. But not in V1 — wait until letters are real.
   });
 
-  const handleGetContactInfo = guardCold(() => {
-    showHint(
-      'Coming in V1.5 — contact info retrieval will run skip-trace and '
-      + 'populate the address inline.'
-    );
-  });
+  // Skip-trace lives inside ContactSection (via SkipTracePanel) and
+  // calls back here after a successful trace so the dossier can
+  // refresh its event log — the 'skip_traced' event the server logs
+  // appears in the History section.
+  const handleAfterSkipTrace = async () => {
+    if (!dossier?.pin) return;
+    try {
+      const r = await leadInteractions.byPin(dossier.pin);
+      setEvents(r.events || []);
+    } catch {
+      // History refresh failure is non-fatal — the trace results
+      // already display, the history just won't update until next open.
+    }
+  };
 
   const handleMarkWorking = guardCold(() => logEvent('working'));
   const handleNotRelevant = guardCold(() => logEvent('not_relevant'));
@@ -330,7 +339,9 @@ export default function ParcelDossierV2({ dossier, onClose }) {
           archetype={archetype}
           equityDollars={equityDollars}
           personalRep={personalRep}
-          onGetContactInfo={handleGetContactInfo}
+          pin={dossier.pin}
+          isColdVisitor={isColdVisitor}
+          onAfterSkipTrace={handleAfterSkipTrace}
         />
 
         <WhatToSaySection
@@ -784,7 +795,8 @@ function NextStepSection({ archetype, contactStatus, inWaitWindow, waitOpens }) 
 }
 
 
-function ContactSection({ parcel, archetype, equityDollars, personalRep, onGetContactInfo }) {
+function ContactSection({ parcel, archetype, equityDollars, personalRep,
+                          pin, isColdVisitor, onAfterSkipTrace }) {
   const ownerCity = (parcel.owner_city || '').trim();
   const ownerState = (parcel.owner_state || '').trim();
   const propCity = (parcel.city || '').trim().toUpperCase();
@@ -856,24 +868,16 @@ function ContactSection({ parcel, archetype, equityDollars, personalRep, onGetCo
           </div>
         )}
 
-        {(!ownerOccupied || outOfArea) && (
-          <button
-            onClick={onGetContactInfo}
-            style={{
-              marginTop: 12,
-              padding: '7px 12px',
-              fontSize: 11,
-              fontWeight: 500,
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontFamily: 'var(--font-sans)',
-            }}
-          >
-            Get contact info
-          </button>
+        {/* Skip-trace lives inside the Contact section. Hidden for
+            cold visitors (paywall gate). Hidden if we already have
+            confident on-area mailing info — the agent doesn't need
+            to spend a credit if the address is right there. Always
+            shown for out-of-area cases and pending-resolution cases. */}
+        {pin && !isColdVisitor && (!ownerOccupied || outOfArea) && (
+          <SkipTracePanel
+            pin={pin}
+            onAfterTrace={onAfterSkipTrace}
+          />
         )}
       </div>
     </Section>
