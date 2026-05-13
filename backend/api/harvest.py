@@ -891,6 +891,59 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/obit-search")
+def diag_obit_search(
+    x_admin_key: Optional[str] = Header(None),
+    deceased_name: str = "",
+    city: str = "",
+    state: str = "WA",
+):
+    """
+    Day 1 verification endpoint for the web-research pipeline.
+
+    Hits the obit-search module end-to-end:
+      1. SerpAPI search for "{deceased_name}" obituary {city}
+      2. Rank candidates, fetch top text-rendered page
+      3. Claude extraction of structured survivor list
+
+    Returns the full survivor list with each survivor's name +
+    relationship + city + state. Used to verify the workflow works
+    against real cases before wiring it into /lookup.
+
+    Example:
+      GET /api/harvest/diag/obit-search?deceased_name=Anne+K+Speros&city=Maple+Valley
+    """
+    _require_admin(x_admin_key)
+    from backend.integrations import serpapi_obit
+
+    if not deceased_name or not city:
+        raise HTTPException(
+            400,
+            "deceased_name and city query params are required"
+        )
+
+    try:
+        result = serpapi_obit.find_obituary_and_extract_survivors(
+            deceased_full_name=deceased_name,
+            deceased_city=city,
+            deceased_state=state,
+        )
+    except Exception as e:
+        return {
+            "deceased_name": deceased_name,
+            "city":          city,
+            "state":         state,
+            "error":         str(e)[:300],
+        }
+
+    return {
+        "deceased_name": deceased_name,
+        "city":          city,
+        "state":         state,
+        "result":        result,
+    }
+
+
 @router.get("/diag/case-recon")
 def diag_case_recon(
     x_admin_key: Optional[str] = Header(None),
