@@ -891,6 +891,76 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/enhanced-skip-trace")
+def diag_enhanced_skip_trace(
+    x_admin_key: Optional[str] = Header(None),
+    pin: str = "",
+    limit: int = 10,
+):
+    """
+    Admin diagnostic for Enhanced Skip Tracing state.
+
+    Without ?pin=...: returns the most recent Enhanced submissions
+    (pending and completed) across all agents. Useful for watching
+    activity in real time.
+
+    With ?pin=1234567890: returns the cache row(s) for that PIN
+    across all agents, including full enhanced_data payload. Used
+    to verify a specific lead's Enhanced result.
+
+    Returns sanitized rows (no agent_id leaked).
+    """
+    _require_admin(x_admin_key)
+    from backend.api.db import get_supabase_client
+
+    supa = get_supabase_client()
+    if not supa:
+        return {"error": "Supabase unavailable"}
+
+    q = (supa.table("skip_trace_results_v3")
+           .select("pin, zip_code, hit, persons, "
+                   "enhanced_pending, enhanced_queue_id, "
+                   "enhanced_submitted_at, enhanced_completed_at, "
+                   "enhanced_data, enhanced_error, "
+                   "created_at"))
+
+    if pin:
+        q = q.eq("pin", pin)
+    else:
+        # Only show rows that touched Enhanced at all
+        q = q.not_.is_("enhanced_queue_id", "null")
+        q = q.order("enhanced_submitted_at", desc=True)
+        q = q.limit(min(limit, 50))
+
+    try:
+        rows = q.execute().data or []
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+    # Summarize each row to avoid dumping huge payloads
+    summary = []
+    for r in rows:
+        ed = r.get("enhanced_data") or {}
+        relatives = (ed.get("relatives") or []) if isinstance(ed, dict) else []
+        summary.append({
+            "pin":                   r["pin"],
+            "zip_code":              r.get("zip_code"),
+            "standard_hit":          r.get("hit"),
+            "standard_persons_count": len(r.get("persons") or []),
+            "enhanced_pending":      r.get("enhanced_pending"),
+            "enhanced_queue_id":     r.get("enhanced_queue_id"),
+            "enhanced_submitted_at": r.get("enhanced_submitted_at"),
+            "enhanced_completed_at": r.get("enhanced_completed_at"),
+            "enhanced_relatives_count": len(relatives),
+            "enhanced_error":        r.get("enhanced_error"),
+            # Full data only when pin is specified (avoids dumping
+            # many large payloads in the list view)
+            "enhanced_data":         (r.get("enhanced_data") if pin else None),
+        })
+
+    return {"count": len(summary), "rows": summary}
+
+
 @router.get("/diag/obit-search")
 def diag_obit_search(
     x_admin_key: Optional[str] = Header(None),

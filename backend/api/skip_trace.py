@@ -440,7 +440,10 @@ async def tracerfy_webhook(secret: str, payload: dict[str, Any]):
         log.warning("Tracerfy webhook missing queue id: %s", payload)
         return {"status": "ignored", "reason": "no_queue_id"}
 
-    supa = supabase_admin()
+    supa = get_supabase_client()
+    if not supa:
+        log.warning("Tracerfy webhook: Supabase unavailable")
+        return {"status": "error", "reason": "supabase_unavailable"}
 
     # Locate the matching cache row by queue_id. There may be more
     # than one if the same address was traced for multiple agents,
