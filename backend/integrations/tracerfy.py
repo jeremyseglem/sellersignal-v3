@@ -192,10 +192,11 @@ def submit_enhanced_batch(
     csv_content = csv_buf.getvalue()
 
     files = {
-        # Tracerfy expects the CSV under the 'file' field name (matches
-        # their web upload UI). Filename and content-type are nominal —
-        # what matters is the column-mapping form fields below.
-        "file": ("enhanced_trace.csv", csv_content, "text/csv"),
+        # Tracerfy expects the CSV under the 'csv_file' field name
+        # (confirmed via API error response on 2026-05-13). The
+        # alternative is a 'json_data' form field with JSON-encoded
+        # rows — we use csv_file for clarity.
+        "csv_file": ("enhanced_trace.csv", csv_content, "text/csv"),
     }
     form_data = {
         "trace_type":         "enhanced",

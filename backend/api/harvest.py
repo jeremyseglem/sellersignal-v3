@@ -925,7 +925,7 @@ def diag_tracerfy_batch_submit(
     if not token:
         return {"error": "TRACERFY_API_TOKEN not set"}
 
-    files = {"file": ("test.csv", buf.getvalue(), "text/csv")}
+    files = {"csv_file": ("test.csv", buf.getvalue(), "text/csv")}
     form_data = {
         "trace_type":         trace_type,
         "address_column":     "address",
