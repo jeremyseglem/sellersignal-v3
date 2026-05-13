@@ -191,6 +191,20 @@ def find_obituary_and_extract_survivors(
             log.info("Empty body fetched from %s, skipping", url)
             continue
 
+        # Post-fetch validation: even if the SerpAPI snippet had the
+        # deceased's name, the actual page might be a different
+        # person's obit that just happens to reference our deceased
+        # in passing (e.g., as a relative of someone else who died).
+        # Confirm the deceased's full name appears in the body before
+        # sending to Claude — otherwise Claude will faithfully extract
+        # whichever survivors ARE in the page and label them as ours.
+        if not _name_in_body(name, obit_text):
+            log.info(
+                "Page %s does not contain '%s' in body, skipping",
+                url, name
+            )
+            continue
+
         survivors = _extract_survivors_via_claude(
             obit_text, deceased_name=name
         )
@@ -268,17 +282,29 @@ def _rank_obit_candidates(
     """Score and rank search results by likelihood of being a real
     obituary for THIS deceased person.
 
+    Strict name-match requirement: the deceased's full name must
+    appear in the title OR snippet. A partial-token match is NOT
+    enough — that path produced false positives in testing where
+    e.g. "Annelene Speros / Maple Valley" returned an obit for
+    "Alliene Sabo" because SerpAPI surfaced an unrelated funeral-home
+    page where "Speros" appeared once as a tangential reference.
+
+    Better to MISS a real obit (which falls through to other
+    strategies gracefully) than to HIT a wrong obit (which produces
+    a confident, fabricated survivor list).
+
     Scoring signals:
       +10 if the deceased's full name appears in the title
+      +6  if the deceased's full name appears in the snippet
       +5  if "obituary" appears in title or URL
       +5  if the domain is a known text-rendered obit source
       +3  if the domain is a known JS-rendered obit source
       +2  if the snippet mentions "survived by" or "passed away"
-      -10 if the deceased name does NOT appear in title or snippet
-          (likely a coincidental match on a different person)
+
+    Any result that fails the name-match gate is dropped entirely
+    (not negative-scored — completely excluded). This is intentional.
     """
     name_lower = deceased_name.lower()
-    name_parts = [p for p in re.split(r"\s+", name_lower) if len(p) > 1]
 
     scored = []
     for r in results:
@@ -287,19 +313,18 @@ def _rank_obit_candidates(
         link = (r.get("link") or "").lower()
         domain = _domain_of(link)
 
-        score = 0
+        # Hard name-match gate: full name must appear in title or
+        # snippet. Skip anything else entirely.
+        in_title = name_lower in title
+        in_snippet = name_lower in snippet
+        if not in_title and not in_snippet:
+            continue
 
-        # Name match — title is stronger signal than snippet
-        if name_lower in title:
+        score = 0
+        if in_title:
             score += 10
-        elif all(p in title for p in name_parts if len(p) >= 3):
-            # All meaningful name tokens present even if order differs
+        if in_snippet:
             score += 6
-        elif name_lower in snippet:
-            score += 3
-        else:
-            # Name didn't surface at all — probably wrong person
-            score -= 10
 
         # Obit-y signals
         if "obituary" in title or "obituary" in link:
@@ -323,8 +348,6 @@ def _rank_obit_candidates(
 
         scored.append((score, r))
 
-    # Keep only positive scores; sort descending
-    scored = [(s, r) for s, r in scored if s > 0]
     scored.sort(key=lambda t: t[0], reverse=True)
     return [r for _, r in scored]
 
@@ -335,6 +358,32 @@ def _domain_of(url: str) -> str:
         return urllib.parse.urlparse(url).netloc.lower()
     except Exception:
         return ""
+
+
+def _name_in_body(deceased_name: str, body_text: str) -> bool:
+    """Verify the deceased's name appears in the obit body. Used as
+    a post-fetch sanity check before sending to Claude.
+
+    Accepts either:
+      - Full name as given (case-insensitive)
+      - First+Last (skipping middle initial/name)
+
+    Returns True if either form appears.
+    """
+    text_lower = body_text.lower()
+    name_lower = deceased_name.lower().strip()
+
+    if name_lower in text_lower:
+        return True
+
+    # Try first + last only (strip middle name/initial)
+    parts = [p for p in re.split(r"\s+", name_lower) if p]
+    if len(parts) >= 2:
+        first_last = f"{parts[0]} {parts[-1]}"
+        if first_last in text_lower:
+            return True
+
+    return False
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -397,8 +446,10 @@ def _fetch_obit_text(url: str) -> str:
 _EXTRACTION_SYSTEM_PROMPT = """\
 You extract structured survivor lists from obituary text.
 
-Given an obituary, return ONLY a JSON object with this shape:
+Given an obituary AND the name of a specific deceased person, return
+ONLY a JSON object with this shape:
 {
+  "obit_matches_deceased": true | false,
   "survivors": [
     {
       "name": "Full Name",
@@ -410,7 +461,14 @@ Given an obituary, return ONLY a JSON object with this shape:
   ]
 }
 
-Rules:
+FIRST: confirm the obituary is for the named deceased person. The obit
+should explicitly identify them as the person who died. If the
+obituary is for someone else (and merely mentions the named person as
+a relative, neighbor, or passing reference), set
+obit_matches_deceased=false and return {"survivors": []}. Do not
+extract survivors from someone else's obituary.
+
+Rules for the survivors list (only if obit_matches_deceased=true):
 - ONLY include people who are explicitly named as SURVIVING the deceased.
 - Exclude the deceased themselves.
 - Exclude predeceased family members (those listed as "preceded in death by").
@@ -421,8 +479,8 @@ include it; otherwise leave city null.
 (e.g., "Seattle" → "WA"). Otherwise leave null.
 - If multiple survivors share a city ("his children, Kira and Mike of Federal Way"), \
 copy the city to each.
-- Return ONLY the JSON object. No prose, no markdown, no preamble.
-- If no survivors can be confidently identified, return {"survivors": []}.
+
+Return ONLY the JSON object. No prose, no markdown, no preamble.
 """
 
 
@@ -430,7 +488,9 @@ def _extract_survivors_via_claude(
     obit_text: str, deceased_name: str
 ) -> list[dict[str, Any]]:
     """Send obit body text to Claude, return structured survivor list.
-    Returns empty list on any extraction failure."""
+    Returns empty list on any extraction failure, on parse failure, or
+    if Claude reports the obit is not actually for the named deceased.
+    """
     try:
         from anthropic import Anthropic
         client = Anthropic()
@@ -441,7 +501,8 @@ def _extract_survivors_via_claude(
     user_prompt = (
         f"Deceased: {deceased_name}\n\n"
         f"Obituary text:\n---\n{obit_text}\n---\n\n"
-        f"Extract the survivor list per the system instructions."
+        f"First confirm the obit is for {deceased_name}, then extract "
+        f"the survivor list per the system instructions."
     )
 
     try:
@@ -465,6 +526,14 @@ def _extract_survivors_via_claude(
         parsed = json.loads(raw)
     except Exception as e:
         log.warning("Claude returned non-JSON: %s | %s", e, raw[:200])
+        return []
+
+    # Defense-in-depth: even though we validated the deceased's name
+    # in the body before sending, also respect Claude's judgment on
+    # whether this obit actually IS for the named deceased.
+    if not parsed.get("obit_matches_deceased", True):
+        log.info("Claude reports obit does not match deceased '%s'",
+                 deceased_name)
         return []
 
     survivors = parsed.get("survivors") or []
