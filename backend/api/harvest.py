@@ -891,6 +891,70 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/tracerfy-enhanced-test")
+def diag_tracerfy_enhanced_test(
+    x_admin_key: Optional[str] = Header(None),
+    address: str = "",
+    city: str = "",
+    state: str = "WA",
+    zip_code: str = "",
+    trace_type: str = "enhanced",
+):
+    """
+    EXPERIMENTAL endpoint to test Tracerfy's Enhanced Skip Tracing
+    tier against a real property. Returns the FULL raw response so
+    we can see what shape the data takes (relatives, aliases, past
+    addresses, etc.).
+
+    Burns 15 credits per call if Enhanced is supported and the call
+    hits. We don't yet know if `trace_type='enhanced'` is accepted on
+    the instant-lookup endpoint — that's what this test verifies.
+
+    Example calls to try:
+      ?address=120+13TH+AVE&city=Kirkland&zip_code=98033&trace_type=enhanced
+      ?address=120+13TH+AVE&city=Kirkland&zip_code=98033&trace_type=normal
+      ?address=120+13TH+AVE&city=Kirkland&zip_code=98033&trace_type=advanced
+
+    If Tracerfy rejects 'enhanced' as unknown, we'll get a 400 with
+    an error message telling us the right parameter name to use.
+    """
+    _require_admin(x_admin_key)
+    from backend.integrations import tracerfy
+
+    if not address or not city:
+        raise HTTPException(
+            400,
+            "address and city query params are required"
+        )
+
+    try:
+        result = tracerfy.lookup_enhanced(
+            address=address,
+            city=city,
+            state=state,
+            zip_code=zip_code or None,
+            trace_type=trace_type,
+        )
+        return {
+            "address":     address,
+            "city":        city,
+            "state":       state,
+            "zip_code":    zip_code,
+            "trace_type":  trace_type,
+            "hit":         result["hit"],
+            "credits":     result["credits_deducted"],
+            "persons_count": len(result.get("persons") or []),
+            "raw":         result["raw"],  # The full structure
+        }
+    except tracerfy.TracerfyError as e:
+        return {
+            "address":     address,
+            "trace_type":  trace_type,
+            "error":       e.message,
+            "status_code": e.status_code,
+        }
+
+
 @router.get("/diag/obit-search")
 def diag_obit_search(
     x_admin_key: Optional[str] = Header(None),

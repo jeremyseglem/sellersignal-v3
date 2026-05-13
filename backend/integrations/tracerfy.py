@@ -102,6 +102,42 @@ def lookup_owner(
     )
 
 
+def lookup_enhanced(
+    address: str,
+    city: str,
+    state: str,
+    zip_code: str | None = None,
+    trace_type: str = "enhanced",
+) -> dict[str, Any]:
+    """EXPERIMENTAL — calls /v1/api/trace/lookup/ with trace_type=enhanced
+    (or another value passed in) to test Tracerfy's Enhanced Skip Tracing
+    tier.
+
+    Per Tracerfy marketing, Enhanced returns:
+      - All standard data (8 phones, 5 emails, mailing address)
+      - Up to 8 relatives with full contact info
+      - 5 aliases, 5 past addresses, business connections, age data
+
+    Cost: 15 credits per hit ($0.30 at $0.02/credit) vs 5 credits for
+    standard. Marketed specifically for probate cases.
+
+    This function exists so we can verify (a) whether trace_type is
+    accepted on the instant-lookup endpoint, (b) what JSON shape the
+    relatives data takes. Once confirmed, the production code will
+    inline the trace_type param into _do_lookup() rather than keeping
+    this as a separate function.
+
+    Returns the raw dict response so callers can inspect the full
+    structure.
+    """
+    return _do_lookup(
+        address=address, city=city, state=state, zip_code=zip_code,
+        find_owner=True,
+        first_name=None, last_name=None,
+        trace_type=trace_type,
+    )
+
+
 def lookup_person(
     first_name: str,
     last_name: str,
@@ -146,6 +182,7 @@ def _do_lookup(
     find_owner: bool,
     first_name: str | None,
     last_name: str | None,
+    trace_type: str | None = None,
 ) -> dict[str, Any]:
     """Shared implementation for both lookup_owner() and lookup_person().
 
@@ -158,6 +195,10 @@ def _do_lookup(
             similarly-named property in the same city.
         find_owner: True for owner search, False for person search.
         first_name, last_name: required when find_owner=False.
+        trace_type: optional Tracerfy trace mode. Standard call omits
+            this and gets the default ('normal'). Pass 'enhanced' for
+            the relatives-returning tier (15 credits). Pass 'advanced'
+            for 2-credit owner-identification on address only.
 
     Returns:
         A dict with the following shape:
@@ -206,6 +247,12 @@ def _do_lookup(
     if not find_owner:
         body["first_name"] = first_name
         body["last_name"] = last_name
+    if trace_type:
+        # Only set when caller explicitly requests a non-default tier
+        # — keeps backward compatibility with existing skip-trace
+        # callers that omit the parameter and get Tracerfy's default
+        # ('normal' / standard).
+        body["trace_type"] = trace_type
 
     url = _BASE_URL + _LOOKUP_PATH
     headers = {
