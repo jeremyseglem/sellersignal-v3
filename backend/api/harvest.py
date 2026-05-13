@@ -891,6 +891,59 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/tracerfy-queue")
+def diag_tracerfy_queue(
+    x_admin_key: Optional[str] = Header(None),
+    queue_id: int = 0,
+):
+    """
+    Fetch a Tracerfy queue's status and download CSV results.
+    Used after diag/tracerfy-batch-submit to inspect what data
+    shape comes back for each trace_type.
+    """
+    _require_admin(x_admin_key)
+    import requests as _r
+
+    token = os.environ.get("TRACERFY_API_TOKEN", "").strip()
+    if not token or not queue_id:
+        return {"error": "missing token or queue_id"}
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Get queue status (per Tracerfy docs: GET /v1/api/queue/:id)
+    try:
+        meta_resp = _r.get(f"https://tracerfy.com/v1/api/queue/{queue_id}/",
+                            headers=headers, timeout=15)
+    except Exception as e:
+        return {"error": f"queue fetch failed: {e}"}
+
+    out: dict = {"status_code": meta_resp.status_code}
+    try:
+        meta = meta_resp.json()
+        out["queue_meta"] = meta
+    except Exception:
+        out["queue_meta_text"] = meta_resp.text[:500]
+        return out
+
+    # If the queue is complete and has a download_url, fetch and parse
+    download_url = meta.get("download_url") if isinstance(meta, dict) else None
+    if download_url:
+        try:
+            csv_resp = _r.get(download_url, timeout=30)
+            out["csv_status"] = csv_resp.status_code
+            if csv_resp.status_code == 200:
+                import csv as _csv, io as _io
+                rows = list(_csv.DictReader(_io.StringIO(csv_resp.text)))
+                out["csv_columns"] = list(rows[0].keys()) if rows else []
+                out["csv_rows"]    = rows  # full CSV — usually 1 row
+        except Exception as e:
+            out["csv_error"] = str(e)[:300]
+    else:
+        out["pending"] = True
+
+    return out
+
+
 @router.get("/diag/tracerfy-batch-submit")
 def diag_tracerfy_batch_submit(
     x_admin_key: Optional[str] = Header(None),
