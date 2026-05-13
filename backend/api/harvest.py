@@ -910,14 +910,32 @@ def diag_tracerfy_queue(
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Get queue status (per Tracerfy docs: GET /v1/api/queue/:id)
-    try:
-        meta_resp = _r.get(f"https://tracerfy.com/v1/api/queue/{queue_id}/",
-                            headers=headers, timeout=15)
-    except Exception as e:
-        return {"error": f"queue fetch failed: {e}"}
+    # Try several URL variants since the Tracerfy docs are inconsistent
+    # about singular vs plural and trailing slash. First one that
+    # returns 200 wins.
+    urls_to_try = [
+        f"https://tracerfy.com/v1/api/queues/{queue_id}/",
+        f"https://tracerfy.com/v1/api/queues/{queue_id}",
+        f"https://tracerfy.com/v1/api/queue/{queue_id}/",
+        f"https://tracerfy.com/v1/api/queue/{queue_id}",
+    ]
+    meta_resp = None
+    meta_url = None
+    for u in urls_to_try:
+        try:
+            r = _r.get(u, headers=headers, timeout=15)
+            if r.status_code == 200:
+                meta_resp = r
+                meta_url = u
+                break
+            meta_resp = r  # remember the last one for diagnostic
+            meta_url = u
+        except Exception:
+            continue
+    if meta_resp is None:
+        return {"error": "all queue URLs failed"}
 
-    out: dict = {"status_code": meta_resp.status_code}
+    out: dict = {"status_code": meta_resp.status_code, "url_used": meta_url}
     try:
         meta = meta_resp.json()
         out["queue_meta"] = meta
