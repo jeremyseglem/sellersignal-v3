@@ -891,6 +891,73 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/tracerfy-batch-submit")
+def diag_tracerfy_batch_submit(
+    x_admin_key: Optional[str] = Header(None),
+    trace_type: str = "enhanced",
+    address: str = "120 13TH AVE",
+    city: str = "Kirkland",
+    state: str = "WA",
+    zip_code: str = "98033",
+    first_name: str = "JANICE",
+    last_name: str = "PARKER",
+):
+    """
+    Test the Tracerfy batch endpoint directly to find the right
+    trace_type parameter for Enhanced Skip Tracing. Rejected
+    submissions cost 0 credits, so we can iterate cheaply on
+    parameter names.
+
+    Returns the full Tracerfy response (or error message) so we can
+    see what parameter values they accept.
+    """
+    _require_admin(x_admin_key)
+    from backend.integrations import tracerfy as tcf
+    import csv as _csv, io as _io
+
+    # Build the CSV body the same way submit_enhanced_batch does
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["address", "city", "state", "zip", "first_name", "last_name"])
+    w.writerow([address, city, state, zip_code, first_name, last_name])
+
+    token = os.environ.get("TRACERFY_API_TOKEN", "").strip()
+    if not token:
+        return {"error": "TRACERFY_API_TOKEN not set"}
+
+    files = {"file": ("test.csv", buf.getvalue(), "text/csv")}
+    form_data = {
+        "trace_type":         trace_type,
+        "address_column":     "address",
+        "city_column":        "city",
+        "state_column":       "state",
+        "zip_column":         "zip",
+        "first_name_column":  "first_name",
+        "last_name_column":   "last_name",
+    }
+
+    import requests as _r
+    try:
+        resp = _r.post(
+            "https://tracerfy.com/v1/api/trace/",
+            files=files, data=form_data,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    except Exception as e:
+        return {"trace_type": trace_type, "exception": str(e)[:300]}
+
+    out: dict = {
+        "trace_type":   trace_type,
+        "status_code":  resp.status_code,
+    }
+    try:
+        out["body"] = resp.json()
+    except Exception:
+        out["body_text"] = resp.text[:500]
+    return out
+
+
 @router.get("/diag/enhanced-skip-trace")
 def diag_enhanced_skip_trace(
     x_admin_key: Optional[str] = Header(None),
