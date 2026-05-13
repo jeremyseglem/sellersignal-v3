@@ -891,6 +891,175 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/case-recon")
+def diag_case_recon(
+    x_admin_key: Optional[str] = Header(None),
+    internal_id: str = "",
+    warmup_since: Optional[str] = None,
+    warmup_until: Optional[str] = None,
+):
+    """
+    Reconnaissance: scan EVERY tab on a single case detail page and
+    report what's there. Used to answer questions like "is the PR's
+    mailing address on any tab?" before committing to a scraper extension.
+
+    Flow:
+      1. Warm session via a real_search week (default: 2025-04-21..27,
+         override via warmup_since/warmup_until).
+      2. Fetch the case bootstrap detail page (?q=node/420/{id}).
+      3. Parse the bootstrap HTML for ALL folder= links — these are
+         the tabs available for this case.
+      4. For each folder, fetch the tab and capture:
+           - HTML byte length
+           - Visible text length and first 1500 chars (after stripping nav chrome)
+           - Number of <table> elements and their first-row headers
+           - Address-like signal counts (regex on common WA address patterns)
+      5. Return a consolidated report.
+
+    The address-like patterns are heuristic, not authoritative — they
+    surface places worth a human eyeball. A hit doesn't mean the data
+    is usable; a miss doesn't mean it isn't there. The point is to
+    figure out WHICH tabs to look at manually.
+    """
+    _require_admin(x_admin_key)
+    from backend.harvesters.kc_superior_court import (
+        KCSuperiorCourtHarvester, BASE, FORM_BASE_PATH,
+    )
+    from datetime import date, datetime as _dt
+    import re as _re
+    import requests as _requests
+    from bs4 import BeautifulSoup
+
+    if not internal_id:
+        raise HTTPException(400, "internal_id query param is required")
+
+    # ── Session warmup ──────────────────────────────────────────────
+    h = KCSuperiorCourtHarvester(case_types=['probate'])
+    session = h.build_session()
+    code = "511110"
+    warm_info: dict = {}
+    try:
+        ctx = h._open_search_form(session, code)
+        if warmup_since and warmup_until:
+            w_since = _dt.strptime(warmup_since, "%Y-%m-%d").date()
+            w_until = _dt.strptime(warmup_until, "%Y-%m-%d").date()
+        else:
+            w_since = date(2025, 4, 21)
+            w_until = date(2025, 4, 27)
+        html_warm = h._post_search(session, code, code, ctx, w_since, w_until)
+        warm_info['status'] = 'OK'
+        warm_info['warm_range'] = f"{w_since}..{w_until}"
+        warm_info['warm_html_len'] = len(html_warm)
+    except Exception as e:
+        warm_info['status'] = f'ERROR: {str(e)[:200]}'
+        return {'internal_id': internal_id, 'warm_info': warm_info}
+
+    search_referer = f"{BASE}{FORM_BASE_PATH}?caseType=511110"
+
+    # ── Fetch bootstrap detail page ────────────────────────────────
+    bootstrap_url = f"{BASE}/?q=node/420/{internal_id}"
+    boot_info: dict = {}
+    try:
+        r = session.get(bootstrap_url, headers={'Referer': search_referer}, timeout=30)
+        boot_info['status_code'] = r.status_code
+        boot_info['html_length'] = len(r.text)
+        bootstrap_html = r.text
+    except Exception as e:
+        return {
+            'internal_id': internal_id,
+            'warm_info':   warm_info,
+            'boot_info':   {'status': f'ERROR: {str(e)[:200]}'},
+        }
+
+    # ── Extract folder= links from bootstrap ───────────────────────
+    # Each tab on the case detail page is rendered as a link with a
+    # `folder=FV-Public-Case-X-Portal` query param. Pull every unique
+    # folder name we find.
+    folder_pattern = _re.compile(r'folder=([A-Za-z0-9\-]+)')
+    folders_found = list(set(folder_pattern.findall(bootstrap_html)))
+    folders_found.sort()
+    boot_info['folders_found'] = folders_found
+
+    # Also capture the tab labels visible in the bootstrap nav, so we
+    # know what a folder=FV-Public-Case-X-Portal corresponds to in UI.
+    soup_boot = BeautifulSoup(bootstrap_html, 'html.parser')
+    tab_label_map: dict[str, str] = {}
+    for a in soup_boot.find_all('a', href=True):
+        m = folder_pattern.search(a['href'])
+        if m:
+            label = a.get_text(' ', strip=True)
+            if label:
+                tab_label_map[m.group(1)] = label
+    boot_info['tab_labels'] = tab_label_map
+
+    # ── Scan each folder ───────────────────────────────────────────
+    # Heuristics for address-like text: ZIP+state combos, common street
+    # suffixes, "PO Box", explicit "Address" labels. We log COUNTS only
+    # so the response stays small.
+    address_patterns = {
+        'zip_plus_state': _re.compile(r'\b[A-Z]{2}\s+\d{5}\b'),
+        'street_suffix':  _re.compile(r'\b\d+\s+\w+(\s+\w+)?\s+(STREET|ST|AVENUE|AVE|ROAD|RD|DRIVE|DR|LANE|LN|BOULEVARD|BLVD|WAY|COURT|CT|PLACE|PL|TERRACE|TER)\b', _re.IGNORECASE),
+        'po_box':         _re.compile(r'\bP\.?\s*O\.?\s*Box\s+\d+', _re.IGNORECASE),
+        'address_label':  _re.compile(r'\baddress\s*[:]', _re.IGNORECASE),
+    }
+
+    folder_reports: list[dict] = []
+    import time as _time
+    for folder in folders_found:
+        tab_url = f"{BASE}/node/420?Id={internal_id}&folder={folder}"
+        info: dict = {
+            'folder': folder,
+            'label':  tab_label_map.get(folder),
+            'url':    tab_url,
+        }
+        try:
+            _time.sleep(0.5)  # polite
+            r = session.get(tab_url, headers={'Referer': bootstrap_url}, timeout=30)
+            info['status_code'] = r.status_code
+            info['html_length'] = len(r.text)
+
+            soup = BeautifulSoup(r.text, 'html.parser')
+            body_text = soup.get_text(' ', strip=True)
+            info['body_text_length'] = len(body_text)
+            info['body_text_preview'] = body_text[:1500]
+
+            # Table summary
+            tables = soup.find_all('table')
+            info['table_count'] = len(tables)
+            table_summaries = []
+            for tbl in tables[:5]:
+                first_tr = tbl.find('tr')
+                headers = []
+                if first_tr:
+                    headers = [
+                        c.get_text(' ', strip=True)
+                        for c in first_tr.find_all(['th', 'td'])
+                    ]
+                rows = len(tbl.find_all('tr'))
+                table_summaries.append({
+                    'headers': headers[:6],
+                    'rows':    rows,
+                })
+            info['tables'] = table_summaries
+
+            # Address signal counts
+            address_counts = {}
+            for name, pat in address_patterns.items():
+                address_counts[name] = len(pat.findall(body_text))
+            info['address_signals'] = address_counts
+            info['has_any_address_signal'] = any(v > 0 for v in address_counts.values())
+        except Exception as e:
+            info['error'] = str(e)[:200]
+        folder_reports.append(info)
+
+    return {
+        'internal_id':     internal_id,
+        'warm_info':       warm_info,
+        'boot_info':       boot_info,
+        'folder_reports':  folder_reports,
+    }
+
+
 @router.post("/backfill-internal-ids")
 def harvest_backfill_internal_ids(
     x_admin_key: Optional[str] = Header(None),
