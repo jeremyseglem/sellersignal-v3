@@ -172,36 +172,52 @@ def submit_enhanced_batch(
             retryable=False,
         )
 
-    # Batch endpoint takes a `data` array of address rows. Even for a
-    # single-address submission, we wrap in a list. column mappings
-    # tell Tracerfy which fields are which — same shape it uses for
-    # CSV uploads.
-    row: dict[str, Any] = {
-        "address": address,
-        "city":    city,
-        "state":   state,
-    }
-    if zip_code:
-        row["zip"] = zip_code
-    if first_name:
-        row["first_name"] = first_name
-    if last_name:
-        row["last_name"] = last_name
+    # Batch endpoint requires multipart/form-data with a CSV file +
+    # column-mapping form fields. The sync /lookup endpoint accepts
+    # JSON, but the batch /trace/ endpoint does not — we confirmed
+    # this experimentally on 2026-05-13: posting application/json
+    # returned 'Unsupported media type "application/json"'.
+    #
+    # CSV body has a header row + a single data row for this single-
+    # address submission. The column_* form fields tell Tracerfy
+    # which CSV columns are which fields.
+    import csv
+    import io
+    csv_buf = io.StringIO()
+    writer = csv.writer(csv_buf)
+    writer.writerow(["address", "city", "state", "zip",
+                     "first_name", "last_name"])
+    writer.writerow([address, city, state, zip_code or "",
+                     first_name or "", last_name or ""])
+    csv_content = csv_buf.getvalue()
 
-    body = {
-        "trace_type": "enhanced",
-        "data":       [row],
+    files = {
+        # Tracerfy expects the CSV under the 'file' field name (matches
+        # their web upload UI). Filename and content-type are nominal —
+        # what matters is the column-mapping form fields below.
+        "file": ("enhanced_trace.csv", csv_content, "text/csv"),
+    }
+    form_data = {
+        "trace_type":         "enhanced",
+        "address_column":     "address",
+        "city_column":        "city",
+        "state_column":       "state",
+        "zip_column":         "zip",
+        "first_name_column":  "first_name",
+        "last_name_column":   "last_name",
     }
 
     url = _BASE_URL + _BATCH_PATH
     headers = {
+        # Note: do NOT set Content-Type here — requests sets the
+        # multipart boundary automatically when `files=` is used.
+        # Manually setting Content-Type breaks the boundary.
         "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/json",
     }
 
     try:
-        resp = requests.post(url, json=body, headers=headers,
-                             timeout=_HTTP_TIMEOUT_SEC)
+        resp = requests.post(url, files=files, data=form_data,
+                             headers=headers, timeout=_HTTP_TIMEOUT_SEC)
     except requests.Timeout:
         raise TracerfyError(
             "Enhanced trace submission timed out. Try again.",
