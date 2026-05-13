@@ -585,6 +585,60 @@ async def lookup(payload: LookupRequest,
                 last_name=pr["name_last"],
                 address=address, city=city, state=state, zip_code=zip_code,
             )
+
+            # ── Household fallback ──────────────────────────────────
+            # If the PR-name search missed, the PR likely doesn't live
+            # at the property — common when the PR is an adult child
+            # living elsewhere. Retry with find_owner=true to find
+            # anyone else at the address (typically the surviving
+            # spouse or other family members at the home). They are
+            # NOT the decision-maker, but a handwritten letter often
+            # gets forwarded by household members to the PR.
+            #
+            # Filter out anyone flagged deceased — that removes the
+            # dead homeowner who would otherwise dominate results in
+            # a probate context. Each remaining person is tagged with
+            # _household_fallback=True so the UI can render the
+            # "household contact, not PR directly" framing.
+            #
+            # Credits: lookup_person miss costs 0; lookup_owner hit
+            # costs 5. Net cost per probate-fallback that finds a
+            # household member: 5 credits. Misses on both: 0 credits.
+            if not provider_result["hit"]:
+                fallback_result = tracerfy.lookup_owner(
+                    address=address, city=city, state=state, zip_code=zip_code,
+                )
+                household = [
+                    p for p in (fallback_result.get("persons") or [])
+                    if not p.get("deceased")
+                ]
+                if household:
+                    for p in household:
+                        p["_household_fallback"] = True
+                    provider_result = {
+                        "hit":              True,
+                        "credits_deducted": (
+                            provider_result.get("credits_deducted", 0)
+                            + fallback_result.get("credits_deducted", 0)
+                        ),
+                        "persons":     household,
+                        "provider":    fallback_result.get("provider"),
+                        "search_mode": "household_fallback",
+                        "raw": {
+                            "primary":  provider_result.get("raw"),
+                            "fallback": fallback_result.get("raw"),
+                        },
+                    }
+                else:
+                    # Owner-search also returned nothing usable.
+                    # Aggregate credits but keep the hit=False so the
+                    # frontend renders the probate-specific miss
+                    # message ("PR not at this address, likely lives
+                    # elsewhere").
+                    provider_result["credits_deducted"] = (
+                        provider_result.get("credits_deducted", 0)
+                        + fallback_result.get("credits_deducted", 0)
+                    )
         else:
             provider_result = tracerfy.lookup_owner(
                 address=address, city=city, state=state, zip_code=zip_code,

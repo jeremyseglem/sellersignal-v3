@@ -187,6 +187,13 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
 function ResultsDisplay({ result, onRetry }) {
   const { hit, persons, source, retrieved_at, expires_at } = result;
 
+  // Detect household-fallback: server marks each person from the
+  // owner-search fallback (after a probate person-search miss) with
+  // _household_fallback=true. The whole result is fallback-mode iff
+  // any person carries the flag.
+  const isHouseholdFallback = Array.isArray(persons)
+    && persons.some((p) => p && p._household_fallback);
+
   if (!hit || !persons.length) {
     // Build a helpful miss message. If we searched for a specific
     // named PR (search_mode='person'), the miss almost certainly
@@ -205,10 +212,9 @@ function ResultsDisplay({ result, onRetry }) {
           {isPersonSearch ? (
             <>
               The personal representative likely lives at a different
-              address — common in probate cases. Search probate court
-              records for the PR&rsquo;s home address, or try a
-              handwritten letter to the property address (often
-              forwarded to the PR by family members at the home).
+              address, and no other household members were reachable
+              at the property. Search probate court records for the
+              PR&rsquo;s home address.
             </>
           ) : (
             <>
@@ -245,6 +251,23 @@ function ResultsDisplay({ result, onRetry }) {
 
   return (
     <div>
+      {isHouseholdFallback && (
+        <div style={fallbackBannerStyle}>
+          <div style={fallbackBannerTitleStyle}>
+            {result.searched_for
+              ? `${result.searched_for} not found at this address`
+              : 'Personal representative not found at this address'}
+          </div>
+          <div style={fallbackBannerBodyStyle}>
+            The household contact{persons.length > 1 ? 's' : ''} below
+            may be at the home and could forward your letter to the
+            PR. Common with surviving spouses or other family members
+            at the property. Send a handwritten letter to the property
+            address — it often reaches the decision-maker.
+          </div>
+        </div>
+      )}
+
       {anyLitigator && (
         <div style={litigatorBannerStyle}>
           <strong>TCPA LITIGATOR FLAGGED.</strong> One or more numbers
@@ -254,7 +277,11 @@ function ResultsDisplay({ result, onRetry }) {
       )}
 
       {sorted.map((p, i) => (
-        <PersonCard key={`${p.full_name}-${i}`} person={p} />
+        <PersonCard
+          key={`${p.full_name}-${i}`}
+          person={p}
+          isHouseholdFallback={!!p._household_fallback}
+        />
       ))}
 
       <div style={metaRowStyle}>
@@ -273,7 +300,7 @@ function ResultsDisplay({ result, onRetry }) {
 }
 
 
-function PersonCard({ person }) {
+function PersonCard({ person, isHouseholdFallback }) {
   const dim = person.deceased;
   return (
     <div style={personCardStyle(dim)}>
@@ -282,8 +309,14 @@ function PersonCard({ person }) {
           {person.full_name || `${person.first_name || ''} ${person.last_name || ''}`.trim()}
         </span>
         <span style={personFlagsStyle}>
-          {person.property_owner && (
-            <Pill color="var(--accent)" bg="var(--accent-dim)">Property owner</Pill>
+          {isHouseholdFallback ? (
+            <Pill color="var(--text-secondary)" bg="var(--bg-input)">
+              Household
+            </Pill>
+          ) : (
+            person.property_owner && (
+              <Pill color="var(--accent)" bg="var(--accent-dim)">Property owner</Pill>
+            )
           )}
           {person.deceased && (
             <Pill color="var(--text-tertiary)" bg="var(--bg-input)">Deceased</Pill>
@@ -446,6 +479,34 @@ const litigatorBannerStyle = {
   borderRadius: 'var(--radius-md, 6px)',
   marginBottom: 10,
   lineHeight: 1.5,
+};
+
+// Household-fallback banner. Renders above the persons list when the
+// PR-name search missed but owner-search found household members.
+// Tone: explanatory, not alarming. Same warm-neutral palette as the
+// rest of the dossier so it reads as context, not warning.
+const fallbackBannerStyle = {
+  padding: '10px 12px',
+  background: 'var(--bg-input)',
+  border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-md, 6px)',
+  marginBottom: 10,
+};
+
+const fallbackBannerTitleStyle = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: 12,
+  fontWeight: 700,
+  color: 'var(--text)',
+  letterSpacing: '0.02em',
+  marginBottom: 4,
+};
+
+const fallbackBannerBodyStyle = {
+  fontFamily: 'var(--font-serif)',
+  fontSize: 12,
+  lineHeight: 1.55,
+  color: 'var(--text-secondary)',
 };
 
 const personCardStyle = (dim) => ({
