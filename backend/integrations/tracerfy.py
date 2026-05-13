@@ -37,6 +37,15 @@ PROVIDER_NAME = "tracerfy"
 # later if Tracerfy publishes one.
 _BASE_URL = "https://tracerfy.com"
 _LOOKUP_PATH = "/v1/api/trace/lookup/"
+# Batch endpoint for async Enhanced Skip Tracing. Unlike the
+# synchronous lookup endpoint, this one queues the job and delivers
+# results via webhook (configured in the Tracerfy dashboard, fires to
+# our /api/skip-trace/tracerfy-webhook handler).
+_BATCH_PATH = "/v1/api/trace/"
+
+# Tracerfy rate limit: 10 batch POSTs per 5-minute window per account.
+# We're far below this in practice, but worth noting if we ever need
+# to throttle.
 
 # 15s timeout: Tracerfy's instant lookup advertises millisecond
 # response times. 15s is generous enough that genuine slowness gets
@@ -102,40 +111,333 @@ def lookup_owner(
     )
 
 
-def lookup_enhanced(
+def submit_enhanced_batch(
     address: str,
     city: str,
     state: str,
     zip_code: str | None = None,
-    trace_type: str = "enhanced",
+    first_name: str | None = None,
+    last_name: str | None = None,
 ) -> dict[str, Any]:
-    """EXPERIMENTAL — calls /v1/api/trace/lookup/ with trace_type=enhanced
-    (or another value passed in) to test Tracerfy's Enhanced Skip Tracing
-    tier.
+    """Submit a single-address Enhanced Skip Tracing batch job.
 
-    Per Tracerfy marketing, Enhanced returns:
-      - All standard data (8 phones, 5 emails, mailing address)
-      - Up to 8 relatives with full contact info
-      - 5 aliases, 5 past addresses, business connections, age data
+    Tracerfy's instant-lookup endpoint silently ignores the trace_type
+    parameter (we confirmed this experimentally on 2026-05-12). The
+    Enhanced tier — which returns up to 8 relatives with contact info,
+    5 aliases, 5 past addresses — is only available via the async
+    batch endpoint POST /v1/api/trace/.
 
-    Cost: 15 credits per hit ($0.30 at $0.02/credit) vs 5 credits for
-    standard. Marketed specifically for probate cases.
+    Flow:
+      1. This function POSTs the address as a single-row JSON batch
+         with trace_type='enhanced'
+      2. Tracerfy queues the job and returns immediately with
+         {id, estimated_wait_seconds, ...}
+      3. We store that id (queue_id) on the cache row
+      4. 5-30 minutes later, Tracerfy POSTs the completed result to
+         the webhook URL configured in their dashboard
+      5. Webhook handler fetches the CSV from download_url, parses
+         relatives, updates the cache row
 
-    This function exists so we can verify (a) whether trace_type is
-    accepted on the instant-lookup endpoint, (b) what JSON shape the
-    relatives data takes. Once confirmed, the production code will
-    inline the trace_type param into _do_lookup() rather than keeping
-    this as a separate function.
+    Args:
+        address, city, state, zip_code: property address
+        first_name, last_name: optional. Pass the named PR from court
+            records so Tracerfy's enrichment can focus on them and
+            their relatives.
 
-    Returns the raw dict response so callers can inspect the full
-    structure.
+    Returns:
+        {
+          'queue_id':                str,    # use this in webhook lookup
+          'estimated_wait_seconds':  int | None,
+          'credits_estimated':       int,    # what Tracerfy expects to charge
+          'raw':                     dict,   # full response for debugging
+        }
+
+    Raises:
+        TracerfyError on submission failure (auth, rate limit, etc.).
+        Does NOT raise on successful queue submission — the job is
+        considered submitted as soon as we have a queue_id.
     """
-    return _do_lookup(
-        address=address, city=city, state=state, zip_code=zip_code,
-        find_owner=True,
-        first_name=None, last_name=None,
-        trace_type=trace_type,
-    )
+    token = _get_api_token()
+
+    address = (address or "").strip()
+    city = (city or "").strip()
+    state = (state or "").strip().upper()
+    zip_code = (zip_code or "").strip() or None
+    first_name = (first_name or "").strip() or None
+    last_name = (last_name or "").strip() or None
+
+    if not address or not city or not state:
+        raise TracerfyError(
+            "Address, city, and state are required for Enhanced trace.",
+            retryable=False,
+        )
+
+    # Batch endpoint takes a `data` array of address rows. Even for a
+    # single-address submission, we wrap in a list. column mappings
+    # tell Tracerfy which fields are which — same shape it uses for
+    # CSV uploads.
+    row: dict[str, Any] = {
+        "address": address,
+        "city":    city,
+        "state":   state,
+    }
+    if zip_code:
+        row["zip"] = zip_code
+    if first_name:
+        row["first_name"] = first_name
+    if last_name:
+        row["last_name"] = last_name
+
+    body = {
+        "trace_type": "enhanced",
+        "data":       [row],
+    }
+
+    url = _BASE_URL + _BATCH_PATH
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+    }
+
+    try:
+        resp = requests.post(url, json=body, headers=headers,
+                             timeout=_HTTP_TIMEOUT_SEC)
+    except requests.Timeout:
+        raise TracerfyError(
+            "Enhanced trace submission timed out. Try again.",
+            retryable=True,
+        )
+    except requests.RequestException as e:
+        raise TracerfyError(
+            f"Enhanced trace network error: {e}",
+            retryable=True,
+        )
+
+    if resp.status_code == 401 or resp.status_code == 403:
+        raise TracerfyError(
+            "Skip-trace authentication failed.",
+            status_code=resp.status_code,
+            retryable=False,
+        )
+    if resp.status_code == 402:
+        raise TracerfyError(
+            "Skip-trace credit balance insufficient for Enhanced trace.",
+            status_code=402,
+            retryable=False,
+        )
+    if resp.status_code == 429:
+        raise TracerfyError(
+            "Enhanced trace rate limit hit (10 batch POSTs per 5 min).",
+            status_code=429,
+            retryable=True,
+        )
+    if resp.status_code >= 500:
+        raise TracerfyError(
+            f"Tracerfy is having issues (HTTP {resp.status_code}).",
+            status_code=resp.status_code,
+            retryable=True,
+        )
+    if resp.status_code >= 400:
+        try:
+            payload = resp.json()
+            detail = payload.get("error") or payload.get("message") or resp.text
+        except Exception:
+            detail = resp.text[:200]
+        raise TracerfyError(
+            f"Enhanced trace rejected: {detail}",
+            status_code=resp.status_code,
+            retryable=False,
+        )
+
+    try:
+        data = resp.json()
+    except Exception:
+        raise TracerfyError(
+            "Tracerfy batch endpoint returned an unexpected response.",
+            retryable=True,
+        )
+
+    # Per Tracerfy docs the queue response includes `id`,
+    # `estimated_wait_seconds`, and `pending=true`. Use defensive
+    # gets in case the schema drifts.
+    queue_id = data.get("id")
+    if queue_id is None:
+        # Some payloads use queue_id directly. Try both.
+        queue_id = data.get("queue_id")
+    if queue_id is None:
+        raise TracerfyError(
+            f"Enhanced trace submission returned no queue id. "
+            f"Response keys: {list(data.keys())}",
+            retryable=False,
+        )
+
+    return {
+        "queue_id":               str(queue_id),
+        "estimated_wait_seconds": data.get("estimated_wait_seconds"),
+        "credits_estimated":      data.get("credits_estimated") or 15,
+        "raw":                    data,
+    }
+
+
+def fetch_enhanced_results(download_url: str) -> list[dict[str, Any]]:
+    """Fetch and parse the completed-batch CSV that Tracerfy posts on
+    webhook completion. Returns one dict per row in the CSV.
+
+    The CSV columns for Enhanced traces include the standard fields
+    (phones_1 through phones_8, emails_1 through emails_5, etc.) PLUS
+    Enhanced-specific columns for relatives, aliases, past addresses.
+
+    We don't know the exact column names until we see a real Enhanced
+    completion in production. This function parses defensively:
+    returns the raw row dict, and the caller (webhook handler) handles
+    interpretation.
+
+    Raises TracerfyError on fetch failure or non-CSV response.
+    """
+    if not download_url:
+        raise TracerfyError(
+            "No download URL in webhook payload.",
+            retryable=False,
+        )
+
+    try:
+        resp = requests.get(download_url, timeout=30.0)
+    except requests.RequestException as e:
+        raise TracerfyError(
+            f"Failed to fetch Enhanced results CSV: {e}",
+            retryable=True,
+        )
+
+    if resp.status_code != 200:
+        raise TracerfyError(
+            f"Enhanced results CSV returned HTTP {resp.status_code}",
+            retryable=resp.status_code >= 500,
+        )
+
+    # Parse CSV defensively. csv.DictReader handles quoting and headers.
+    import csv
+    import io
+    rows: list[dict[str, Any]] = []
+    try:
+        reader = csv.DictReader(io.StringIO(resp.text))
+        for row in reader:
+            rows.append(dict(row))
+    except Exception as e:
+        raise TracerfyError(
+            f"Could not parse Enhanced results CSV: {e}",
+            retryable=False,
+        )
+
+    return rows
+
+
+def parse_enhanced_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one row of the Enhanced CSV into our internal shape.
+
+    Defensive parsing: Tracerfy may add or remove columns over time.
+    Keys not present in the row are skipped, not errored on. The shape
+    here is what the frontend expects in skip_trace_results_v3.enhanced_data.
+
+    Output:
+      {
+        "owner": {"first_name", "last_name", "age", "phones", "emails"},
+        "relatives":      [{"name", "relationship", "age",
+                            "phones", "emails", "city", "state"}, ...],
+        "aliases":        [str, ...],
+        "past_addresses": [{"street", "city", "state", "zip"}, ...],
+      }
+
+    Tracerfy CSV column naming pattern (inferred from their normal-tier
+    output we already see): suffixed numbers like phones_1, phones_2,
+    emails_1, relatives_1_name, relatives_1_phone, etc. We'll discover
+    the exact column names from the first real webhook delivery and
+    log unknown columns for follow-up.
+    """
+    def collect_indexed(prefix: str, max_n: int = 10) -> list[str]:
+        """Pull out values for keys like prefix_1, prefix_2, ...
+        Skips empty/null values."""
+        out = []
+        for i in range(1, max_n + 1):
+            v = (row.get(f"{prefix}_{i}") or "").strip()
+            if v and v.lower() not in ("none", "null", "n/a"):
+                out.append(v)
+        return out
+
+    # Owner-level fields (the named person, or the property owner)
+    owner = {
+        "first_name": (row.get("first_name") or "").strip(),
+        "last_name":  (row.get("last_name") or "").strip(),
+        "age":        (row.get("age") or "").strip() or None,
+        "phones":     collect_indexed("phone", 8),
+        "emails":     collect_indexed("email", 5),
+    }
+
+    # Relatives: Tracerfy may use relatives_1_name + relatives_1_phone
+    # OR a single relatives_1 column with combined data. Try both.
+    relatives: list[dict[str, Any]] = []
+    for i in range(1, 9):  # up to 8 relatives per Enhanced spec
+        rel_name = (row.get(f"relative_{i}_name")
+                    or row.get(f"relatives_{i}_name")
+                    or row.get(f"relative_{i}")
+                    or "").strip()
+        if not rel_name:
+            continue
+        relatives.append({
+            "name":         rel_name,
+            "relationship": (row.get(f"relative_{i}_relationship")
+                             or row.get(f"relatives_{i}_relationship")
+                             or "").strip() or None,
+            "age":          (row.get(f"relative_{i}_age")
+                             or row.get(f"relatives_{i}_age")
+                             or "").strip() or None,
+            "phone":        (row.get(f"relative_{i}_phone")
+                             or row.get(f"relatives_{i}_phone")
+                             or "").strip() or None,
+            "email":        (row.get(f"relative_{i}_email")
+                             or row.get(f"relatives_{i}_email")
+                             or "").strip() or None,
+            "city":         (row.get(f"relative_{i}_city")
+                             or row.get(f"relatives_{i}_city")
+                             or "").strip() or None,
+            "state":        (row.get(f"relative_{i}_state")
+                             or row.get(f"relatives_{i}_state")
+                             or "").strip() or None,
+        })
+
+    # Aliases: list of past names
+    aliases = collect_indexed("alias", 5)
+
+    # Past addresses: variable column names. Try standard variants.
+    past_addresses: list[dict[str, str]] = []
+    for i in range(1, 6):  # up to 5 past addresses
+        street = (row.get(f"past_address_{i}_street")
+                  or row.get(f"prior_address_{i}_street")
+                  or row.get(f"past_address_{i}")
+                  or "").strip()
+        if not street:
+            continue
+        past_addresses.append({
+            "street": street,
+            "city":   (row.get(f"past_address_{i}_city")
+                       or row.get(f"prior_address_{i}_city")
+                       or "").strip(),
+            "state":  (row.get(f"past_address_{i}_state")
+                       or row.get(f"prior_address_{i}_state")
+                       or "").strip(),
+            "zip":    (row.get(f"past_address_{i}_zip")
+                       or row.get(f"prior_address_{i}_zip")
+                       or "").strip(),
+        })
+
+    return {
+        "owner":          owner,
+        "relatives":      relatives,
+        "aliases":        aliases,
+        "past_addresses": past_addresses,
+        # Keep the raw row so we can debug column-naming surprises
+        # without re-parsing later.
+        "_raw_csv_row":   row,
+    }
 
 
 def lookup_person(
@@ -182,9 +484,16 @@ def _do_lookup(
     find_owner: bool,
     first_name: str | None,
     last_name: str | None,
-    trace_type: str | None = None,
 ) -> dict[str, Any]:
     """Shared implementation for both lookup_owner() and lookup_person().
+
+    Note: this is for the SYNCHRONOUS endpoint only (5-credit standard
+    trace). The trace_type parameter is silently ignored by this
+    endpoint — we confirmed experimentally that 'enhanced', 'advanced',
+    and even invalid values all produce identical 5-credit results.
+    For Enhanced Skip Tracing (15 credits, with relatives), use
+    submit_enhanced_batch() instead, which targets the async batch
+    endpoint.
 
     Args:
         address: street address (e.g. "123 Main St")
@@ -195,10 +504,6 @@ def _do_lookup(
             similarly-named property in the same city.
         find_owner: True for owner search, False for person search.
         first_name, last_name: required when find_owner=False.
-        trace_type: optional Tracerfy trace mode. Standard call omits
-            this and gets the default ('normal'). Pass 'enhanced' for
-            the relatives-returning tier (15 credits). Pass 'advanced'
-            for 2-credit owner-identification on address only.
 
     Returns:
         A dict with the following shape:
@@ -247,12 +552,6 @@ def _do_lookup(
     if not find_owner:
         body["first_name"] = first_name
         body["last_name"] = last_name
-    if trace_type:
-        # Only set when caller explicitly requests a non-default tier
-        # — keeps backward compatibility with existing skip-trace
-        # callers that omit the parameter and get Tracerfy's default
-        # ('normal' / standard).
-        body["trace_type"] = trace_type
 
     url = _BASE_URL + _LOOKUP_PATH
     headers = {

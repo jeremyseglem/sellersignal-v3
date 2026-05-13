@@ -284,6 +284,8 @@ function ResultsDisplay({ result, onRetry }) {
         />
       ))}
 
+      <EnhancedSection result={result} />
+
       <div style={metaRowStyle}>
         <span>
           {source === 'fresh' ? 'Fresh trace' : `Cached ${timeAgo(retrieved_at)}`}
@@ -295,6 +297,123 @@ function ResultsDisplay({ result, onRetry }) {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+
+// Enhanced Skip Tracing section — renders relatives + aliases + past
+// addresses returned by Tracerfy's async batch endpoint. Two states:
+//   - pending  → "Searching for family contacts..." banner
+//   - complete → "Family decision-makers" list with up to 8 relatives
+// The PR's name (from the original searched_for context) is matched
+// against each relative name and highlighted as the most-likely
+// decision-maker.
+function EnhancedSection({ result }) {
+  const pending = result.enhanced_pending;
+  const data    = result.enhanced_data;
+  const searchedFor = result.searched_for || '';
+
+  if (pending) {
+    return (
+      <div style={enhancedPendingStyle}>
+        <div style={enhancedPendingTitleStyle}>
+          Searching for family contacts…
+        </div>
+        <div style={enhancedPendingBodyStyle}>
+          Looking for relatives who may be the personal representative
+          or other decision-makers. Typically 5–10 minutes. Refresh the
+          panel to check.
+        </div>
+      </div>
+    );
+  }
+
+  // No enhanced data and not pending → nothing to render (this is the
+  // common path for non-probate leads, where Enhanced never fires).
+  if (!data || typeof data !== 'object') return null;
+
+  const relatives = Array.isArray(data.relatives) ? data.relatives : [];
+  if (!relatives.length) {
+    return null;
+  }
+
+  // Match relatives against the PR's name (case-insensitive). The
+  // matched relative is shown first and gets a "Personal Representative"
+  // pill — that's the decision-maker we've been hunting for.
+  const prLower = searchedFor.toLowerCase().trim();
+  const isPrMatch = (rel) => {
+    if (!prLower) return false;
+    const n = (rel.name || '').toLowerCase();
+    if (!n) return false;
+    // Split PR name into parts and check both parts present in relative name
+    const parts = prLower.split(/\s+/).filter(p => p.length > 1);
+    return parts.every(p => n.includes(p));
+  };
+
+  const sorted = [...relatives].sort((a, b) => {
+    const aMatch = isPrMatch(a) ? 1 : 0;
+    const bMatch = isPrMatch(b) ? 1 : 0;
+    return bMatch - aMatch;
+  });
+
+  return (
+    <div style={enhancedSectionStyle}>
+      <div style={enhancedHeaderStyle}>Family decision-makers</div>
+      <div style={enhancedHeaderSubStyle}>
+        Relatives identified via Tracerfy Enhanced — useful when the PR
+        doesn&rsquo;t live at the property.
+      </div>
+      {sorted.map((rel, i) => (
+        <RelativeCard
+          key={`${rel.name}-${i}`}
+          relative={rel}
+          isPR={isPrMatch(rel)}
+        />
+      ))}
+    </div>
+  );
+}
+
+
+function RelativeCard({ relative, isPR }) {
+  return (
+    <div style={relativeCardStyle(isPR)}>
+      <div style={personHeaderStyle}>
+        <span style={personNameStyle}>{relative.name}</span>
+        <span style={personFlagsStyle}>
+          {isPR && (
+            <Pill color="var(--accent)" bg="var(--accent-dim)">
+              Personal Representative
+            </Pill>
+          )}
+          {relative.relationship && (
+            <Pill color="var(--text-secondary)" bg="var(--bg-input)">
+              {relative.relationship}
+            </Pill>
+          )}
+          {relative.age && (
+            <span style={personAgeStyle}>age {relative.age}</span>
+          )}
+        </span>
+      </div>
+      {(relative.city || relative.state) && (
+        <div style={relativeLocationStyle}>
+          {[relative.city, relative.state].filter(Boolean).join(', ')}
+        </div>
+      )}
+      {relative.phone && (
+        <div style={relativeContactRowStyle}>
+          <span style={contactLabelStyle}>phone</span>
+          <span style={contactValueStyle}>{formatPhone(relative.phone)}</span>
+        </div>
+      )}
+      {relative.email && (
+        <div style={relativeContactRowStyle}>
+          <span style={contactLabelStyle}>email</span>
+          <span style={contactValueStyle}>{relative.email}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -507,6 +626,96 @@ const fallbackBannerBodyStyle = {
   fontSize: 12,
   lineHeight: 1.55,
   color: 'var(--text-secondary)',
+};
+
+// ────────────────────────────────────────────────────────────────────
+// Enhanced Skip Tracing styles
+// ────────────────────────────────────────────────────────────────────
+
+const enhancedPendingStyle = {
+  padding: '12px 14px',
+  marginTop: 12,
+  background: 'var(--bg-input)',
+  border: '1px dashed var(--border)',
+  borderRadius: 'var(--radius-md, 6px)',
+};
+
+const enhancedPendingTitleStyle = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: 12,
+  fontWeight: 700,
+  color: 'var(--text)',
+  letterSpacing: '0.02em',
+  marginBottom: 4,
+};
+
+const enhancedPendingBodyStyle = {
+  fontFamily: 'var(--font-serif)',
+  fontSize: 12,
+  lineHeight: 1.55,
+  color: 'var(--text-secondary)',
+};
+
+const enhancedSectionStyle = {
+  marginTop: 16,
+  paddingTop: 14,
+  borderTop: '1px solid var(--border)',
+};
+
+const enhancedHeaderStyle = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: 'var(--text)',
+  marginBottom: 4,
+};
+
+const enhancedHeaderSubStyle = {
+  fontFamily: 'var(--font-serif)',
+  fontSize: 12,
+  lineHeight: 1.5,
+  color: 'var(--text-secondary)',
+  marginBottom: 10,
+};
+
+const relativeCardStyle = (isPR) => ({
+  padding: '10px 12px',
+  marginBottom: 8,
+  background: isPR ? 'var(--accent-dim)' : 'var(--bg-input)',
+  border: isPR ? '1px solid var(--accent)' : '1px solid var(--border)',
+  borderRadius: 'var(--radius-md, 6px)',
+});
+
+const relativeLocationStyle = {
+  fontFamily: 'var(--font-serif)',
+  fontSize: 12,
+  color: 'var(--text-secondary)',
+  marginTop: 4,
+};
+
+const relativeContactRowStyle = {
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 8,
+  marginTop: 4,
+};
+
+const contactLabelStyle = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '0.05em',
+  textTransform: 'uppercase',
+  color: 'var(--text-tertiary)',
+  minWidth: 40,
+};
+
+const contactValueStyle = {
+  fontFamily: 'var(--font-mono, monospace)',
+  fontSize: 12,
+  color: 'var(--text)',
 };
 
 const personCardStyle = (dim) => ({

@@ -303,6 +303,226 @@ def _log_skip_traced_event(supa, agent_id: str, pin: str, zip_code: str,
 
 
 # ════════════════════════════════════════════════════════════════════
+#  Enhanced Skip Tracing helpers (async batch via Tracerfy webhook)
+# ════════════════════════════════════════════════════════════════════
+
+def _pr_in_persons(pr: dict[str, str],
+                    persons: list[dict[str, Any]]) -> bool:
+    """Check whether the named PR appears in a list of persons (from a
+    standard Tracerfy result).
+
+    Tolerant matching: case-insensitive, ignores middle names/initials.
+    A PR named PARKER, JANICE matches "Janice Parker", "Janice M Parker",
+    or "Janice Marie Parker" in Tracerfy's response.
+
+    Used to decide whether to fire the more-expensive Enhanced batch
+    follow-up. If the PR is already in the standard result, Enhanced
+    would just duplicate work.
+    """
+    if not pr or not persons:
+        return False
+    pr_first = (pr.get("name_first") or "").strip().lower()
+    pr_last = (pr.get("name_last") or "").strip().lower()
+    if not pr_first or not pr_last:
+        return False
+    for p in persons:
+        # Tracerfy returns first_name + last_name; some rows also have
+        # a single 'full_name'. Check both.
+        f = (p.get("first_name") or "").strip().lower()
+        l = (p.get("last_name") or "").strip().lower()
+        if f == pr_first and l == pr_last:
+            return True
+        full = (p.get("full_name") or "").strip().lower()
+        if full and pr_first in full and pr_last in full:
+            return True
+    return False
+
+
+def _mark_enhanced_submitted(supa, *, agent_id: str, pin: str,
+                              queue_id: str) -> None:
+    """Update the cache row to record an in-flight Enhanced batch."""
+    try:
+        (supa.table("skip_trace_results_v3")
+            .update({
+                "enhanced_pending":      True,
+                "enhanced_queue_id":     queue_id,
+                "enhanced_submitted_at": _utc_now_iso(),
+                "enhanced_error":        None,
+            })
+            .eq("agent_id", agent_id)
+            .eq("pin", pin)
+            .execute())
+    except Exception as e:
+        # Non-fatal — the standard trace already succeeded. Log and
+        # move on; the webhook will still arrive but won't find a
+        # pending row to update. That's OK: we'll just log the orphan
+        # in the webhook handler.
+        log.warning("Could not mark enhanced submitted for %s: %s", pin, e)
+
+
+def _mark_enhanced_error(supa, *, agent_id: str, pin: str,
+                          error_msg: str) -> None:
+    """Record a submission error on the cache row for diagnostics."""
+    try:
+        (supa.table("skip_trace_results_v3")
+            .update({
+                "enhanced_pending": False,
+                "enhanced_error":   (error_msg or "")[:500],
+            })
+            .eq("agent_id", agent_id)
+            .eq("pin", pin)
+            .execute())
+    except Exception as e:
+        log.warning("Could not record enhanced error for %s: %s", pin, e)
+
+
+def _utc_now_iso() -> str:
+    """UTC timestamp in ISO format. Defined here so the helper file
+    doesn't need to import datetime at the top scope."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Tracerfy webhook handler
+# ════════════════════════════════════════════════════════════════════
+#
+# Tracerfy POSTs to our webhook URL when a batch trace completes. The
+# URL must be configured ONCE in the Tracerfy account dashboard. We
+# protect it with a path-based secret token so unauthenticated callers
+# can't fake completion events.
+#
+# Expected payload shape (per Tracerfy docs):
+#   {
+#     "id": 365,
+#     "created_at": "2025-07-13T18:55:02.962332Z",
+#     "pending": false,
+#     "download_url": "https://tracerfy.nyc3.cdn.digitaloceanspaces.com/...csv",
+#     "rows_uploaded": 1,
+#     "credits_deducted": 15,
+#     "queue_type": "api",
+#     "trace_type": "enhanced",
+#     "credits_per_lead": 15
+#   }
+
+_TRACERFY_WEBHOOK_SECRET = os.environ.get("TRACERFY_WEBHOOK_SECRET", "")
+
+
+@router.post("/skip-trace/tracerfy-webhook/{secret}")
+async def tracerfy_webhook(secret: str, payload: dict[str, Any]):
+    """Receive completed Enhanced batch results from Tracerfy.
+
+    Authentication: path-based secret. Tracerfy doesn't sign webhook
+    requests, so we use a long random token in the URL path as a
+    shared secret. The full webhook URL is configured once in the
+    Tracerfy dashboard.
+
+    Side effects:
+      - Fetches the CSV from payload['download_url']
+      - Parses the first row (we submit single-address batches)
+      - Updates the matching skip_trace_results_v3 row by queue_id
+      - Idempotent: re-delivery of the same queue_id is safe
+
+    Returns:
+      {"status": "ok"} on success
+      {"status": "ignored"} if no matching cache row (orphan webhook)
+      {"status": "auth_failed"} with 404 on wrong secret
+    """
+    # Path-secret auth. Return 404 (not 401) so probes can't tell
+    # whether the endpoint exists.
+    if not _TRACERFY_WEBHOOK_SECRET or secret != _TRACERFY_WEBHOOK_SECRET:
+        raise HTTPException(404, "Not found")
+
+    queue_id = str(payload.get("id") or payload.get("queue_id") or "")
+    download_url = payload.get("download_url") or ""
+
+    if not queue_id:
+        log.warning("Tracerfy webhook missing queue id: %s", payload)
+        return {"status": "ignored", "reason": "no_queue_id"}
+
+    supa = supabase_admin()
+
+    # Locate the matching cache row by queue_id. There may be more
+    # than one if the same address was traced for multiple agents,
+    # but each row carries its own queue_id (unique per submission).
+    try:
+        rows = (supa.table("skip_trace_results_v3")
+                  .select("*")
+                  .eq("enhanced_queue_id", queue_id)
+                  .execute()
+                  .data or [])
+    except Exception as e:
+        log.warning("Webhook supabase lookup failed for queue %s: %s",
+                    queue_id, e)
+        return {"status": "error", "reason": "supabase_lookup_failed"}
+
+    if not rows:
+        # Orphan webhook — could be a re-delivery after we already
+        # processed and cleared the row, or a submission we never
+        # successfully recorded. Either way, 200 OK so Tracerfy
+        # doesn't retry indefinitely.
+        log.info("Tracerfy webhook for unknown queue %s — ignoring",
+                 queue_id)
+        return {"status": "ignored", "reason": "no_matching_row"}
+
+    # Fetch and parse the results CSV
+    try:
+        csv_rows = tracerfy.fetch_enhanced_results(download_url)
+    except tracerfy.TracerfyError as e:
+        # Mark each pending row with the error so we don't leave them
+        # spinning in the UI forever.
+        for r in rows:
+            try:
+                (supa.table("skip_trace_results_v3")
+                    .update({
+                        "enhanced_pending":      False,
+                        "enhanced_completed_at": _utc_now_iso(),
+                        "enhanced_error":        f"CSV fetch/parse failed: {e.message}"[:500],
+                    })
+                    .eq("id", r["id"])
+                    .execute())
+            except Exception:
+                pass
+        return {"status": "error", "reason": "csv_fetch_failed"}
+
+    if not csv_rows:
+        # Tracerfy returned an empty CSV — the trace completed but
+        # found no data. Mark the row complete with empty enhanced_data
+        # so the UI stops the "searching..." banner.
+        for r in rows:
+            (supa.table("skip_trace_results_v3")
+                .update({
+                    "enhanced_pending":      False,
+                    "enhanced_completed_at": _utc_now_iso(),
+                    "enhanced_data":         {},
+                })
+                .eq("id", r["id"])
+                .execute())
+        return {"status": "ok", "rows_updated": len(rows), "data": "empty"}
+
+    # Single-address batch → single CSV row
+    parsed = tracerfy.parse_enhanced_row(csv_rows[0])
+
+    for r in rows:
+        try:
+            (supa.table("skip_trace_results_v3")
+                .update({
+                    "enhanced_pending":      False,
+                    "enhanced_completed_at": _utc_now_iso(),
+                    "enhanced_data":         parsed,
+                    "enhanced_error":        None,
+                })
+                .eq("id", r["id"])
+                .execute())
+        except Exception as e:
+            log.warning("Webhook update failed for row %s: %s",
+                        r.get("id"), e)
+
+    return {"status": "ok", "rows_updated": len(rows),
+            "relatives_found": len(parsed.get("relatives") or [])}
+
+
+# ════════════════════════════════════════════════════════════════════
 #  Status endpoint — ack state + monthly usage
 # ════════════════════════════════════════════════════════════════════
 
@@ -447,13 +667,37 @@ async def cached(pin: str,
         return {"cached": False}
 
     return {
-        "cached":       True,
-        "source":       "cache",
-        "hit":          row["hit"],
-        "persons":      row["persons"] or [],
-        "retrieved_at": row["created_at"],
-        "expires_at":   row["expires_at"],
+        "cached":           True,
+        "source":           "cache",
+        "hit":              row["hit"],
+        "persons":          row["persons"] or [],
+        "retrieved_at":     row["created_at"],
+        "expires_at":       row["expires_at"],
+        # Enhanced data — present once the async Tracerfy batch webhook
+        # has fired. Frontend shows the "Family decision-makers"
+        # section when enhanced_data is non-null and non-empty.
+        "enhanced_pending": _enhanced_still_pending(row),
+        "enhanced_data":    row.get("enhanced_data"),
     }
+
+
+def _enhanced_still_pending(row: dict[str, Any]) -> bool:
+    """True if Enhanced was submitted but the webhook hasn't fired yet
+    AND we're within the expected wait window. After 30 min we treat
+    the submission as silently failed and stop showing the spinner.
+    """
+    if not row.get("enhanced_pending"):
+        return False
+    submitted = row.get("enhanced_submitted_at")
+    if not submitted:
+        return False
+    try:
+        from datetime import datetime, timezone, timedelta
+        ts = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        age = datetime.now(timezone.utc) - ts
+        return age < timedelta(minutes=30)
+    except Exception:
+        return False
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -528,6 +772,8 @@ async def lookup(payload: LookupRequest,
                 "expires_at":       cached["expires_at"],
                 "monthly_used":     used,
                 "monthly_cap":      None if is_op_cache else _MONTHLY_CAP,
+                "enhanced_pending": _enhanced_still_pending(cached),
+                "enhanced_data":    cached.get("enhanced_data"),
             }
 
     # ── Step 3: monthly cap ────────────────────────────────────────
@@ -668,6 +914,41 @@ async def lookup(payload: LookupRequest,
         persons=provider_result["persons"],
     )
 
+    # ── Step 6.5: Enhanced Skip Tracing follow-up ──────────────────
+    # If this is a probate lead with a known PR, and the standard
+    # synchronous trace did NOT return the PR, fire an async Enhanced
+    # batch job. Enhanced ($0.30/hit) returns up to 8 relatives — one
+    # of whom is often the PR who lives at a different address. The
+    # result arrives via webhook 5-30 min later and updates this same
+    # cache row.
+    #
+    # We only spend the extra credits when:
+    #   - probate lead (pr is not None — only probate has PRs)
+    #   - PR is not already in the standard result (no need to spend
+    #     more if we already have their contact info)
+    enhanced_pending = False
+    if pr and not _pr_in_persons(pr, provider_result.get("persons") or []):
+        try:
+            batch = tracerfy.submit_enhanced_batch(
+                address=address, city=city, state=state, zip_code=zip_code,
+                first_name=pr["name_first"], last_name=pr["name_last"],
+            )
+            _mark_enhanced_submitted(
+                supa, agent_id=user.id, pin=pin,
+                queue_id=batch["queue_id"],
+            )
+            enhanced_pending = True
+        except tracerfy.TracerfyError as e:
+            # Enhanced submission failed — log but do not surface to
+            # agent. The standard trace already returned successfully,
+            # and the agent shouldn't be confused by a partial failure.
+            # The cache row stays without enhanced_pending=true, so
+            # the frontend just doesn't show the "searching for
+            # relatives" banner.
+            _mark_enhanced_error(
+                supa, agent_id=user.id, pin=pin, error_msg=e.message,
+            )
+
     # ── Step 7: log skip_traced event ──────────────────────────────
     _log_skip_traced_event(
         supa, user.id, pin, zip_code,
@@ -690,4 +971,5 @@ async def lookup(payload: LookupRequest,
         "search_mode":      provider_result.get("search_mode"),
         "searched_for":     (f"{pr['name_first']} {pr['name_last']}"
                              if pr else None),
+        "enhanced_pending": enhanced_pending,
     }
