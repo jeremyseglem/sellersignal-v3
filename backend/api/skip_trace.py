@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 from backend.api.auth import user_from_authorization
 from backend.api.db import get_supabase_client
 from backend.integrations import tracerfy
+from backend.integrations import web_research
 from backend.integrations.tracerfy import TracerfyError
 
 
@@ -202,6 +203,40 @@ def _get_pr_for_pin(supa, pin: str) -> dict[str, str] | None:
         # Any DB hiccup here falls through to owner-search rather than
         # blocking the trace entirely.
         return None
+
+
+def _get_deceased_info_for_pin(
+    supa, pin: str
+) -> tuple[str, str, str]:
+    """For a probate parcel, return (deceased_name, city, state) for
+    the web-research orchestrator. The deceased's name comes from the
+    parcel's owner_name field (the dead homeowner is the title owner).
+    City/state come from the parcel address.
+
+    Returns ("", "", "") on any miss — caller treats that as "can't
+    run web research" and falls through to household fallback.
+    """
+    try:
+        res = (supa.table("parcels_v3")
+                 .select("owner_name, city, state")
+                 .eq("pin", pin)
+                 .limit(1)
+                 .execute())
+        if not res.data:
+            return "", "", ""
+        row = res.data[0]
+        name = (row.get("owner_name") or "").strip()
+        city = (row.get("city") or "").strip()
+        state = (row.get("state") or "WA").strip().upper()
+        # Owner names in parcels_v3 sometimes carry markers like "&"
+        # (joint owners) or trust suffixes. Take the chunk before
+        # an "&" — for joint ownership the deceased is usually the
+        # first name listed.
+        if "&" in name:
+            name = name.split("&", 1)[0].strip()
+        return name, city, state
+    except Exception:
+        return "", "", ""
 
 
 def _cached_result_if_fresh(supa, agent_id: str, pin: str
@@ -587,18 +622,66 @@ async def lookup(payload: LookupRequest,
                 address=address, city=city, state=state, zip_code=zip_code,
             )
 
-            # ── Household fallback ──────────────────────────────────
+            # ── Web-research path (out-of-state PR finder) ──────────
             # If the PR-name search missed, the PR likely doesn't live
-            # at the property — common when the PR is an adult child
-            # living elsewhere. Retry with find_owner=true to find
-            # anyone else at the address (typically the surviving
-            # spouse or other family members at the home). They are
-            # NOT the decision-maker, but a handwritten letter often
-            # gets forwarded by household members to the PR.
+            # at the property. Before falling back to household
+            # contacts (who can only forward a letter), try to find
+            # the PR's actual home address via public web sources:
+            #   - SerpAPI obit search → survivor list with cities
+            #   - Match the named PR to a survivor → get their city
+            #   - SerpAPI candidate-address search → street addresses
+            #     from public-records aggregator snippets
+            #   - Tracerfy verification → confirm the candidate is
+            #     the right person AND get DNC-scrubbed contact info
             #
-            # Filter out anyone flagged deceased — that removes the
-            # dead homeowner who would otherwise dominate results in
-            # a probate context. Each remaining person is tagged with
+            # When this succeeds, the agent gets the actual decision-
+            # maker, not a household forwarder. This is the bigger
+            # value-add — out-of-state PRs are typically more
+            # motivated to sell than in-property family.
+            #
+            # Cost: $0.02 on miss (search costs only, no Tracerfy
+            # hits), ~$0.12 on hit (1 Tracerfy verification credit).
+            if not provider_result["hit"]:
+                deceased_name, deceased_city, deceased_state = (
+                    _get_deceased_info_for_pin(supa, pin)
+                )
+                if deceased_name and deceased_city:
+                    try:
+                        wr_result = web_research.find_pr_via_web_research(
+                            pr_first=pr["name_first"],
+                            pr_last=pr["name_last"],
+                            deceased_name=deceased_name,
+                            deceased_city=deceased_city,
+                            deceased_state=deceased_state or "WA",
+                        )
+                    except Exception as e:
+                        # web_research already swallows internal errors
+                        # and returns None — but be doubly safe so a
+                        # bug there can't break the standard skip-trace
+                        # flow.
+                        log.warning(
+                            "web_research raised unexpectedly: %s", e
+                        )
+                        wr_result = None
+                    if wr_result and wr_result.get("hit"):
+                        # Aggregate credits across the PR-name miss
+                        # (0 credits) and the web_research verification.
+                        wr_result["credits_deducted"] = (
+                            provider_result.get("credits_deducted", 0)
+                            + wr_result.get("credits_deducted", 0)
+                        )
+                        provider_result = wr_result
+
+            # ── Household fallback ──────────────────────────────────
+            # If the PR-name search missed AND web_research couldn't
+            # find a verified address, fall back to looking up whoever
+            # IS at the property. They are NOT the decision-maker, but
+            # a handwritten letter often gets forwarded by household
+            # members to the PR.
+            #
+            # Filter out anyone flagged deceased — removes the dead
+            # homeowner who would otherwise dominate results in a
+            # probate context. Each remaining person is tagged with
             # _household_fallback=True so the UI can render the
             # "household contact, not PR directly" framing.
             #

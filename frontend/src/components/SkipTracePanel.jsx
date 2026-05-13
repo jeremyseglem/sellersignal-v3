@@ -194,6 +194,13 @@ function ResultsDisplay({ result, onRetry }) {
   const isHouseholdFallback = Array.isArray(persons)
     && persons.some((p) => p && p._household_fallback);
 
+  // Detect web-research: server marks each person found via the
+  // obit → public-records → Tracerfy-verification chain with
+  // _web_research=true. This is the big win for probate leads — the
+  // PR's actual home address found and verified.
+  const isWebResearch = Array.isArray(persons)
+    && persons.some((p) => p && p._web_research);
+
   if (!hit || !persons.length) {
     // Build a helpful miss message. If we searched for a specific
     // named PR (search_mode='person'), the miss almost certainly
@@ -211,10 +218,14 @@ function ResultsDisplay({ result, onRetry }) {
         <div style={missBodyStyle}>
           {isPersonSearch ? (
             <>
-              The personal representative likely lives at a different
-              address, and no other household members were reachable
-              at the property. Search probate court records for the
-              PR&rsquo;s home address.
+              The personal representative doesn&rsquo;t live at the
+              property, and no household members or obituary references
+              were found in public records. If the death is very recent
+              (under two weeks), re-check this lead in a few weeks —
+              an online obituary may surface and unlock the PR&rsquo;s
+              address. Otherwise, the deceased&rsquo;s family may not
+              have an online footprint; a handwritten letter to the
+              property address remains a reasonable path.
             </>
           ) : (
             <>
@@ -251,7 +262,24 @@ function ResultsDisplay({ result, onRetry }) {
 
   return (
     <div>
-      {isHouseholdFallback && (
+      {isWebResearch && (
+        <div style={webResearchBannerStyle}>
+          <div style={fallbackBannerTitleStyle}>
+            {result.searched_for
+              ? `${result.searched_for} — found via public records`
+              : 'Personal representative — found via public records'}
+          </div>
+          <div style={fallbackBannerBodyStyle}>
+            The PR doesn&rsquo;t live at the property. Their home
+            address was identified through the deceased&rsquo;s
+            obituary and verified by skip-trace. Contact info below is
+            for the actual decision-maker — likely your highest-value
+            path on this lead.
+          </div>
+        </div>
+      )}
+
+      {isHouseholdFallback && !isWebResearch && (
         <div style={fallbackBannerStyle}>
           <div style={fallbackBannerTitleStyle}>
             {result.searched_for
@@ -281,6 +309,7 @@ function ResultsDisplay({ result, onRetry }) {
           key={`${p.full_name}-${i}`}
           person={p}
           isHouseholdFallback={!!p._household_fallback}
+          isWebResearch={!!p._web_research}
         />
       ))}
 
@@ -301,7 +330,7 @@ function ResultsDisplay({ result, onRetry }) {
 
 
 
-function PersonCard({ person, isHouseholdFallback }) {
+function PersonCard({ person, isHouseholdFallback, isWebResearch }) {
   const dim = person.deceased;
   return (
     <div style={personCardStyle(dim)}>
@@ -310,7 +339,11 @@ function PersonCard({ person, isHouseholdFallback }) {
           {person.full_name || `${person.first_name || ''} ${person.last_name || ''}`.trim()}
         </span>
         <span style={personFlagsStyle}>
-          {isHouseholdFallback ? (
+          {isWebResearch ? (
+            <Pill color="var(--accent)" bg="var(--accent-dim)">
+              Personal Representative
+            </Pill>
+          ) : isHouseholdFallback ? (
             <Pill color="var(--text-secondary)" bg="var(--bg-input)">
               Household
             </Pill>
@@ -490,6 +523,19 @@ const fallbackBannerStyle = {
   padding: '10px 12px',
   background: 'var(--bg-input)',
   border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-md, 6px)',
+  marginBottom: 10,
+};
+
+// Web-research banner. Renders above the persons list when the PR
+// was found via the obit→public-records→Tracerfy-verification chain.
+// Gold accent border signals "this is the win case" vs the neutral
+// household-fallback banner. The PR's actual contact info is the
+// highest-value outcome on a probate lead.
+const webResearchBannerStyle = {
+  padding: '10px 12px',
+  background: 'var(--accent-dim)',
+  border: '1px solid var(--accent)',
   borderRadius: 'var(--radius-md, 6px)',
   marginBottom: 10,
 };
