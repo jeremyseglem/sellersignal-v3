@@ -213,7 +213,7 @@ function ZipCard({ zip, role, myZip, onClickAvailable }) {
           marginTop: 6, fontFamily: 'var(--font-sans)',
         }}>
           {(zip.parcel_count ?? 0).toLocaleString()} parcels ·
-          {' '}{zip.current_call_now_count ?? 0} on this week&rsquo;s CALL NOW
+          {' '}{zip.contact_now_total ?? zip.current_call_now_count ?? 0} on this week&rsquo;s CONTACT NOW
         </div>
       </div>
       <div style={{

@@ -73,9 +73,12 @@ def _live_zips() -> list[dict]:
     {zip_code, city, state, parcel_count, current_call_now_count} —
     tolerant to missing fields."""
     supa = get_supabase_client()
+    # NOTE: select('*') instead of explicit columns so this endpoint
+    # survives a deploy that lands before migration 022 (per-bucket
+    # contact_now_* columns) is applied to Supabase. The Python code
+    # tolerates missing fields via `or 0` fallbacks.
     res = (supa.table('zip_coverage_v3')
-           .select('zip_code, city, state, parcel_count, '
-                   'current_call_now_count, investigated_count')
+           .select('*')
            .eq('status', 'live')
            .execute())
     return res.data or []
@@ -252,10 +255,45 @@ async def territory_status_endpoint(
     live = _live_zips()
     claims = _claims_map()
 
+    def _buckets_for(z: dict) -> dict:
+        """Per-bucket Contact Now counts, with the total summed for
+        the popup header. None → 0 for any not-yet-populated ZIP."""
+        probate  = z.get('contact_now_probate')  or 0
+        divorce  = z.get('contact_now_divorce')  or 0
+        trust    = z.get('contact_now_trust')    or 0
+        llc      = z.get('contact_now_llc')      or 0
+        absentee = z.get('contact_now_absentee') or 0
+        tenure   = z.get('contact_now_tenure')   or 0
+        # Cap each bucket display at 100 to match the briefing's per-bucket
+        # cap — the agent works the top 100, the rest are watch list.
+        # Total is the sum of caps, so a fully populated ZIP shows 600.
+        def cap(n): return n if n < 100 else 100
+        capped = {
+            'probate':  cap(probate),
+            'divorce':  cap(divorce),
+            'trust':    cap(trust),
+            'llc':      cap(llc),
+            'absentee': cap(absentee),
+            'tenure':   cap(tenure),
+        }
+        return {
+            'contact_now_buckets':       capped,
+            'contact_now_total':         sum(capped.values()),
+            'contact_now_buckets_raw': {
+                'probate':  probate,
+                'divorce':  divorce,
+                'trust':    trust,
+                'llc':      llc,
+                'absentee': absentee,
+                'tenure':   tenure,
+            },
+        }
+
     zips_out = []
     for z in live:
         zip_code = z['zip_code']
         claim = claims.get(zip_code)
+        bucket_fields = _buckets_for(z)
 
         if role == 'operator':
             # Operators see everyone's claims but don't claim themselves.
@@ -267,6 +305,7 @@ async def territory_status_endpoint(
                 'parcel_count':            z.get('parcel_count'),
                 'current_call_now_count':  z.get('current_call_now_count') or 0,
                 'status':                  status,
+                **bucket_fields,
             }
             if claim:
                 entry['claimed_by_name'] = claim['full_name']
@@ -286,6 +325,7 @@ async def territory_status_endpoint(
                 'parcel_count':            z.get('parcel_count'),
                 'current_call_now_count':  z.get('current_call_now_count') or 0,
                 'status':                  status,
+                **bucket_fields,
             }
             if status == 'claimed_by_other':
                 entry['claimed_by_name'] = claim['full_name']

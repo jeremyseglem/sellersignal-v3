@@ -347,7 +347,13 @@ function StatsCard({
   };
   const cfg = styleByStatus[status];
   const parcels = zipRecord?.parcel_count || 0;
-  const callNow = zipRecord?.current_call_now_count || 0;
+  // Contact Now: prefer the per-bucket total from the new API field;
+  // fall back to legacy current_call_now_count (probate-only) for
+  // backward compatibility with payloads that predate migration 022.
+  const contactTotal = zipRecord?.contact_now_total
+                    ?? zipRecord?.current_call_now_count
+                    ?? 0;
+  const buckets = zipRecord?.contact_now_buckets || null;
   const city    = zipRecord?.city || '—';
 
   // Slide-in transform. Off-state pushes the card 20px off-screen in
@@ -380,8 +386,11 @@ function StatsCard({
 
         <div style={STYLES.cardBody}>
           <StatRow label="Parcels in territory" value={parcels.toLocaleString()} />
-          <StatRow label="Call now leads" value={callNow.toLocaleString()}
-                   emphasis={callNow > 0} muted={callNow === 0} />
+          <StatRow label="Contact now leads" value={contactTotal.toLocaleString()}
+                   emphasis={contactTotal > 0} muted={contactTotal === 0} />
+          {buckets && contactTotal > 0 && (
+            <BucketBreakdown buckets={buckets} />
+          )}
         </div>
 
         <div style={STYLES.cardFoot}>
@@ -390,7 +399,12 @@ function StatsCard({
               Open this week’s briefing
             </button>
           )}
-          {status === 'claimed' && (
+          {status === 'claimed' && role === 'operator' && (
+            <button onClick={onOpenBriefing} style={STYLES.btnPrimaryDark}>
+              Open briefing
+            </button>
+          )}
+          {status === 'claimed' && role !== 'operator' && (
             <NotifyMeForm zip={zip} defaultEmail={defaultEmail} />
           )}
           {status === 'available' && role === 'agent' && !agentHasTerritory && (
@@ -429,6 +443,55 @@ function StatRow({ label, value, emphasis, muted }) {
         ...(emphasis ? { color: '#8B6914', fontWeight: 500 } : {}),
         ...(muted    ? { color: '#9A8C76' } : {}),
       }}>{value}</span>
+    </div>
+  );
+}
+
+// ─── Per-bucket Contact Now breakdown ─────────────────────────────────
+// Two rows of three buckets each, label · count. Compact so the popup
+// stays the same height. Zero-count buckets are dimmed so the eye
+// goes to where the leads actually are.
+function BucketBreakdown({ buckets }) {
+  const items = [
+    { key: 'probate',  label: 'Probate'  },
+    { key: 'divorce',  label: 'Divorce'  },
+    { key: 'trust',    label: 'Trust'    },
+    { key: 'llc',      label: 'LLC'      },
+    { key: 'absentee', label: 'Absentee' },
+    { key: 'tenure',   label: 'Tenure'   },
+  ];
+  return (
+    <div style={{
+      display:           'grid',
+      gridTemplateColumns: '1fr 1fr 1fr',
+      gap:                '6px 12px',
+      marginTop:          '8px',
+      paddingTop:         '8px',
+      borderTop:          '1px solid rgba(155, 137, 99, 0.18)',
+    }}>
+      {items.map(({ key, label }) => {
+        const count = buckets?.[key] || 0;
+        const zero  = count === 0;
+        return (
+          <div key={key} style={{
+            display:        'flex',
+            justifyContent: 'space-between',
+            fontFamily:     'var(--font-sans)',
+            fontSize:       11,
+            letterSpacing:  '0.02em',
+            color:          zero ? '#9A8C76' : '#5C4F3A',
+            opacity:        zero ? 0.55 : 1,
+          }}>
+            <span style={{ textTransform: 'uppercase' }}>{label}</span>
+            <span style={{
+              fontWeight: zero ? 400 : 600,
+              color:      zero ? '#9A8C76' : '#8B6914',
+            }}>
+              {count}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

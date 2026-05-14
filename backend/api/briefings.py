@@ -837,17 +837,32 @@ async def get_briefing(
 
         # ── Snapshot writeback ─────────────────────────────────────
         # The territories list page reads zip_coverage_v3.current_call_now_count
-        # as a fast at-a-glance counter. Updating that snapshot only when
-        # refresh-counts runs manually means it drifts from the live
-        # briefing playbook the moment any data changes. By writing the
-        # snapshot here on every fresh build, the two converge by
-        # construction: whenever an agent rebuilds a briefing (cache miss
-        # or week rollover), the territories page picks up the new count
-        # on its next load. Idempotent and small (single-row UPDATE).
+        # (legacy: probate-only) plus the six contact_now_* columns
+        # (per-bucket pre-cap totals) as fast at-a-glance counters.
+        # Updating these snapshots only when refresh-counts runs manually
+        # means they drift from the live briefing playbook the moment any
+        # data changes. By writing them here on every fresh build, the
+        # two converge by construction: whenever an agent rebuilds a
+        # briefing (cache miss or week rollover), the territories page
+        # picks up the new counts on its next load.
+        # Idempotent and small (single-row UPDATE).
         try:
             new_count = len(call_now_picks)
+            update_payload = {
+                'current_call_now_count': new_count,
+                # Per-bucket pre-cap totals from contact_now_totals.
+                # weekly_selector.count_contact_now_eligible_per_bucket
+                # returns keys: probate, divorce, aging_trust,
+                # llc_long_hold, absentee, long_tenure.
+                'contact_now_probate':  int(contact_now_totals.get('probate', 0)),
+                'contact_now_divorce':  int(contact_now_totals.get('divorce', 0)),
+                'contact_now_trust':    int(contact_now_totals.get('aging_trust', 0)),
+                'contact_now_llc':      int(contact_now_totals.get('llc_long_hold', 0)),
+                'contact_now_absentee': int(contact_now_totals.get('absentee', 0)),
+                'contact_now_tenure':   int(contact_now_totals.get('long_tenure', 0)),
+            }
             (supa.table('zip_coverage_v3')
-             .update({'current_call_now_count': new_count})
+             .update(update_payload)
              .eq('zip_code', zip_code)
              .execute())
         except Exception:

@@ -303,13 +303,26 @@ async def refresh_coverage_counts(
             try:
                 playbook = payload.get('playbook', {}) or {}
                 new_count = len(playbook.get('call_now', []) or [])
+                # Pre-cap per-bucket totals (same source as the drive-by
+                # writeback in briefings.py). Falls back to {} if a
+                # cached briefing predates the bucket work.
+                totals = payload.get('playbook', {}).get('contact_now_totals') or {}
             except Exception as e:
                 errors.append({'zip_code': z, 'error': f"playbook parse failed: {str(e)[:200]}"})
                 continue
 
             try:
+                update_payload = {
+                    'current_call_now_count': new_count,
+                    'contact_now_probate':  int(totals.get('probate', 0)),
+                    'contact_now_divorce':  int(totals.get('divorce', 0)),
+                    'contact_now_trust':    int(totals.get('aging_trust', 0)),
+                    'contact_now_llc':      int(totals.get('llc_long_hold', 0)),
+                    'contact_now_absentee': int(totals.get('absentee', 0)),
+                    'contact_now_tenure':   int(totals.get('long_tenure', 0)),
+                }
                 (supa.table('zip_coverage_v3')
-                 .update({'current_call_now_count': new_count})
+                 .update(update_payload)
                  .eq('zip_code', z)
                  .execute())
             except Exception as e:
@@ -321,6 +334,14 @@ async def refresh_coverage_counts(
                 'old_count': old_count,
                 'new_count': new_count,
                 'delta':     new_count - old_count,
+                'buckets':   {
+                    'probate':  int(totals.get('probate', 0)),
+                    'divorce':  int(totals.get('divorce', 0)),
+                    'trust':    int(totals.get('aging_trust', 0)),
+                    'llc':      int(totals.get('llc_long_hold', 0)),
+                    'absentee': int(totals.get('absentee', 0)),
+                    'tenure':   int(totals.get('long_tenure', 0)),
+                },
             })
 
     return {
