@@ -928,8 +928,7 @@ async def diag_contact_now_buckets(
                               "owner_city, tenure_years, total_value, "
                               "address, city, state, zip_code, "
                               "is_absentee, is_out_of_state, band, "
-                              "signal_family, archetype, rank_score, "
-                              "calibrated_rank_score, timeline_months")
+                              "signal_family")
                       .eq("zip_code", zip_code)
                       .range(offset, offset + 999)
                       .execute().data or [])
@@ -954,7 +953,6 @@ async def diag_contact_now_buckets(
                 'pin':          p.get('pin'),
                 'band':         float(p.get('band') or 0),
                 'signal_family': p.get('signal_family'),
-                'archetype':    p.get('archetype'),
                 'address':      p.get('address'),
                 'owner':        p.get('owner_name'),
                 'owner_type':   p.get('owner_type'),
@@ -964,7 +962,7 @@ async def diag_contact_now_buckets(
                 'value':        p.get('total_value') or 0,
                 'zip':          p.get('zip_code'),
                 'tenure_years': p.get('tenure_years'),
-                'rank_score':   p.get('rank_score') or (p.get('total_value') or 0),
+                'rank_score':   p.get('total_value') or 0,
                 'investigation': None,  # no overlay in this diag path
             })
 
