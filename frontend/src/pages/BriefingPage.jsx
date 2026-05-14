@@ -517,12 +517,11 @@ function BucketTabs({ buckets, counts, active, onSelect }) {
   return (
     <div style={{
       display: 'flex',
+      flexWrap: 'wrap',
       gap: 4,
-      overflowX: 'auto',
       padding: '0 0 var(--space-md) 0',
       marginBottom: 'var(--space-sm)',
       borderBottom: '1px solid var(--border)',
-      scrollbarWidth: 'thin',
     }}>
       {buckets.map(({ key, label }) => {
         const count = counts[key] || 0;
@@ -534,9 +533,9 @@ function BucketTabs({ buckets, counts, active, onSelect }) {
             type="button"
             onClick={() => onSelect(key)}
             style={{
-              flex: '1 1 0',
+              flex: '0 1 auto',
               minWidth: 0,
-              padding: '7px 10px',
+              padding: '7px 12px',
               fontFamily: 'var(--font-sans)',
               fontSize: 12,
               fontWeight: isActive ? 700 : 500,
