@@ -113,7 +113,7 @@ function Hero() {
           fontFamily: 'var(--font-sans)',
           fontStyle: 'italic',
         }}>
-          Eleven territories live. Eight currently held. Three open.
+          Private &middot; by invitation &middot; one agent per ZIP.
         </div>
       </div>
     </section>
@@ -470,49 +470,8 @@ function Territory() {
           agent and calls it ownership. Additional markets opening
           selectively.
         </p>
-
-        <div style={{
-          display: 'flex',
-          gap: 'var(--space-2xl)',
-          paddingTop: 'var(--space-md)',
-          borderTop: '1px solid var(--border)',
-          flexWrap: 'wrap',
-        }}>
-          <Stat label="Live" value="11" />
-          <Stat label="Held" value="8" />
-          <Stat label="Open" value="3" />
-        </div>
       </div>
     </section>
-  );
-}
-
-
-function Stat({ label, value }) {
-  return (
-    <div>
-      <div style={{
-        fontFamily: 'var(--font-display)',
-        fontSize: 44,
-        fontWeight: 600,
-        color: 'var(--text)',
-        lineHeight: 1,
-        letterSpacing: '-0.02em',
-      }}>
-        {value}
-      </div>
-      <div style={{
-        fontSize: 10,
-        fontWeight: 700,
-        color: 'var(--text-tertiary)',
-        letterSpacing: '0.14em',
-        textTransform: 'uppercase',
-        fontFamily: 'var(--font-sans)',
-        marginTop: 8,
-      }}>
-        {label}
-      </div>
-    </div>
   );
 }
 
@@ -537,7 +496,7 @@ function FooterCTA() {
           letterSpacing: '-0.01em',
           marginBottom: 'var(--space-md)',
         }}>
-          Currently in private beta. Three territories open.
+          Access is by invitation.
         </h2>
 
         <p style={{
@@ -547,8 +506,9 @@ function FooterCTA() {
           lineHeight: 1.7,
           marginBottom: 'var(--space-xl)',
         }}>
-          Access is by invitation. Reach out and we&rsquo;ll send you the
-          briefing for one week to see for yourself.
+          We&rsquo;re selective about the agents we work with and the
+          markets we open. If your territory isn&rsquo;t live yet, we
+          can tell you when it will be.
         </p>
 
         <div style={{
