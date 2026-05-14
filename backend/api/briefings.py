@@ -656,10 +656,19 @@ async def get_briefing(
         contact_now_buckets = _ws.select_contact_now_buckets(
             leads, bucket_exclude_pins, bucket_used_owner_keys)
 
-        # Total counts per bucket BEFORE the 100-cap is applied —
-        # used by Territories page to show "X total available".
-        contact_now_totals = _ws.count_contact_now_eligible_per_bucket(
-            leads, set())  # fresh exclude set, count is unbiased
+        # Per-bucket counts — derived from the rendered (post-precedence,
+        # post-cap) buckets directly. This guarantees the counts the
+        # Territories page shows exactly match what the agent sees in
+        # the briefing UI tabs. We previously called a parallel counter
+        # (count_contact_now_eligible_per_bucket) that re-implemented
+        # the filters and quietly diverged — probate counter required a
+        # signal_family flag the rendered selector doesn't, returning 0
+        # while the rendered bucket had 60 leads. Single source of truth
+        # eliminates that class of bug.
+        contact_now_totals = {
+            bucket_name: len(bucket_leads)
+            for bucket_name, bucket_leads in contact_now_buckets.items()
+        }
 
         # Resolve copy + investigation overlay for each bucket lead,
         # same as call_now leads. The frontend renders these with the
