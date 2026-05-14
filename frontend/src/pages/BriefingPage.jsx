@@ -222,17 +222,19 @@ function BriefingBody() {
   // long_tenure). Each is capped at 100. Falls back to the legacy
   // playbook.call_now array if the backend hasn't shipped buckets yet.
   const contactNowBuckets = briefing?.playbook?.contact_now || null;
-  const contactNowTotals = briefing?.playbook?.contact_now_totals || {};
 
-  // Build the bucket list in display order. Order matches the
-  // selector precedence: probate first, long-tenure last.
+  // Build the bucket list in display order. Labels are intentionally
+  // short — agents speak in shorthand ("trust", "LLC") and shorter
+  // labels let all six tabs fit on a typical desktop width without
+  // horizontal scrolling. Order matches the selector precedence:
+  // probate first, long-tenure last.
   const BUCKET_ORDER = [
     { key: 'probate',       label: 'Probate' },
     { key: 'divorce',       label: 'Divorce' },
-    { key: 'aging_trust',   label: 'Aging trust' },
-    { key: 'llc_long_hold', label: 'LLC long-hold' },
+    { key: 'aging_trust',   label: 'Trust' },
+    { key: 'llc_long_hold', label: 'LLC' },
     { key: 'absentee',      label: 'Absentee' },
-    { key: 'long_tenure',   label: 'Long-term tenure' },
+    { key: 'long_tenure',   label: 'Tenure' },
   ];
 
   // Compute counts per bucket from the actual rendered leads (not
@@ -292,7 +294,6 @@ function BriefingBody() {
   // Combining them in the oracle would force a single label that fits
   // neither bucket — Build Now is active pipeline, Holds are watch
   // list, and "X more building" reads as jargon to a cold visitor.
-  const actionCount   = Math.min(actionLeads.length, 5);
   // Prefer build_now_total / strategic_holds_total — these are the
   // TRUE eligible-pool sizes the backend computes before applying
   // the render-list cap. Fall back to *_count (rendered-list size)
@@ -372,7 +373,6 @@ function BriefingBody() {
 
         <BriefingHeader
           zip={zip}
-          actionCount={actionCount}
           buildNowCount={buildNowCount}
           parcelCount={parcelCount}
           city={stats?.city}
@@ -420,7 +420,6 @@ function BriefingBody() {
                 <BucketTabs
                   buckets={BUCKET_ORDER}
                   counts={bucketCounts}
-                  totals={contactNowTotals}
                   active={activeBucket}
                   onSelect={setActiveBucket}
                 />
@@ -503,19 +502,18 @@ function BriefingBody() {
 //  BucketTabs — Contact Now seller-type selector
 // ════════════════════════════════════════════════════════════════════
 //
-// Renders horizontal tabs above the action list. Each tab represents
-// one seller-type bucket (Probate, Divorce, Aging Trust, etc.) with
-// a count badge showing how many ranked leads are in that bucket.
+// Renders six tabs above the action list, one per seller-type bucket.
+// Each tab shows the count of leads currently in that bucket — that's
+// it. No "rendered / total" ratios, no progress bars. The count IS
+// what the bucket contains; agents don't need a denominator.
 //
-// When a bucket has zero leads, the tab is still rendered but dimmed
-// — agents see the full menu of seller types so they know what's
-// available across categories even if today's batch is empty for
-// some types.
+// Empty buckets are still rendered (dimmed) so the agent always sees
+// the full menu of seller types even when today's batch is empty for
+// some.
 //
-// Tabs scroll horizontally on narrow screens (mobile) — the alternative
-// (collapsing to a dropdown) loses the visual indicator of where leads
-// are concentrated.
-function BucketTabs({ buckets, counts, totals, active, onSelect }) {
+// Tighter padding + shorter labels = six tabs fit on a typical
+// desktop width without horizontal scrolling.
+function BucketTabs({ buckets, counts, active, onSelect }) {
   return (
     <div style={{
       display: 'flex',
@@ -528,7 +526,6 @@ function BucketTabs({ buckets, counts, totals, active, onSelect }) {
     }}>
       {buckets.map(({ key, label }) => {
         const count = counts[key] || 0;
-        const total = totals[key] || count;
         const isActive = key === active;
         const isEmpty = count === 0;
         return (
@@ -537,27 +534,30 @@ function BucketTabs({ buckets, counts, totals, active, onSelect }) {
             type="button"
             onClick={() => onSelect(key)}
             style={{
-              flex: '0 0 auto',
-              padding: '8px 14px',
+              flex: '1 1 0',
+              minWidth: 0,
+              padding: '7px 10px',
               fontFamily: 'var(--font-sans)',
               fontSize: 12,
               fontWeight: isActive ? 700 : 500,
-              letterSpacing: '0.02em',
+              letterSpacing: '0.01em',
               color: isActive ? 'var(--text)' :
                      isEmpty ? 'var(--text-tertiary)' : 'var(--text-secondary)',
               background: isActive ? 'var(--accent-dim)' : 'transparent',
               border: '1px solid',
-              borderColor: isActive ? 'var(--accent)' :
-                           isEmpty ? 'var(--border)' : 'var(--border)',
+              borderColor: isActive ? 'var(--accent)' : 'var(--border)',
               borderRadius: 'var(--radius-md, 6px)',
               cursor: 'pointer',
               whiteSpace: 'nowrap',
               transition: 'all 0.15s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 5,
             }}
           >
             <span>{label}</span>
             <span style={{
-              marginLeft: 6,
               fontSize: 11,
               fontWeight: 700,
               color: isActive ? 'var(--accent)' :
@@ -565,9 +565,6 @@ function BucketTabs({ buckets, counts, totals, active, onSelect }) {
               opacity: isEmpty ? 0.6 : 1,
             }}>
               {count}
-              {total > count && (
-                <span style={{ opacity: 0.5 }}> / {total}</span>
-              )}
             </span>
           </button>
         );

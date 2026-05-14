@@ -3,55 +3,37 @@ import { Link } from 'react-router-dom';
 /**
  * BriefingHeader — top of the briefing-page left panel.
  *
- * Replaces the prior structure (← Territories link → ZIP title → "Week of"
- * → 5-cell stat row). The new shape leads with the action and surfaces
- * the oracle metric below it, then drops the location into a quiet
- * eyebrow underneath. Meets the spec's 8-second test: a cold visitor
- * sees the action they need to take before any context.
+ * Layout: back-link → ZIP+city headline → oracle line (pipeline +
+ * territory parcel count) → week-of marker.
  *
- * The number in the headline pulls from action list count, not a fixed
- * "5". When the agent has fewer leads (smaller ZIP, mid-week refresh),
- * the headline reads accurately ("3 sellers to contact this week" / etc).
+ * The Contact Now count used to live in this header as a big
+ * dynamic number ("5 sellers to contact this week"). With the
+ * bucket redesign, the BucketTabs below this header carry the
+ * per-bucket counts and the active bucket selection — a single
+ * headline number would either be stale (sum of all buckets, never
+ * what the agent is looking at) or would churn on every tab click.
+ * The territory name does more durable work as the headline.
  *
  * Props:
  *   zip               — ZIP code string ("98004")
- *   actionCount       — count of leads in the action list (typically 5)
  *   buildNowCount     — count of leads in active pipeline (Build Now tier).
  *                       Excludes Strategic Holds — those are watch-list,
  *                       a different mental category, and live only in the
- *                       Pipeline section header below the action list.
+ *                       Pipeline section header below.
  *   parcelCount       — total parcels tracked in this ZIP
- *   city, state       — location strings, render below the headline
+ *   city, state       — location strings, render in the headline
  *   weekOf            — date string for the briefing's week-of marker
  */
 export default function BriefingHeader({
   zip,
-  actionCount,
   buildNowCount,
   parcelCount,
   city,
   state,
   weekOf,
 }) {
-  // Phrasing matches the count exactly: "1 seller" not "1 sellers"
-  const sellerWord = actionCount === 1 ? 'seller' : 'sellers';
-
   // The oracle line — surfaces "we're watching the whole ZIP" without
   // overclaiming. Numbers are real, territory-specific, no inference.
-  //
-  // Two pieces only: pipeline (active leads the agent is cultivating)
-  // and territory parcels tracked. Strategic Holds (the watch list)
-  // are excluded from the oracle on purpose — they sit in the
-  // Pipeline section header below where the agent has full context,
-  // and including them in the oracle would force the cold visitor to
-  // parse three numbers in one line.
-  //
-  // "in pipeline" replaces the earlier "more building" because
-  // "building" is internal jargon — a cold visitor reading "100 more
-  // building" might think we mean construction. "Pipeline" is
-  // universally understood by anyone in sales (including agents)
-  // and reads as modest: it claims "lead being cultivated," not
-  // "likely seller."
   const pipelineText = buildNowCount > 0
     ? `${buildNowCount.toLocaleString()} more in pipeline`
     : null;
@@ -60,15 +42,19 @@ export default function BriefingHeader({
     : null;
   const oracleParts = [pipelineText, parcelText].filter(Boolean);
 
+  // Headline assembles the territory name. Falls back to ZIP-only if
+  // city/state didn't load yet.
+  const headlineText = city
+    ? `${city}, ${state || 'WA'}`
+    : `ZIP ${zip}`;
+
   return (
     <header style={{
       padding: 'var(--space-lg) var(--space-lg) var(--space-md)',
       borderBottom: '1px solid var(--border)',
       flexShrink: 0,
     }}>
-      {/* Quiet back-link to the territories grid. Subtle so it doesn't
-          compete with the headline; agents who want to switch ZIPs will
-          find it. */}
+      {/* Quiet back-link to the territories grid. */}
       <Link to="/territories" style={{
         color: 'var(--text-tertiary)',
         textDecoration: 'none',
@@ -80,9 +66,7 @@ export default function BriefingHeader({
         ← Territories
       </Link>
 
-      {/* The headline. Largest typographic element on the page.
-          The number gets the call-now red so the eye lands on it
-          first. Action verb second. ZIP context drops below. */}
+      {/* Headline: territory name + ZIP. Largest typographic element. */}
       <h1 style={{
         fontFamily: 'var(--font-display)',
         fontSize: 28,
@@ -92,13 +76,21 @@ export default function BriefingHeader({
         lineHeight: 1.15,
         letterSpacing: '-0.005em',
       }}>
-        <span style={{ color: 'var(--call-now)' }}>{actionCount}</span>{' '}
-        {sellerWord} to contact this week
+        {headlineText}
+        <span style={{
+          color: 'var(--text-tertiary)',
+          fontWeight: 500,
+          fontSize: 18,
+          marginLeft: 10,
+          letterSpacing: '0.02em',
+        }}>
+          {zip}
+        </span>
       </h1>
 
-      {/* Oracle line — italic serif, soft color. Present but
-          deferential to the headline. The "homes tracked" count is
-          the differentiator from competitors who give static lists. */}
+      {/* Oracle line — italic serif, soft color. The "homes tracked"
+          count is the differentiator from competitors who give static
+          lists. */}
       {oracleParts.length > 0 && (
         <div style={{
           fontFamily: 'var(--font-serif)',
@@ -112,33 +104,18 @@ export default function BriefingHeader({
         </div>
       )}
 
-      {/* Location eyebrow. Below the headline rather than above it —
-          it's context, not the lead. Same uppercase treatment as the
-          back-link so they read as the same chrome layer. */}
-      <div style={{
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: '0.12em',
-        textTransform: 'uppercase',
-        color: 'var(--text-tertiary)',
-        marginTop: 'var(--space-md)',
-      }}>
-        ZIP {zip}{city ? ` · ${city}, ${state}` : ''}
-        {weekOf && (
-          <span style={{
-            marginLeft: 8,
-            fontStyle: 'italic',
-            textTransform: 'none',
-            letterSpacing: 0,
-            fontWeight: 400,
-            fontFamily: 'var(--font-serif)',
-            fontSize: 11,
-            color: 'var(--text-tertiary)',
-          }}>
-            · week of {weekOf}
-          </span>
-        )}
-      </div>
+      {/* Week-of marker, quiet treatment. */}
+      {weekOf && (
+        <div style={{
+          fontSize: 11,
+          fontStyle: 'italic',
+          color: 'var(--text-tertiary)',
+          marginTop: 'var(--space-md)',
+          fontFamily: 'var(--font-serif)',
+        }}>
+          week of {weekOf}
+        </div>
+      )}
     </header>
   );
 }
