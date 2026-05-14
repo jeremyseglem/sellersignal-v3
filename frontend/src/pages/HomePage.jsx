@@ -136,8 +136,6 @@ function BuiltByAgent() {
       borderBottom: '1px solid var(--border)',
     }}>
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
-        <Eyebrow>The maker</Eyebrow>
-
         <h2 style={{
           fontFamily: 'var(--font-display)',
           fontSize: 'clamp(28px, 3.2vw, 38px)',
@@ -147,7 +145,7 @@ function BuiltByAgent() {
           letterSpacing: '-0.01em',
           marginBottom: 'var(--space-md)',
         }}>
-          Built by an agent.
+          Built by agents. For agents.
         </h2>
 
         <p style={{
