@@ -216,11 +216,65 @@ function BriefingBody() {
     };
   }, [briefing, searchQuery, filterKey, sortKey, tagFilteredPins]);
 
-  // ── Derived values for the new briefing components ──
-  // Action list shows up to 5 Call Now leads, unfiltered. Pipeline
-  // shows the Build Now + Strategic Holds merge — also unfiltered,
-  // because filtering belongs to exploration mode (the map controls).
-  const actionLeads = briefing?.playbook?.call_now || [];
+  // ── Contact Now buckets ────────────────────────────────────────────
+  // The briefing now ships six ranked buckets keyed by seller type
+  // (probate, divorce, aging_trust, llc_long_hold, absentee,
+  // long_tenure). Each is capped at 100. Falls back to the legacy
+  // playbook.call_now array if the backend hasn't shipped buckets yet.
+  const contactNowBuckets = briefing?.playbook?.contact_now || null;
+  const contactNowTotals = briefing?.playbook?.contact_now_totals || {};
+
+  // Build the bucket list in display order. Order matches the
+  // selector precedence: probate first, long-tenure last.
+  const BUCKET_ORDER = [
+    { key: 'probate',       label: 'Probate' },
+    { key: 'divorce',       label: 'Divorce' },
+    { key: 'aging_trust',   label: 'Aging trust' },
+    { key: 'llc_long_hold', label: 'LLC long-hold' },
+    { key: 'absentee',      label: 'Absentee' },
+    { key: 'long_tenure',   label: 'Long-term tenure' },
+  ];
+
+  // Compute counts per bucket from the actual rendered leads (not
+  // pre-cap totals — those go in the subtle "X total" line per tab).
+  const bucketCounts = useMemo(() => {
+    if (!contactNowBuckets) return {};
+    const out = {};
+    for (const { key } of BUCKET_ORDER) {
+      out[key] = (contactNowBuckets[key] || []).length;
+    }
+    return out;
+  }, [contactNowBuckets]);
+
+  // Default to the first non-empty bucket. If none have data, default
+  // to probate (so the tabs still render and the user can see the
+  // empty state).
+  const defaultBucket = useMemo(() => {
+    if (!contactNowBuckets) return null;
+    for (const { key } of BUCKET_ORDER) {
+      if ((contactNowBuckets[key] || []).length > 0) return key;
+    }
+    return 'probate';
+  }, [contactNowBuckets]);
+
+  const [activeBucket, setActiveBucket] = useState(null);
+
+  // Sync activeBucket to defaultBucket once the briefing loads
+  useEffect(() => {
+    if (defaultBucket && !activeBucket) {
+      setActiveBucket(defaultBucket);
+    }
+  }, [defaultBucket, activeBucket]);
+
+  // actionLeads: which leads feed the ActionList component below.
+  // - If buckets are present, render the active bucket
+  // - Otherwise fall back to legacy playbook.call_now
+  const actionLeads = useMemo(() => {
+    if (contactNowBuckets && activeBucket) {
+      return contactNowBuckets[activeBucket] || [];
+    }
+    return briefing?.playbook?.call_now || [];
+  }, [contactNowBuckets, activeBucket, briefing]);
   const pipelineLeads = {
     buildNow: briefing?.playbook?.build_now || [],
     holds:    briefing?.playbook?.strategic_holds || [],
@@ -362,6 +416,15 @@ function BriefingBody() {
 
           {briefing && (
             <>
+              {contactNowBuckets && (
+                <BucketTabs
+                  buckets={BUCKET_ORDER}
+                  counts={bucketCounts}
+                  totals={contactNowTotals}
+                  active={activeBucket}
+                  onSelect={setActiveBucket}
+                />
+              )}
               <ActionList
                 leads={actionLeads}
                 selectedPin={selectedPin}
@@ -431,6 +494,84 @@ function BriefingBody() {
           />
         )}
       </main>
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  BucketTabs — Contact Now seller-type selector
+// ════════════════════════════════════════════════════════════════════
+//
+// Renders horizontal tabs above the action list. Each tab represents
+// one seller-type bucket (Probate, Divorce, Aging Trust, etc.) with
+// a count badge showing how many ranked leads are in that bucket.
+//
+// When a bucket has zero leads, the tab is still rendered but dimmed
+// — agents see the full menu of seller types so they know what's
+// available across categories even if today's batch is empty for
+// some types.
+//
+// Tabs scroll horizontally on narrow screens (mobile) — the alternative
+// (collapsing to a dropdown) loses the visual indicator of where leads
+// are concentrated.
+function BucketTabs({ buckets, counts, totals, active, onSelect }) {
+  return (
+    <div style={{
+      display: 'flex',
+      gap: 4,
+      overflowX: 'auto',
+      padding: '0 0 var(--space-md) 0',
+      marginBottom: 'var(--space-sm)',
+      borderBottom: '1px solid var(--border)',
+      scrollbarWidth: 'thin',
+    }}>
+      {buckets.map(({ key, label }) => {
+        const count = counts[key] || 0;
+        const total = totals[key] || count;
+        const isActive = key === active;
+        const isEmpty = count === 0;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onSelect(key)}
+            style={{
+              flex: '0 0 auto',
+              padding: '8px 14px',
+              fontFamily: 'var(--font-sans)',
+              fontSize: 12,
+              fontWeight: isActive ? 700 : 500,
+              letterSpacing: '0.02em',
+              color: isActive ? 'var(--text)' :
+                     isEmpty ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+              background: isActive ? 'var(--accent-dim)' : 'transparent',
+              border: '1px solid',
+              borderColor: isActive ? 'var(--accent)' :
+                           isEmpty ? 'var(--border)' : 'var(--border)',
+              borderRadius: 'var(--radius-md, 6px)',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.15s',
+            }}
+          >
+            <span>{label}</span>
+            <span style={{
+              marginLeft: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              color: isActive ? 'var(--accent)' :
+                     isEmpty ? 'var(--text-tertiary)' : 'var(--text)',
+              opacity: isEmpty ? 0.6 : 1,
+            }}>
+              {count}
+              {total > count && (
+                <span style={{ opacity: 0.5 }}> / {total}</span>
+              )}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
