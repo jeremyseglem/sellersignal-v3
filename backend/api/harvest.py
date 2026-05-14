@@ -939,36 +939,52 @@ def diag_seller_type_inventory(
         zip_code = zr["zip_code"]
         row = {"zip_code": zip_code, "city": zr.get("city")}
 
-        # Count parcels by owner_type and tenure
-        try:
-            parcels = (supa.table("parcels_v3")
-                         .select("owner_type, tenure_years, owner_state")
-                         .eq("zip_code", zip_code)
-                         .limit(50000)
-                         .execute().data or [])
-            row["parcels_total"] = len(parcels)
-            row["long_tenure"] = sum(1 for p in parcels
-                if p.get("owner_type") == "individual"
-                and (p.get("tenure_years") or 0) >= 15)
-            row["aging_trust"] = sum(1 for p in parcels
-                if p.get("owner_type") == "trust"
-                and (p.get("tenure_years") or 0) >= 10)
-            row["llc_long_hold"] = sum(1 for p in parcels
-                if p.get("owner_type") == "llc"
-                and (p.get("tenure_years") or 0) >= 7)
-            row["estate_heirs"] = sum(1 for p in parcels
-                if p.get("owner_type") in ("estate", "heirs"))
-            row["absentee"] = sum(1 for p in parcels
-                if p.get("owner_state") and p.get("owner_state") != "WA")
-        except Exception as e:
-            row["parcels_error"] = str(e)[:100]
+        # Paginated parcel scan (PostgREST default cap is 1000).
+        # 98004 has ~7K parcels, others up to ~15K. Page until empty.
+        all_parcels: list[dict] = []
+        offset = 0
+        page_size = 1000
+        while True:
+            try:
+                page = (supa.table("parcels_v3")
+                          .select("owner_type, tenure_years, owner_state")
+                          .eq("zip_code", zip_code)
+                          .range(offset, offset + page_size - 1)
+                          .execute().data or [])
+            except Exception as e:
+                row["parcels_error"] = str(e)[:100]
+                break
+            if not page:
+                break
+            all_parcels.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+            if offset >= 50000:
+                break  # safety cap, no ZIP has 50K parcels
 
-        # Count signal matches by signal_type
+        row["parcels_total"] = len(all_parcels)
+        row["long_tenure"] = sum(1 for p in all_parcels
+            if p.get("owner_type") == "individual"
+            and (p.get("tenure_years") or 0) >= 15)
+        row["aging_trust"] = sum(1 for p in all_parcels
+            if p.get("owner_type") == "trust"
+            and (p.get("tenure_years") or 0) >= 10)
+        row["llc_long_hold"] = sum(1 for p in all_parcels
+            if p.get("owner_type") == "llc"
+            and (p.get("tenure_years") or 0) >= 7)
+        row["estate_heirs"] = sum(1 for p in all_parcels
+            if p.get("owner_type") in ("estate", "heirs"))
+        row["absentee"] = sum(1 for p in all_parcels
+            if p.get("owner_state") and p.get("owner_state") != "WA")
+
+        # Signal MATCHES — these are signals linked to actual parcels
+        # in this ZIP. Probate/divorce/obit/foreclosure live here.
         try:
             matches = (supa.table("raw_signal_matches_v3")
-                         .select("signal_type, signal_source")
+                         .select("signal_type, source_type")
                          .eq("zip_code", zip_code)
-                         .limit(5000)
+                         .limit(10000)
                          .execute().data or [])
             row["matches_total"] = len(matches)
             for m in matches:
