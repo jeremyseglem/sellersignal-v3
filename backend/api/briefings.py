@@ -636,6 +636,40 @@ async def get_briefing(
         call_now_leads = _ws.select_call_now(leads, exclude_pins, used_owner_keys,
                                              n=cn_n)
 
+        # ── Contact Now buckets (the new multi-bucket UX) ──
+        # Replaces the single-bucket Call Now with six ranked buckets:
+        # probate, divorce, aging_trust, llc_long_hold, absentee,
+        # long_tenure. Each capped at 100.
+        #
+        # We run this BEFORE select_build_now / select_strategic_holds
+        # so claimed pins are removed from the Build Now / Watch List
+        # pools — otherwise a parcel could show up as both Contact Now
+        # (in a bucket) AND Watch List, which would be confusing.
+        #
+        # Uses its own exclude_pins/used_owner_keys copies so it
+        # doesn't fight with the legacy call_now path that ran above.
+        # The two paths run in parallel during the migration: once
+        # the frontend cuts over to the buckets, the legacy call_now
+        # path can be removed.
+        bucket_exclude_pins = set()
+        bucket_used_owner_keys = set()
+        contact_now_buckets = _ws.select_contact_now_buckets(
+            leads, bucket_exclude_pins, bucket_used_owner_keys)
+
+        # Total counts per bucket BEFORE the 100-cap is applied —
+        # used by Territories page to show "X total available".
+        contact_now_totals = _ws.count_contact_now_eligible_per_bucket(
+            leads, set())  # fresh exclude set, count is unbiased
+
+        # Resolve copy + investigation overlay for each bucket lead,
+        # same as call_now leads. The frontend renders these with the
+        # same lead-row component.
+        for bucket_name, bucket_leads in contact_now_buckets.items():
+            for L in bucket_leads:
+                L['_section'] = 'CONTACT NOW'
+                L['_bucket'] = bucket_name
+                L['_copy'] = _ws.resolve_copy(L, section='CALL NOW')
+
         # ── True pool sizes for header counts ──
         # The rendered Build Now / Holds lists are capped (100 / 1000)
         # for performance and curation. But the UI's "X in pipeline" /
@@ -771,6 +805,16 @@ async def get_briefing(
         except Exception:
             pass  # missing meta is non-fatal — header just shows ZIP code alone
 
+        # ── Shape Contact Now buckets for the payload ─────────────────
+        # Buckets are rendered by the same lead-row component as the
+        # legacy call_now leads. Reuse _shape_pick — same shape, same
+        # frontend code path.
+        contact_now_payload: dict[str, list[dict]] = {}
+        for bucket_name, bucket_leads in contact_now_buckets.items():
+            contact_now_payload[bucket_name] = [
+                _shape_pick(L) for L in bucket_leads
+            ]
+
         response = {
             'zip':       zip_code,
             'week_of':   week_monday_iso,
@@ -778,6 +822,14 @@ async def get_briefing(
                 'call_now':        call_now_picks,
                 'build_now':       build_now_picks,
                 'strategic_holds': hold_picks,
+                # NEW (transitional, shipped alongside the legacy
+                # call_now while the frontend cuts over): six ranked
+                # buckets, each capped at 100. See weekly_selector
+                # .select_contact_now_buckets for the precedence rules.
+                'contact_now': contact_now_payload,
+                # Pre-cap counts per bucket — used by Territories page
+                # to display "X total available" per ZIP.
+                'contact_now_totals': contact_now_totals,
             },
             'stats':     stats,
             'zip_meta':  zip_meta,

@@ -626,6 +626,324 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
     return picks
 
 
+# ════════════════════════════════════════════════════════════════════
+#  Contact Now buckets — the multi-bucket selector framework
+# ════════════════════════════════════════════════════════════════════
+#
+# Replaces the single Call Now list with six ranked buckets, each
+# capped at 100. Overflow goes to watch list (existing build_now/
+# strategic_holds, unchanged).
+#
+# Precedence (a parcel can match multiple bucket criteria — assign it
+# to the highest-precedence bucket and exclude from lower ones):
+#
+#   1. Probate           (court signal, family PR identified)
+#   2. Divorce           (court signal)
+#   3. Aging trust       (parcel attribute, trust owner)
+#   4. LLC long-hold     (parcel attribute, LLC owner)
+#   5. Absentee          (parcel attribute, out-of-state owner)
+#   6. Long-term tenure  (parcel attribute, individual owner ≥ 15 yrs)
+#
+# Each bucket has its own ranking function. select_contact_now_buckets
+# orchestrates the precedence and returns a dict keyed by bucket name.
+# ════════════════════════════════════════════════════════════════════
+
+
+_BUCKET_CAP = 100
+
+
+def _select_probate_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
+    """Probate bucket — court signal + family PR identified.
+
+    Reuses eligible_for_call_now() which already encodes Rule 6
+    (probate must have family_pr_identified contact_status). Everything
+    that would have been on the legacy single Call Now list ends up
+    here. Ranked by existing pressure score.
+    """
+    n = _coerce_n(n)
+    def base_filter(L):
+        return (L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L)
+                and eligible_for_call_now(L))
+
+    picks = []
+    for L in sorted([L for L in leads if base_filter(L)],
+                    key=lambda x: -_score(x)):
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        picks.append(L); used_owner_keys.add(ok)
+        if len(picks) >= n: break
+    return picks
+
+
+def _select_divorce_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
+    """Divorce bucket — court signal from divorce filings.
+
+    Reads the divorce flag we add to each lead during the briefing
+    pipeline (raw_signals_v3.signal_type='divorce' joined through
+    raw_signal_matches_v3). Ranked by pressure score same as probate.
+
+    TODO: divorce signal pipeline integration. Today, divorce signals
+    flow through as signal_family='dormant_absentee' or 'silent_
+    transition' depending on the matcher's classification — there's
+    no dedicated divorce archetype. This bucket will return empty until
+    we add a has_divorce_signal flag on the lead shape in briefings.py.
+    """
+    n = _coerce_n(n)
+    def is_divorce(L):
+        return bool(L.get('has_divorce_signal'))
+
+    def base_filter(L):
+        return (L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L)
+                and is_divorce(L))
+
+    picks = []
+    for L in sorted([L for L in leads if base_filter(L)],
+                    key=lambda x: -_score(x)):
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        picks.append(L); used_owner_keys.add(ok)
+        if len(picks) >= n: break
+    return picks
+
+
+def _select_aging_trust_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
+    """Aging trust bucket — trust-owned parcels held 10+ years.
+
+    Ranked by tenure_years descending (oldest trusts closest to
+    dissolution/transition). Ties broken by parcel value descending.
+    """
+    n = _coerce_n(n)
+    def base_filter(L):
+        return (L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L)
+                and (L.get('owner_type') or '').lower() == 'trust'
+                and (L.get('tenure_years') or 0) >= 10)
+
+    picks = []
+    for L in sorted([L for L in leads if base_filter(L)],
+                    key=lambda x: (-(x.get('tenure_years') or 0),
+                                   -(x.get('value') or 0))):
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        picks.append(L); used_owner_keys.add(ok)
+        if len(picks) >= n: break
+    return picks
+
+
+def _select_llc_long_hold_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
+    """LLC long-hold bucket — LLC-owned parcels held 7+ years.
+
+    Ranked by tenure_years × parcel_value descending — captures both
+    "long hold" (older = more likely disposition) and "high stakes"
+    (higher value = bigger commission opportunity).
+    """
+    n = _coerce_n(n)
+    def base_filter(L):
+        return (L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L)
+                and (L.get('owner_type') or '').lower() == 'llc'
+                and (L.get('tenure_years') or 0) >= 7)
+
+    def rank_key(L):
+        tenure = L.get('tenure_years') or 0
+        value = L.get('value') or 0
+        return -(tenure * value)
+
+    picks = []
+    for L in sorted([L for L in leads if base_filter(L)], key=rank_key):
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        picks.append(L); used_owner_keys.add(ok)
+        if len(picks) >= n: break
+    return picks
+
+
+def _select_absentee_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
+    """Absentee bucket — out-of-state property owners.
+
+    Ranked by parcel_value descending — highest-value remote owners
+    first (biggest commission, often most rational sellers since
+    they're not emotionally attached to the property).
+    """
+    n = _coerce_n(n)
+    def base_filter(L):
+        owner_state = (L.get('owner_state') or '').strip().upper()
+        is_out_of_state = owner_state and owner_state != 'WA'
+        return (L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L)
+                and is_out_of_state)
+
+    picks = []
+    for L in sorted([L for L in leads if base_filter(L)],
+                    key=lambda x: -(x.get('value') or 0)):
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        picks.append(L); used_owner_keys.add(ok)
+        if len(picks) >= n: break
+    return picks
+
+
+def _select_long_tenure_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
+    """Long-term tenure bucket — individual-owned parcels held 15+ years.
+
+    The largest pool (10s of thousands across all ZIPs). Ranked by
+    tenure_years descending — oldest owners surfaced first since
+    they're statistically closest to a transition decision.
+    """
+    n = _coerce_n(n)
+    def base_filter(L):
+        return (L['pin'] not in exclude_pins
+                and owner_base_key(L) not in used_owner_keys
+                and not _has_blocker(L)
+                and (L.get('owner_type') or '').lower() == 'individual'
+                and (L.get('tenure_years') or 0) >= 15)
+
+    picks = []
+    for L in sorted([L for L in leads if base_filter(L)],
+                    key=lambda x: (-(x.get('tenure_years') or 0),
+                                   -(x.get('value') or 0))):
+        ok = owner_base_key(L)
+        if ok in used_owner_keys: continue
+        picks.append(L); used_owner_keys.add(ok)
+        if len(picks) >= n: break
+    return picks
+
+
+def select_contact_now_buckets(leads, exclude_pins, used_owner_keys):
+    """Orchestrator: runs the 6 bucket selectors in precedence order,
+    each excluding pins already claimed by higher-precedence buckets.
+
+    Returns a dict keyed by bucket name, each value a list of leads
+    in ranked order (max 100 per bucket).
+
+    Precedence: court signals first (probate, divorce) since they're
+    higher-pressure and time-bounded; then parcel-attribute buckets
+    (trust, LLC, absentee, long-tenure) which are slower-moving.
+
+    Mutates exclude_pins and used_owner_keys progressively, so a
+    parcel claimed by Probate will not appear in Long-tenure even
+    if it qualifies on parcel attributes alone.
+    """
+    out: dict[str, list[dict]] = {}
+
+    out['probate'] = _select_probate_bucket(
+        leads, exclude_pins, used_owner_keys)
+    for L in out['probate']:
+        exclude_pins.add(L['pin'])
+
+    out['divorce'] = _select_divorce_bucket(
+        leads, exclude_pins, used_owner_keys)
+    for L in out['divorce']:
+        exclude_pins.add(L['pin'])
+
+    out['aging_trust'] = _select_aging_trust_bucket(
+        leads, exclude_pins, used_owner_keys)
+    for L in out['aging_trust']:
+        exclude_pins.add(L['pin'])
+
+    out['llc_long_hold'] = _select_llc_long_hold_bucket(
+        leads, exclude_pins, used_owner_keys)
+    for L in out['llc_long_hold']:
+        exclude_pins.add(L['pin'])
+
+    out['absentee'] = _select_absentee_bucket(
+        leads, exclude_pins, used_owner_keys)
+    for L in out['absentee']:
+        exclude_pins.add(L['pin'])
+
+    out['long_tenure'] = _select_long_tenure_bucket(
+        leads, exclude_pins, used_owner_keys)
+    for L in out['long_tenure']:
+        exclude_pins.add(L['pin'])
+
+    return out
+
+
+def count_contact_now_eligible_per_bucket(leads, exclude_pins):
+    """Count how many leads would qualify for each bucket if we
+    didn't apply the 100-cap. Used by the Territories page to show
+    'X total available' alongside the top-100 picks.
+
+    Does NOT mutate state — purely informational. Uses fresh
+    exclude_pins/used_owner_keys snapshots internally so we don't
+    interfere with the actual select_contact_now_buckets run.
+    """
+    # Run the orchestrator without the cap so we can count.
+    # Cheaper approach: count eligibility filter matches directly.
+    counts: dict[str, int] = {}
+    seen_pins: set = set(exclude_pins)
+
+    # Probate eligibility (must pass contract)
+    probate_pins = set()
+    for L in leads:
+        if (L['pin'] not in seen_pins
+            and not _has_blocker(L)
+            and (L.get('signal_family') == 'family_event_cluster'
+                 or L.get('has_probate_signal'))
+            and eligible_for_call_now(L)):
+            probate_pins.add(L['pin'])
+    counts['probate'] = len(probate_pins)
+    seen_pins.update(probate_pins)
+
+    divorce_pins = set()
+    for L in leads:
+        if (L['pin'] not in seen_pins
+            and not _has_blocker(L)
+            and (L.get('has_divorce_signal')
+                 or L.get('signal_family') == 'divorce')):
+            divorce_pins.add(L['pin'])
+    counts['divorce'] = len(divorce_pins)
+    seen_pins.update(divorce_pins)
+
+    trust_pins = set()
+    for L in leads:
+        if (L['pin'] not in seen_pins
+            and not _has_blocker(L)
+            and (L.get('owner_type') or '').lower() == 'trust'
+            and (L.get('tenure_years') or 0) >= 10):
+            trust_pins.add(L['pin'])
+    counts['aging_trust'] = len(trust_pins)
+    seen_pins.update(trust_pins)
+
+    llc_pins = set()
+    for L in leads:
+        if (L['pin'] not in seen_pins
+            and not _has_blocker(L)
+            and (L.get('owner_type') or '').lower() == 'llc'
+            and (L.get('tenure_years') or 0) >= 7):
+            llc_pins.add(L['pin'])
+    counts['llc_long_hold'] = len(llc_pins)
+    seen_pins.update(llc_pins)
+
+    absentee_pins = set()
+    for L in leads:
+        if (L['pin'] not in seen_pins
+            and not _has_blocker(L)):
+            owner_state = (L.get('owner_state') or '').strip().upper()
+            if owner_state and owner_state != 'WA':
+                absentee_pins.add(L['pin'])
+    counts['absentee'] = len(absentee_pins)
+    seen_pins.update(absentee_pins)
+
+    tenure_pins = set()
+    for L in leads:
+        if (L['pin'] not in seen_pins
+            and not _has_blocker(L)
+            and (L.get('owner_type') or '').lower() == 'individual'
+            and (L.get('tenure_years') or 0) >= 15):
+            tenure_pins.add(L['pin'])
+    counts['long_tenure'] = len(tenure_pins)
+
+    return counts
+
+
 def select_build_now(leads, exclude_pins, used_owner_keys, n=8):
     """Up to 8 Band 2 picks, balanced across signal families and value tiers.
 
