@@ -652,6 +652,24 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
 _BUCKET_CAP = 100
 
 
+# Valid US state codes (50 states + DC) — used by the absentee bucket
+# to reject malformed owner_state values. Without this guard, the
+# filter `owner_state != 'WA'` accepts truncated junk like 'A', 'SH',
+# 'W', '98', 'ST' from upstream parcel ingest as "out-of-state."
+# Audit on 2026-05-14 found 6/7 absentee leads in 98074 were junk,
+# 8/11 in 98103 were junk. Kirkland (clean source data) was 96/100
+# legitimate, so the bucket itself works — only this filter needed
+# tightening. See _select_absentee_bucket for usage.
+_VALID_US_STATES = frozenset({
+    'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+    'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+    'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+    'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+    'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+    'DC',
+})
+
+
 def _select_probate_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
     """Probate bucket — court signal + family PR identified.
 
@@ -774,7 +792,12 @@ def _select_absentee_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP)
     n = _coerce_n(n)
     def base_filter(L):
         owner_state = (L.get('owner_state') or '').strip().upper()
-        is_out_of_state = owner_state and owner_state != 'WA'
+        # Must be a valid US state AND not WA. Without the
+        # _VALID_US_STATES guard, junk values from upstream ingest
+        # (truncations like 'A', 'SH', 'ST', '98') get classified as
+        # out-of-state and pollute the bucket.
+        is_out_of_state = (owner_state in _VALID_US_STATES
+                           and owner_state != 'WA')
         return (L['pin'] not in exclude_pins
                 and owner_base_key(L) not in used_owner_keys
                 and not _has_blocker(L)
@@ -927,7 +950,8 @@ def count_contact_now_eligible_per_bucket(leads, exclude_pins):
         if (L['pin'] not in seen_pins
             and not _has_blocker(L)):
             owner_state = (L.get('owner_state') or '').strip().upper()
-            if owner_state and owner_state != 'WA':
+            # Same valid-US-state guard as _select_absentee_bucket.
+            if owner_state in _VALID_US_STATES and owner_state != 'WA':
                 absentee_pins.add(L['pin'])
     counts['absentee'] = len(absentee_pins)
     seen_pins.update(absentee_pins)
