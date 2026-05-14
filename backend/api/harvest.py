@@ -891,6 +891,98 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/seller-type-inventory")
+def diag_seller_type_inventory(
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    One-shot inventory: across all live ZIPs, how many parcels fall
+    into each prospective Contact Now bucket?
+
+    Used to size the per-seller-type buckets before redesigning the
+    briefing layout. Returns counts per ZIP per category:
+
+      - probate              (raw_signal_matches_v3 where signal_type=probate)
+      - divorce              (raw_signal_matches_v3 where signal_type=divorce)
+      - obituary             (raw_signal_matches_v3 where signal_type=obituary)
+      - foreclosure          (raw_signal_matches_v3 where source_type
+                              in nod/trustee_sale/lis_pendens/...)
+      - long_tenure          (parcels_v3.tenure_years >= 15,
+                              owner_type='individual')
+      - aging_trust          (parcels_v3.owner_type='trust' AND
+                              tenure_years >= 10)
+      - llc_long_hold        (parcels_v3.owner_type='llc' AND
+                              tenure_years >= 7)
+      - estate_heirs         (parcels_v3.owner_type IN ('estate','heirs'))
+      - absentee             (parcels_v3.owner_state != property state)
+
+    Honest inventory of what we can actually ship as Contact Now
+    buckets given existing data.
+    """
+    _require_admin(x_admin_key)
+    from backend.api.db import get_supabase_client
+
+    supa = get_supabase_client()
+    if not supa:
+        return {"error": "Supabase unavailable"}
+
+    # Get the live ZIP list
+    try:
+        zip_rows = (supa.table("zip_coverage_v3")
+                      .select("zip_code, city")
+                      .execute().data or [])
+    except Exception as e:
+        return {"error": f"zip_coverage fetch failed: {e}"}
+
+    out = []
+    for zr in zip_rows:
+        zip_code = zr["zip_code"]
+        row = {"zip_code": zip_code, "city": zr.get("city")}
+
+        # Count parcels by owner_type and tenure
+        try:
+            parcels = (supa.table("parcels_v3")
+                         .select("owner_type, tenure_years, owner_state")
+                         .eq("zip_code", zip_code)
+                         .limit(50000)
+                         .execute().data or [])
+            row["parcels_total"] = len(parcels)
+            row["long_tenure"] = sum(1 for p in parcels
+                if p.get("owner_type") == "individual"
+                and (p.get("tenure_years") or 0) >= 15)
+            row["aging_trust"] = sum(1 for p in parcels
+                if p.get("owner_type") == "trust"
+                and (p.get("tenure_years") or 0) >= 10)
+            row["llc_long_hold"] = sum(1 for p in parcels
+                if p.get("owner_type") == "llc"
+                and (p.get("tenure_years") or 0) >= 7)
+            row["estate_heirs"] = sum(1 for p in parcels
+                if p.get("owner_type") in ("estate", "heirs"))
+            row["absentee"] = sum(1 for p in parcels
+                if p.get("owner_state") and p.get("owner_state") != "WA")
+        except Exception as e:
+            row["parcels_error"] = str(e)[:100]
+
+        # Count signal matches by signal_type
+        try:
+            matches = (supa.table("raw_signal_matches_v3")
+                         .select("signal_type, signal_source")
+                         .eq("zip_code", zip_code)
+                         .limit(5000)
+                         .execute().data or [])
+            row["matches_total"] = len(matches)
+            for m in matches:
+                t = m.get("signal_type") or "unknown"
+                key = f"match_{t}"
+                row[key] = row.get(key, 0) + 1
+        except Exception as e:
+            row["matches_error"] = str(e)[:100]
+
+        out.append(row)
+
+    return {"zips": out, "count": len(out)}
+
+
 @router.get("/diag/obit-search")
 def diag_obit_search(
     x_admin_key: Optional[str] = Header(None),
