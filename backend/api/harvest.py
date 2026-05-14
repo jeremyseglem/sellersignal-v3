@@ -891,6 +891,114 @@ def diag_fetch_participants(
     }
 
 
+@router.get("/diag/contact-now-buckets/{zip_code}")
+async def diag_contact_now_buckets(
+    zip_code: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Admin diag: invoke the briefing pipeline for a ZIP and return
+    just the Contact Now bucket counts (not the full playbook).
+    Used to verify bucket selectors are producing data before the
+    frontend bucket UI ships.
+    """
+    _require_admin(x_admin_key)
+    import httpx
+    # Hit our own briefings endpoint internally with the admin key —
+    # bypasses agent JWT auth via the admin header path.
+    # Actually briefings.py requires a user JWT; admin can't bypass.
+    # Simpler: call the underlying logic directly.
+    from backend.api import briefings as _briefings
+    try:
+        # The briefings handler is async and depends on FastAPI's
+        # Depends() chain for auth. We can't call it directly without
+        # a request context. Instead, surface bucket counts from the
+        # raw selector run on the same parcel+signal data.
+        from backend.api.db import get_supabase_client
+        from backend.selection import weekly_selector as _ws
+        supa = get_supabase_client()
+
+        # Pull parcels for this ZIP — same query the briefing pipeline
+        # uses, simplified to just what the selectors need.
+        all_parcels: list[dict] = []
+        offset = 0
+        while True:
+            page = (supa.table("parcels_v3")
+                      .select("pin, owner_name, owner_type, owner_state, "
+                              "owner_city, tenure_years, total_value, "
+                              "address, city, state, zip_code, "
+                              "is_absentee, is_out_of_state, band, "
+                              "signal_family, archetype, rank_score, "
+                              "calibrated_rank_score, timeline_months")
+                      .eq("zip_code", zip_code)
+                      .range(offset, offset + 999)
+                      .execute().data or [])
+            if not page:
+                break
+            all_parcels.extend(page)
+            if len(page) < 1000:
+                break
+            offset += 1000
+            if offset >= 50000:
+                break
+
+        # Shape minimally as leads (the bucket selectors only need
+        # the parcel-attribute fields, not the full investigation
+        # overlay). This is a coarse approximation — probate eligibility
+        # via eligible_for_call_now needs investigation context that we
+        # skip here. So the probate count from this diag will be 0
+        # (legacy call_now path is the source of truth for that).
+        leads = []
+        for p in all_parcels:
+            leads.append({
+                'pin':          p.get('pin'),
+                'band':         float(p.get('band') or 0),
+                'signal_family': p.get('signal_family'),
+                'archetype':    p.get('archetype'),
+                'address':      p.get('address'),
+                'owner':        p.get('owner_name'),
+                'owner_type':   p.get('owner_type'),
+                'owner_state':  p.get('owner_state'),
+                'owner_city':   p.get('owner_city'),
+                'is_out_of_state': bool(p.get('is_out_of_state')),
+                'value':        p.get('total_value') or 0,
+                'zip':          p.get('zip_code'),
+                'tenure_years': p.get('tenure_years'),
+                'rank_score':   p.get('rank_score') or (p.get('total_value') or 0),
+                'investigation': None,  # no overlay in this diag path
+            })
+
+        exclude = set()
+        used_owner = set()
+        buckets = _ws.select_contact_now_buckets(leads, exclude, used_owner)
+        totals = _ws.count_contact_now_eligible_per_bucket(leads, set())
+
+        return {
+            "zip_code": zip_code,
+            "parcels_scanned": len(leads),
+            "buckets": {
+                name: {
+                    "picked": len(leads_in_bucket),
+                    "total_eligible": totals.get(name, 0),
+                    "sample": [
+                        {
+                            "pin": L.get("pin"),
+                            "owner": L.get("owner"),
+                            "owner_type": L.get("owner_type"),
+                            "tenure_years": L.get("tenure_years"),
+                            "value": L.get("value"),
+                            "owner_state": L.get("owner_state"),
+                        }
+                        for L in leads_in_bucket[:3]
+                    ],
+                }
+                for name, leads_in_bucket in buckets.items()
+            },
+        }
+    except Exception as e:
+        return {"error": str(e)[:500]}
+
+
 @router.get("/diag/seller-type-inventory")
 def diag_seller_type_inventory(
     x_admin_key: Optional[str] = Header(None),
