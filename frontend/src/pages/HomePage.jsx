@@ -76,8 +76,8 @@ function Hero() {
           letterSpacing: '-0.015em',
           marginBottom: 'var(--space-md)',
         }}>
-          <span style={{ color: 'var(--call-now)' }}>Eight</span>{' '}
-          sellers to contact this week, in your voice.
+          We <span style={{ color: 'var(--call-now)' }}>find</span>{' '}
+          sellers before they even know they&rsquo;re sellers.
         </h1>
 
         <div style={{
@@ -89,10 +89,11 @@ function Hero() {
           marginBottom: 'var(--space-xl)',
           maxWidth: 640,
         }}>
-          A weekly briefing of the property owners most likely to sell &middot;
-          surfaced from court records and life events that signal change &middot;
-          with first-touch outreach drafted in your own voice. The first
-          lead-gen tool built by a working agent, for one agent at a time.
+          SellerSignal surfaces the life events that force a property
+          decision &middot; long before the listing call. Probate,
+          divorce, estate transition, foreclosure. We identify the
+          decision-maker by name, verify their contact, and deliver
+          them weekly in your exclusive ZIP. Built by a working agent.
         </div>
 
         <div style={{
