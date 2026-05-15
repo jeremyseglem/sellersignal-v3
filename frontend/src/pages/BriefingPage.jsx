@@ -17,7 +17,7 @@ import MapExplorePanel from '../components/briefing/MapExplorePanel.jsx';
 
 const FILTER_OPTIONS = [
   { key: 'all',        label: 'All',        matches: () => true },
-  { key: 'call_now',   label: 'Call now',   matches: (lead) => lead.recommended_action?.category === 'call_now' },
+  { key: 'call_now',   label: 'Contact now',   matches: (lead) => lead.recommended_action?.category === 'call_now' },
   { key: 'build_now',  label: 'Build now',  matches: (lead) => lead.recommended_action?.category === 'build_now' },
   { key: 'hold',       label: 'Holds',      matches: (lead) => !lead.recommended_action?.category || lead.recommended_action?.category === 'hold' },
 ];

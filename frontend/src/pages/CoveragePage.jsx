@@ -113,7 +113,7 @@ export default function CoveragePage() {
                   }}>
                     {z.parcel_count?.toLocaleString() || 0} parcels ·
                     {' '}{z.investigated_count?.toLocaleString() || 0} investigated ·
-                    {' '}{z.current_call_now_count || 0} on this week&rsquo;s CALL NOW
+                    {' '}{z.current_call_now_count || 0} on this week&rsquo;s CONTACT NOW
                   </div>
                 </div>
                 <div style={{

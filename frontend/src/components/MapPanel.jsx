@@ -414,7 +414,7 @@ function MapLegend() {
       </div>
       <div style={row}>
         <span style={swatch(PICK_STYLES.call_now.color)} />
-        Call now
+        Contact now
       </div>
       <div style={row}>
         <span style={swatch(PICK_STYLES.build_now.color)} />
