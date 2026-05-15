@@ -786,6 +786,11 @@ async def get_briefing(
                 # only fire for leads with at least one harvester match.
                 'first_seen_at':       _earliest_match_at(inv),
                 'is_new_this_week':    _is_new_this_week(inv),
+                # Signal-presence flags — surfaced for debugging the
+                # divorce bucket. Can be removed once divorce volumes
+                # match expectations.
+                'has_probate_signal':  L.get('has_probate_signal'),
+                'has_divorce_signal':  L.get('has_divorce_signal'),
             }
 
         call_now_picks  = [_shape_pick(L) for L in call_now_leads]
