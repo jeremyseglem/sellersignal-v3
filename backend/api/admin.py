@@ -2675,12 +2675,13 @@ async def lob_diag(mode: str = "test"):
         raise HTTPException(500, f"LobClient init failed: {e}")
 
     try:
-        # Lob's documented sample address — known-deliverable in all modes.
+        # 1600 Pennsylvania Ave NW (The White House) — universally
+        # deliverable per USPS, won't be retired as a Lob test fixture.
         verified = client.verify_address(
-            line1="210 King St",
-            city="San Francisco",
-            state="CA",
-            zip_code="94107",
+            line1="1600 Pennsylvania Ave NW",
+            city="Washington",
+            state="DC",
+            zip_code="20500",
         )
         return {
             "ok": True,

@@ -392,12 +392,15 @@ class LobClient:
         lob_code = err.get("code") or ""
 
         # Live-key-but-no-payment-method case — Lob returns 403 with
-        # a specific message about payment methods. Surface a clearer
-        # error so the operator knows what to do.
-        if resp.status_code == 403 and "payment" in message.lower():
+        # a message about "payment method" or "billing address" (the
+        # exact phrasing varies). Surface a clearer error so the
+        # operator knows what to do.
+        if resp.status_code == 403 and any(
+            k in message.lower() for k in ("payment", "billing")
+        ):
             raise LobConfigError(
-                "Lob live key requires a payment method on file. "
-                "Add one at https://dashboard.lob.com/settings/billing "
+                "Lob live key requires a billing address / payment method "
+                "on file. Add one at https://dashboard.lob.com/settings/billing "
                 "before using LOB_MODE=live.",
                 status_code=403,
                 lob_code=lob_code,
