@@ -5,6 +5,7 @@ import {
   map as mapApi,
   parcels as parcelsApi,
   leadTags,
+  leadInteractions,
 } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import MapPanel from '../components/MapPanel.jsx';
@@ -12,6 +13,7 @@ import ParcelDossier from '../components/ParcelDossierV2.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import BriefingHeader from '../components/briefing/BriefingHeader.jsx';
 import ActionList from '../components/briefing/ActionList.jsx';
+import LeadRow from '../components/briefing/LeadRow.jsx';
 import PipelineList from '../components/briefing/PipelineList.jsx';
 import MapExplorePanel from '../components/briefing/MapExplorePanel.jsx';
 
@@ -110,6 +112,14 @@ function BriefingBody() {
   const [selectedTags, setSelectedTags]       = useState([]);
   const [tagFilteredPins, setTagFilteredPins] = useState(null);
 
+  // Lead Memory: per-pin status map for the agent in this ZIP.
+  // Shape: { [pin]: { status: 'working' | 'not_relevant' | 'sent_to_crm',
+  //                    status_at, event_data } }
+  // Used to render the Working section above the bucket tabs — pins
+  // with status='working' get pulled out and shown at the top regardless
+  // of which bucket they'd otherwise sit in.
+  const [leadStatuses, setLeadStatuses] = useState({});
+
   // Load briefing + map on ZIP change.
   // The previous version also called coverageApi.stats(zip) just for
   // city/state — that endpoint paginates parcels and investigations
@@ -120,6 +130,7 @@ function BriefingBody() {
     setBriefing(null); setMapData(null);
     setDossier(null); setError(null);
     setSelectedTags([]); setTagFilteredPins(null); setAvailableTags([]);
+    setLeadStatuses({});
 
     Promise.all([briefings.get(zip, false), mapApi.get(zip)])
       .then(([b, m]) => { setBriefing(b); setMapData(m); })
@@ -131,6 +142,14 @@ function BriefingBody() {
     leadTags.list(zip)
       .then((r) => setAvailableTags(r.tags || []))
       .catch(() => { /* not signed in or other; leave empty */ });
+
+    // Load Lead Memory status map for this ZIP. Independent of the
+    // briefing — failure here just hides the Working section, doesn't
+    // block the page. Cold visitors (no auth) will get a 401 and the
+    // section silently doesn't render.
+    leadInteractions.byZip(zip)
+      .then((r) => setLeadStatuses(r.statuses || {}))
+      .catch(() => setLeadStatuses({}));
   }, [zip]);
 
   // Whenever selectedTags changes, fetch the union of matching pins.
@@ -282,6 +301,46 @@ function BriefingBody() {
     holds:    briefing?.playbook?.strategic_holds || [],
   };
 
+  // Working leads: pins with status='working' in Lead Memory, mapped to
+  // the lead object from wherever it currently lives in the briefing
+  // (any bucket, build_now, or strategic_holds). Dedup by pin so a lead
+  // that appears in multiple containers only renders once. Order: most
+  // recently marked working first.
+  const workingLeads = useMemo(() => {
+    const workingPins = Object.entries(leadStatuses || {})
+      .filter(([_, s]) => s?.status === 'working')
+      .sort((a, b) => {
+        const aT = a[1]?.status_at || '';
+        const bT = b[1]?.status_at || '';
+        return bT.localeCompare(aT);  // newest first
+      })
+      .map(([pin]) => pin);
+    if (workingPins.length === 0) return [];
+
+    // Build a single pin → lead map from every place a lead might appear
+    // in the briefing. Buckets first (most likely source), then
+    // build_now, then strategic_holds. First write wins per pin.
+    const byPin = {};
+    const addArr = (arr) => {
+      for (const L of (arr || [])) {
+        if (L?.pin && byPin[L.pin] === undefined) byPin[L.pin] = L;
+      }
+    };
+    for (const k of Object.keys(contactNowBuckets || {})) {
+      addArr(contactNowBuckets[k]);
+    }
+    addArr(briefing?.playbook?.call_now);
+    addArr(briefing?.playbook?.build_now);
+    addArr(briefing?.playbook?.strategic_holds);
+
+    // Map ordered pins to lead objects, dropping any pin we couldn't
+    // find in the current briefing (rare: agent marked working but the
+    // lead has fallen out of every container).
+    return workingPins
+      .map((pin) => byPin[pin])
+      .filter(Boolean);
+  }, [leadStatuses, contactNowBuckets, briefing]);
+
   // Header counts use the briefing's own stats (computed from the
   // just-built playbook, so they always agree with the lists below).
   // Coverage stats are a fallback for parcel count when briefing.stats
@@ -416,6 +475,13 @@ function BriefingBody() {
 
           {briefing && (
             <>
+              {workingLeads.length > 0 && (
+                <WorkingSection
+                  leads={workingLeads}
+                  selectedPin={selectedPin}
+                  onPickLead={handlePickLead}
+                />
+              )}
               {contactNowBuckets && (
                 <BucketTabs
                   buckets={BUCKET_ORDER}
@@ -494,6 +560,77 @@ function BriefingBody() {
         )}
       </main>
     </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  WorkingSection — Lead Memory pinned-at-top view
+// ════════════════════════════════════════════════════════════════════
+//
+// Renders leads the agent has marked status='working' via the dossier,
+// pulled out of their current bucket and pinned above the bucket tabs.
+// Stays visible across week rollovers so a lead being actively worked
+// doesn't disappear just because a new high-rank lead bumped it out
+// of the top 100 of its bucket.
+//
+// Leads are sourced from whatever container the briefing currently
+// places them in (a bucket, build_now, or strategic_holds). If a
+// working lead has fallen out of every container in the briefing
+// (rare), it's silently dropped — agent can still find it via the
+// dossier's history page.
+//
+// Reuses LeadRow for visual consistency with the action list. Accent
+// color stays var(--call-now) — the visual signal is "this is a
+// current focus."
+function WorkingSection({ leads, selectedPin, onPickLead }) {
+  if (!leads || leads.length === 0) return null;
+  return (
+    <section
+      aria-label="Leads you're working on"
+      style={{
+        padding: 'var(--space-md) var(--space-lg) var(--space-lg)',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--bg-tinted, rgba(139, 105, 20, 0.04))',
+      }}
+    >
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'baseline',
+        marginBottom: 'var(--space-sm)',
+      }}>
+        <div style={{
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          color: '#8B6914',
+          fontFamily: 'var(--font-sans)',
+        }}>
+          Working
+        </div>
+        <div style={{
+          fontSize: 11,
+          color: 'var(--text-tertiary)',
+          fontFamily: 'var(--font-sans)',
+        }}>
+          {leads.length} {leads.length === 1 ? 'lead' : 'leads'}
+        </div>
+      </div>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {leads.map((lead, i) => (
+          <LeadRow
+            key={lead.pin}
+            lead={lead}
+            index={i + 1}
+            selected={lead.pin === selectedPin}
+            accent="var(--call-now)"
+            onClick={() => onPickLead(lead.pin)}
+          />
+        ))}
+      </ul>
+    </section>
   );
 }
 
