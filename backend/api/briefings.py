@@ -619,6 +619,23 @@ async def get_briefing(
             ovr = overlay_by_pin.get(p['pin'])
             if ovr is not None:
                 lead['investigation'] = ovr
+
+            # ── Signal-presence flags ──
+            # weekly_selector's divorce bucket reads has_divorce_signal
+            # directly; without setting it here the divorce bucket
+            # always returns 0 (TODO in _select_divorce_bucket). We
+            # derive both flags from matches_by_pin joined to
+            # signals_by_id — the same fetch used to build the
+            # investigation overlay, just rolled up to a per-pin
+            # boolean for the bucket selector.
+            pin_signal_types = set()
+            for m in matches_by_pin.get(p['pin'], []) or []:
+                sig = signals_by_id.get(m.get('raw_signal_id'))
+                if sig and sig.get('signal_type'):
+                    pin_signal_types.add(sig['signal_type'])
+            lead['has_probate_signal'] = 'probate' in pin_signal_types
+            lead['has_divorce_signal'] = 'divorce' in pin_signal_types
+
             return lead
 
         leads = [_shape_lead(p, inv_by_pin.get(p['pin'])) for p in parcels]
