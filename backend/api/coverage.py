@@ -33,9 +33,17 @@ async def list_coverage(
         raise HTTPException(503, "Database unavailable")
 
     try:
+        # Explicit column list — this is a public endpoint, so we
+        # intentionally enumerate what's safe to expose. Six
+        # contact_now_* columns came in via migration 022; they're
+        # needed so the public coverage page shows the full Contact Now
+        # total instead of probate-only.
         q = supa.table('zip_coverage_v3').select(
             'zip_code, market_key, city, state, status, '
-            'parcel_count, investigated_count, current_call_now_count, went_live_at'
+            'parcel_count, investigated_count, current_call_now_count, '
+            'contact_now_probate, contact_now_divorce, contact_now_trust, '
+            'contact_now_llc, contact_now_absentee, contact_now_tenure, '
+            'went_live_at'
         )
         if include_development:
             q = q.in_('status', ['live', 'in_development'])

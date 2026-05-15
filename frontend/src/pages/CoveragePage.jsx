@@ -2,6 +2,24 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { coverage } from '../api/client.js';
 
+// Sum of per-bucket counts, each capped at 100, mirrors the briefing's
+// per-bucket cap. Falls back to current_call_now_count (probate-only,
+// legacy) when contact_now_* columns aren't populated yet — e.g. ZIPs
+// that haven't been briefed since migration 022 was applied.
+function contactNowTotal(z) {
+  const buckets = [
+    z?.contact_now_probate,
+    z?.contact_now_divorce,
+    z?.contact_now_trust,
+    z?.contact_now_llc,
+    z?.contact_now_absentee,
+    z?.contact_now_tenure,
+  ];
+  const populated = buckets.some(v => Number(v) > 0);
+  if (!populated) return z?.current_call_now_count || 0;
+  return buckets.reduce((sum, v) => sum + Math.min(Number(v) || 0, 100), 0);
+}
+
 export default function CoveragePage() {
   const [zips, setZips] = useState(null);
   const [error, setError] = useState(null);
@@ -113,7 +131,7 @@ export default function CoveragePage() {
                   }}>
                     {z.parcel_count?.toLocaleString() || 0} parcels ·
                     {' '}{z.investigated_count?.toLocaleString() || 0} investigated ·
-                    {' '}{z.current_call_now_count || 0} on this week&rsquo;s CONTACT NOW
+                    {' '}{contactNowTotal(z)} on this week&rsquo;s CONTACT NOW
                   </div>
                 </div>
                 <div style={{
