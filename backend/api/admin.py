@@ -2649,3 +2649,50 @@ async def test_release_notification(
         test_email=test_email,
         dry_run=dry_run,
     )
+
+
+# ─── Lob integration diagnostic ─────────────────────────────────────────
+
+@router.get("/lob/diag", dependencies=[Depends(require_admin)])
+async def lob_diag(mode: str = "test"):
+    """
+    Verify the Lob integration is alive end-to-end. Calls
+    /v1/us_verifications against Lob's documented sample address. Free
+    in test mode. Use to confirm:
+      - LOB_TEST_API_KEY / LOB_LIVE_API_KEY env vars are set in Railway
+      - The key is valid (returns 200, not 401/403)
+      - Network egress to api.lob.com works
+      - The address-verification path works end-to-end
+
+    Pass ?mode=live to check the live key too (also free — verification
+    is the one endpoint that works without a payment method on file).
+    """
+    from backend.services.lob_client import LobClient, LobError
+
+    try:
+        client = LobClient(mode=mode)
+    except LobError as e:
+        raise HTTPException(500, f"LobClient init failed: {e}")
+
+    try:
+        # Lob's documented sample address — known-deliverable in all modes.
+        verified = client.verify_address(
+            line1="210 King St",
+            city="San Francisco",
+            state="CA",
+            zip_code="94107",
+        )
+        return {
+            "ok": True,
+            "mode": mode,
+            "verified_address": verified,
+        }
+    except LobError as e:
+        raise HTTPException(
+            500,
+            f"Lob {mode} mode verify failed: {type(e).__name__}: {e} "
+            f"(status_code={getattr(e, 'status_code', '?')}, "
+            f"lob_code={getattr(e, 'lob_code', '?')})",
+        )
+    finally:
+        client.close()
