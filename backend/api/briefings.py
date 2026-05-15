@@ -628,8 +628,23 @@ async def get_briefing(
             # signals_by_id — the same fetch used to build the
             # investigation overlay, just rolled up to a per-pin
             # boolean for the bucket selector.
+            #
+            # STRICT MATCHES ONLY. Weak matches are overwhelmingly
+            # false positives — surname collisions like a "John K
+            # Anderson" parcel matched to a "Mark John Anderson"
+            # divorce filing. Same definition used by the
+            # /api/harvest/matches endpoint's default filter. Setting
+            # has_divorce_signal on weak matches inflated the divorce
+            # bucket from ~2 strict per ZIP to ~100 weak per ZIP and
+            # would have agents cold-calling people they have no
+            # actual basis to suspect of being in a divorce.
+            # has_probate_signal gets the same treatment for
+            # consistency, even though the live probate bucket relies
+            # on Rule 6 (family PR identified) not this flag.
             pin_signal_types = set()
             for m in matches_by_pin.get(p['pin'], []) or []:
+                if m.get('match_strength') == 'weak':
+                    continue
                 sig = signals_by_id.get(m.get('raw_signal_id'))
                 if sig and sig.get('signal_type'):
                     pin_signal_types.add(sig['signal_type'])
