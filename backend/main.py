@@ -31,6 +31,7 @@ from backend.api import (
     skip_trace,
     zip_polygons,
     notifications,
+    letters,
 )
 
 
@@ -149,6 +150,7 @@ app.include_router(territory.router,      prefix="/api/agent",       tags=["agen
 app.include_router(lead_interactions.router, prefix="/api/lead-interactions", tags=["lead-interactions"])
 app.include_router(lead_organization.router, prefix="/api",                  tags=["lead-organization"])
 app.include_router(skip_trace.router,        prefix="/api",                  tags=["skip-trace"])
+app.include_router(letters.router,           prefix="/api/letters",          tags=["letters"])
 # Onboarding endpoint is logically an admin operation; mount under
 # /api/admin so all privileged endpoints share a path prefix.
 app.include_router(onboard.router,        prefix="/api/admin",       tags=["admin"])
