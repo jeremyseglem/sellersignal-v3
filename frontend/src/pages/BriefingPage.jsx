@@ -494,7 +494,6 @@ function BriefingBody() {
                 leads={actionLeads}
                 selectedPin={selectedPin}
                 onPickLead={handlePickLead}
-                bucketKey={activeBucket}
               />
               <PipelineList
                 buildNowLeads={pipelineLeads.buildNow}

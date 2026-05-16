@@ -32,11 +32,11 @@ import { useState } from 'react';
  *                point. Smaller name font, lighter color, no number prefix.
  *   onClick    — handler invoked with no args; parent already knows the pin
  */
-export default function LeadRow({ lead, index, selected, accent, muted = false, onClick, bucketKey }) {
+export default function LeadRow({ lead, index, selected, accent, muted = false, onClick }) {
   const [hovered, setHovered] = useState(false);
 
   const name = lead.owner_name || lead.address || 'Unknown owner';
-  const hint = buildSignalHint(lead, bucketKey);
+  const hint = buildSignalHint(lead);
 
   // Visual weight tuning. Top 5 leads use the prominent treatment;
   // muted leads (overflow beyond the top 5) read as the same shape
@@ -159,16 +159,7 @@ const SIGNAL_LABELS = {
   tax_foreclosure: 'Tax foreclosure',
 };
 
-// Maps a bucket key to the signal_type that bucket is built around.
-// Only signal-driven buckets are listed — state-based buckets (trust,
-// llc, absentee, tenure) don't have a corresponding signal_type and
-// fall through to the default "most recent strict" behavior below.
-const BUCKET_SIGNAL_TYPE = {
-  probate: 'probate',
-  divorce: 'divorce',
-};
-
-function buildSignalHint(lead, bucketKey) {
+function buildSignalHint(lead) {
   const matches = lead.harvester_matches || [];
 
   // Strongest signal: a harvester match with a date. Frame as
@@ -204,20 +195,7 @@ function buildSignalHint(lead, bucketKey) {
       .filter((m) => eventDate(m) && m.signal_type)
       .sort((a, b) => (eventDate(b) || '').localeCompare(eventDate(a) || ''));
     if (dated.length > 0) {
-      // Bucket-aware preference: when the lead is rendered inside a
-      // signal-driven bucket tab (probate / divorce), prefer the most
-      // recent match whose signal_type matches that bucket. A parcel
-      // with both a strict probate and a strict divorce match shows
-      // up in the Divorce tab via has_divorce_signal=true; without
-      // this preference the subtitle would still pick the globally
-      // most-recent strict match (likely probate) and disagree with
-      // the tab the user is viewing. Falls back to global most-recent
-      // when no match in the current bucket has a date.
-      const preferredType = BUCKET_SIGNAL_TYPE[bucketKey];
-      const preferred = preferredType
-        ? dated.filter((m) => m.signal_type === preferredType)
-        : [];
-      const m = preferred.length > 0 ? preferred[0] : dated[0];
+      const m = dated[0];
       const label = SIGNAL_LABELS[m.signal_type] || _humanize(m.signal_type);
       const elapsed = _elapsed(eventDate(m));
       return elapsed ? `${label} ${elapsed}` : label;

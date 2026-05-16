@@ -32,7 +32,7 @@ import LeadRow from './LeadRow.jsx';
  *   topN          — count of leads to show in the prominent tier;
  *                   defaults to 5 (matches the spec headline)
  */
-export default function ActionList({ leads, selectedPin, onPickLead, topN = 5, bucketKey }) {
+export default function ActionList({ leads, selectedPin, onPickLead, topN = 5 }) {
   const [expanded, setExpanded] = useState(false);
 
   if (!leads || leads.length === 0) return null;
@@ -63,7 +63,6 @@ export default function ActionList({ leads, selectedPin, onPickLead, topN = 5, b
             selected={lead.pin === selectedPin}
             accent="var(--call-now)"
             onClick={() => onPickLead(lead.pin)}
-            bucketKey={bucketKey}
           />
         ))}
       </ul>
@@ -87,7 +86,6 @@ export default function ActionList({ leads, selectedPin, onPickLead, topN = 5, b
                   accent="var(--call-now)"
                   muted
                   onClick={() => onPickLead(lead.pin)}
-                  bucketKey={bucketKey}
                 />
               ))}
             </ul>
