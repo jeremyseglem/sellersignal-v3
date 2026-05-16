@@ -38,7 +38,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Header, Request
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from backend.api.auth import user_from_authorization
@@ -877,7 +876,7 @@ async def render_pdf(
         "recipient_zip":   to_addr.get("address_zip"),
     }).execute()
 
-    return HTMLResponse(content=html, media_type="text/html")
+    return {"html": html, "letter_index": body.letter_index}
 
 
 # ── 9. Lob webhook ──────────────────────────────────────────────────

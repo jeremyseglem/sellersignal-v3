@@ -420,3 +420,86 @@ export const territory = {
     body: JSON.stringify({ zip_code }),
   }),
 };
+
+
+// ── Letters / Lob integration ────────────────────────────────────
+// Direct-mail letter sending via Lob, plus print-to-PDF and balance
+// management. Pricing in cents:
+//   single letter:    299  ($2.99)
+//   6-letter sequence: 1499 ($14.99, saves $3)
+//   print-to-PDF:      0    (free)
+//
+// All routes require auth. Test mode (LOB_MODE=test in Railway) sends
+// fake letters that don't actually mail; live mode requires a billing
+// address on file in the Lob dashboard.
+
+export const letters = {
+  /**
+   * Render HTML for one letter without sending. Returns {html, letter}.
+   * Used by SixLettersModal to show a preview before send.
+   */
+  preview: (pin, letter_index) => authedRequest('/letters/preview', {
+    method: 'POST',
+    body: JSON.stringify({ pin, letter_index }),
+  }),
+
+  /**
+   * Send one letter via Lob. Deducts $2.99 from balance. Returns
+   * {ok, letter_row_id, lob_letter_id, status, expected_delivery_date,
+   *  cost_cents, new_balance_cents}.
+   * Rejects with 402 if balance insufficient, 400 if profile missing
+   * return-address fields.
+   */
+  send: (pin, letter_index) => authedRequest('/letters/send', {
+    method: 'POST',
+    body: JSON.stringify({ pin, letter_index }),
+  }),
+
+  /**
+   * Schedule all 6 letters via Lob send_date. Deducts $14.99.
+   * Letter 1 mails immediately; 2-6 schedule at +30/60/90/135/180 days.
+   * Returns {ok, sequence_id, letters_scheduled, cost_cents}.
+   */
+  startSequence: (pin) => authedRequest('/letters/start-sequence', {
+    method: 'POST',
+    body: JSON.stringify({ pin }),
+  }),
+
+  /**
+   * Cancel any unmailed letters in a sequence. Refunds proportionally
+   * (cancelled_count / 6 * $14.99) back to balance.
+   */
+  cancelSequence: (sequence_id) => authedRequest(`/letters/cancel-sequence/${sequence_id}`, {
+    method: 'POST',
+  }),
+
+  /** Get agent's current credit balance. Returns {balance_cents, balance_display}. */
+  balance: () => authedRequest('/letters/balance'),
+
+  /** Stripe top-up (stubbed until commit 5 ships Stripe wiring). */
+  topup: () => authedRequest('/letters/topup', { method: 'POST' }),
+
+  /**
+   * All letters + sequences for one parcel from this agent. Used by
+   * the dossier to show what's been sent and prevent double-sends.
+   * Returns {letters: [...], sequences: [...]}.
+   */
+  byParcel: (pin) => authedRequest(`/letters/by-parcel/${pin}`),
+
+  /**
+   * Render a letter as standalone HTML. Returns the raw HTML string
+   * (not JSON) so the frontend can open it in a new window for the
+   * browser's Print > Save as PDF flow. Logs a 'pdf_rendered' event.
+   * Doesn't deduct balance.
+   */
+  renderPdfUrl: (pin, letter_index) => {
+    // Returns the URL for window.open — actual auth handled by browser
+    // sending the supabase cookie. We POST through fetch and convert
+    // to a blob URL so the new window inherits auth without exposing
+    // the JWT in URL params.
+    return authedRequest(`/letters/render-pdf/${pin}`, {
+      method: 'POST',
+      body: JSON.stringify({ letter_index }),
+    });
+  },
+};
