@@ -245,20 +245,17 @@ def render_letter_html(
     box-sizing: border-box;
   }}
   .header {{
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
     margin-bottom: 0.25in;
-  }}
-  .header .date {{
-    font-size: 10.5pt;
-    color: #555;
-    padding-top: 4px;
   }}
   .header img {{
     width: 0.9in;
     height: 0.9in;
     display: block;
+    margin-bottom: 0.1in;
+  }}
+  .header .date {{
+    font-size: 10.5pt;
+    color: #555;
   }}
   .recipient-block {{
     margin: 0.2in 0 0.35in 0;
@@ -278,8 +275,8 @@ def render_letter_html(
 <body>
 <div class="page">
   <div class="header">
-    <div class="date">{today}</div>
     {logo_html}
+    <div class="date">{today}</div>
   </div>
 
   <div class="recipient-block">
