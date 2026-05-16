@@ -343,7 +343,7 @@ async def preview_letter(
     user = user_from_authorization(authorization)
     supa = _supa()
 
-    profile = _load_profile(supa, user["id"])
+    profile = _load_profile(supa, user.id)
     parcel = _load_parcel(supa, body.pin)
     matches = _load_harvester_matches(supa, body.pin)
     letters = _generate_letters_for_parcel(parcel, matches)
@@ -383,7 +383,7 @@ async def send_letter(
     user = user_from_authorization(authorization)
     supa = _supa()
 
-    profile = _load_profile(supa, user["id"])
+    profile = _load_profile(supa, user.id)
     _validate_profile_for_send(profile)
 
     parcel = _load_parcel(supa, body.pin)
@@ -394,7 +394,7 @@ async def send_letter(
     from_raw, to_raw = _build_lob_addresses(profile, parcel)
 
     cost = SINGLE_LETTER_COST_CENTS
-    _charge_balance(supa, user["id"], cost)
+    _charge_balance(supa, user.id, cost)
 
     # Wrap the rest in try/except — if anything fails after charging, we
     # refund and re-raise. Lob duplication is prevented by idempotency
@@ -420,7 +420,7 @@ async def send_letter(
             html_body=html,
             description=f"SellerSignal letter {letter['num']}/6 to {body.pin}",
             metadata={
-                "agent_id": str(user["id"]),
+                "agent_id": str(user.id),
                 "pin": str(body.pin),
                 "zip_code": str(parcel.get("zip_code") or ""),
                 "letter_index": str(body.letter_index),
@@ -435,7 +435,7 @@ async def send_letter(
         # fails, the letter is on the wire. We log loudly so reconciliation
         # is possible from Lob's dashboard.
         row = {
-            "agent_id": user["id"],
+            "agent_id": user.id,
             "pin": body.pin,
             "zip_code": parcel.get("zip_code") or "",
             "sequence_id": None,
@@ -486,13 +486,13 @@ async def send_letter(
         raise
     except (LobConfigError, LobError) as e:
         # Lob failed cleanly — letter not sent. Refund and surface.
-        _refund_balance(supa, user["id"], cost)
+        _refund_balance(supa, user.id, cost)
         logger.warning("Lob send failed for agent %s pin %s: %s",
-                       user["id"], body.pin, e)
+                       user.id, body.pin, e)
         raise HTTPException(502, f"Lob error: {type(e).__name__}: {e}")
     except Exception as e:
         # Unknown failure — refund and surface as 500.
-        _refund_balance(supa, user["id"], cost)
+        _refund_balance(supa, user.id, cost)
         logger.exception("Unexpected error sending letter")
         raise HTTPException(500, f"Send failed: {type(e).__name__}: {e}")
 
@@ -517,7 +517,7 @@ async def start_sequence(
     user = user_from_authorization(authorization)
     supa = _supa()
 
-    profile = _load_profile(supa, user["id"])
+    profile = _load_profile(supa, user.id)
     _validate_profile_for_send(profile)
 
     parcel = _load_parcel(supa, body.pin)
@@ -526,7 +526,7 @@ async def start_sequence(
     from_raw, to_raw = _build_lob_addresses(profile, parcel)
 
     cost = SEQUENCE_COST_CENTS
-    _charge_balance(supa, user["id"], cost)
+    _charge_balance(supa, user.id, cost)
 
     sequence_row = None
     created_lob_ids: list[str] = []
@@ -544,7 +544,7 @@ async def start_sequence(
 
         # Create the sequence parent row first so child rows have a FK.
         seq_insert = supa.table("letter_sequences_v3").insert({
-            "agent_id": user["id"],
+            "agent_id": user.id,
             "pin": body.pin,
             "zip_code": parcel.get("zip_code") or "",
             "status": "active",
@@ -575,7 +575,7 @@ async def start_sequence(
                 html_body=html,
                 description=f"SellerSignal sequence {sequence_id} letter {idx}/6 to {body.pin}",
                 metadata={
-                    "agent_id": str(user["id"]),
+                    "agent_id": str(user.id),
                     "pin": str(body.pin),
                     "zip_code": str(parcel.get("zip_code") or ""),
                     "letter_index": str(idx),
@@ -588,7 +588,7 @@ async def start_sequence(
             created_lob_ids.append(lob_letter.get("id"))
 
             row = {
-                "agent_id": user["id"],
+                "agent_id": user.id,
                 "pin": body.pin,
                 "zip_code": parcel.get("zip_code") or "",
                 "sequence_id": sequence_id,
@@ -650,12 +650,12 @@ async def start_sequence(
             except Exception:
                 pass
 
-        _refund_balance(supa, user["id"], cost)
+        _refund_balance(supa, user.id, cost)
         raise HTTPException(502, f"Sequence creation failed: {type(e).__name__}: {e}")
 
     except Exception as e:
         logger.exception("Unexpected error starting sequence")
-        _refund_balance(supa, user["id"], cost)
+        _refund_balance(supa, user.id, cost)
         raise HTTPException(500, f"Sequence start failed: {type(e).__name__}: {e}")
 
 
@@ -684,7 +684,7 @@ async def cancel_sequence(
         supa.table("letter_sequences_v3")
         .select("*")
         .eq("id", sequence_id)
-        .eq("agent_id", user["id"])
+        .eq("agent_id", user.id)
         .maybe_single()
         .execute()
     )
@@ -736,7 +736,7 @@ async def cancel_sequence(
 
     refund_cents = int(round((cancelled_count / 6) * SEQUENCE_COST_CENTS))
     if refund_cents > 0:
-        _refund_balance(supa, user["id"], refund_cents)
+        _refund_balance(supa, user.id, refund_cents)
 
     supa.table("letter_sequences_v3").update({
         "status": "cancelled",
@@ -760,7 +760,7 @@ async def cancel_sequence(
 async def get_balance(authorization: Optional[str] = Header(None)):
     user = user_from_authorization(authorization)
     supa = _supa()
-    profile = _load_profile(supa, user["id"])
+    profile = _load_profile(supa, user.id)
     return {
         "balance_cents": int(profile.get("letter_credit_cents") or 0),
         "balance_display": f"${int(profile.get('letter_credit_cents') or 0) / 100:.2f}",
@@ -809,7 +809,7 @@ async def letters_by_parcel(
             "lob_letter_id,lob_mode,lob_send_date,lob_expected_delivery,"
             "created_at,mailed_at,delivered_at,sequence_id"
         )
-        .eq("agent_id", user["id"])
+        .eq("agent_id", user.id)
         .eq("pin", pin)
         .order("created_at", desc=True)
         .execute()
@@ -817,7 +817,7 @@ async def letters_by_parcel(
     sequences = (
         supa.table("letter_sequences_v3")
         .select("id,status,started_at,cancelled_at,total_charged_cents")
-        .eq("agent_id", user["id"])
+        .eq("agent_id", user.id)
         .eq("pin", pin)
         .order("started_at", desc=True)
         .execute()
@@ -848,7 +848,7 @@ async def render_pdf(
     user = user_from_authorization(authorization)
     supa = _supa()
 
-    profile = _load_profile(supa, user["id"])
+    profile = _load_profile(supa, user.id)
     parcel = _load_parcel(supa, pin)
     matches = _load_harvester_matches(supa, pin)
     letters = _generate_letters_for_parcel(parcel, matches)
@@ -859,7 +859,7 @@ async def render_pdf(
 
     # Log the PDF render so dossier history is complete.
     supa.table("letters_sent_v3").insert({
-        "agent_id": user["id"],
+        "agent_id": user.id,
         "pin": pin,
         "zip_code": parcel.get("zip_code") or "",
         "sequence_id": None,

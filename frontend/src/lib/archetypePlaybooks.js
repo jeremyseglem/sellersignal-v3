@@ -33,7 +33,7 @@ export const ARCHETYPES = {
     label: 'Probate',
     tone: 'condolence-first',
     primaryAction: {
-      label: 'Send handwritten letter',
+      label: 'Direct mail',
       kind: 'send-letter',
     },
     outcomes: [
@@ -70,7 +70,7 @@ export const ARCHETYPES = {
     label: 'Divorce',
     tone: 'neutral-brief',
     primaryAction: {
-      label: 'Send introduction letter',
+      label: 'Direct mail',
       kind: 'send-letter',
     },
     outcomes: [
@@ -100,7 +100,7 @@ export const ARCHETYPES = {
     label: 'Estate transition',
     tone: 'relational-trusted-intro',
     primaryAction: {
-      label: 'Send introduction letter',
+      label: 'Direct mail',
       kind: 'send-letter',
     },
     outcomes: [
@@ -125,7 +125,7 @@ export const ARCHETYPES = {
     label: 'Investor exit window',
     tone: 'rational-opportunity',
     primaryAction: {
-      label: 'Send off-market inquiry',
+      label: 'Direct mail',
       kind: 'send-letter',
     },
     outcomes: [
@@ -156,7 +156,7 @@ export const ARCHETYPES = {
     label: 'Long-tenure owner',
     tone: 'relational-soft-intro',
     primaryAction: {
-      label: 'Send introduction letter',
+      label: 'Direct mail',
       kind: 'send-letter',
     },
     outcomes: [
@@ -185,7 +185,7 @@ export const ARCHETYPES = {
     label: 'Lead',
     tone: 'neutral',
     primaryAction: {
-      label: 'Send introduction letter',
+      label: 'Direct mail',
       kind: 'send-letter',
     },
     outcomes: [

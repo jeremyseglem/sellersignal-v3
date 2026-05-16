@@ -187,12 +187,11 @@ export default function ParcelDossierV2({ dossier, onClose }) {
   };
 
   const handleSendLetter = guardCold(() => {
-    showHint(
-      'Coming in V1.5 — letter generation will produce a printable PDF '
-      + 'and mark the lead as letter-sent. Lob mail integration after.'
-    );
-    // We still log the intent so future migrations to real send have
-    // a complete history. But not in V1 — wait until letters are real.
+    // Opens the SixLettersModal which contains the full direct-mail
+    // flow: single letter ($2.99), full 6-letter sequence ($14.99),
+    // or print-to-PDF (free). The "send handwritten letter" placeholder
+    // hint that used to live here is replaced by the real send flow.
+    setSixLettersOpen(true);
   });
 
   // Skip-trace lives inside ContactSection (via SkipTracePanel) and
@@ -1586,7 +1585,7 @@ function ActionButtons({
       paddingTop: 'var(--space-md)',
       borderTop: '1px solid var(--border)',
     }}>
-      {showSend && (
+      {showSend && canGenerateSixLetters && (
         <button
           onClick={onSendLetter}
           disabled={actionPending}
@@ -1659,25 +1658,6 @@ function ActionButtons({
         >
           Export to CRM
         </button>
-        {canGenerateSixLetters && (
-          <button
-            onClick={onSixLetters}
-            style={{
-              padding: '7px 14px',
-              fontSize: 11,
-              fontWeight: 400,
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontFamily: 'var(--font-sans)',
-              minWidth: 130,
-            }}
-          >
-            Six Letters
-          </button>
-        )}
       </div>
 
       <div style={{
