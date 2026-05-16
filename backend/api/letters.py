@@ -129,8 +129,13 @@ def _load_profile(supa, user_id: str) -> dict[str, Any]:
 
 
 def _validate_profile_for_send(profile: dict[str, Any]) -> None:
-    """Block send if required return-address fields aren't set on profile."""
+    """Block send if required fields aren't set on profile. Phone is
+    required so the letter has a callback number — the entire point
+    of direct mail is for the recipient to be able to reach the
+    agent. Return address is required so undeliverable mail comes
+    back somewhere real."""
     required = (
+        "phone",
         "return_address_line1", "return_address_city",
         "return_address_state", "return_address_zip",
     )
@@ -323,6 +328,8 @@ def _render_html_for_letter(
         recipient_state=to_addr["address_state"],
         recipient_zip=to_addr["address_zip"],
         agent_full_name=(profile.get("full_name") or "Your Agent"),
+        agent_phone=profile.get("phone"),
+        agent_email=profile.get("email"),
         agent_signature_url=profile.get("signature_url"),
     )
 

@@ -159,6 +159,8 @@ def render_letter_html(
     recipient_state: str,
     recipient_zip: str,
     agent_full_name: str,
+    agent_phone: Optional[str] = None,
+    agent_email: Optional[str] = None,
     agent_signature_url: Optional[str] = None,
     logo_path: Optional[Path] = None,
 ) -> str:
@@ -212,6 +214,23 @@ def render_letter_html(
         signature_html = (
             f'<div style="font-style:italic;font-size:16pt;'
             f'font-family:Georgia,serif;">{escape(agent_full_name)}</div>'
+        )
+
+    # Contact line under signature. Phone + email separated by a middle
+    # dot. Phone is required at the API layer; email is best-effort.
+    # If both are missing for any reason, the contact line is omitted
+    # entirely (rather than rendering as a sad floating dot).
+    contact_parts = []
+    if agent_phone:
+        contact_parts.append(escape(agent_phone))
+    if agent_email:
+        contact_parts.append(escape(agent_email))
+    contact_html = ""
+    if contact_parts:
+        contact_html = (
+            f'<div style="margin-top:0.08in;font-size:10pt;color:#555;">'
+            f'{" &middot; ".join(contact_parts)}'
+            f'</div>'
         )
 
     # The HTML uses normal document flow (not absolute positioning) so
@@ -287,6 +306,7 @@ def render_letter_html(
     {body_html}
     <div class="signature-block">
       {signature_html}
+      {contact_html}
     </div>
   </div>
 </div>
