@@ -181,11 +181,11 @@ def _build_lob_addresses(
             or (profile.get("full_name") or "").strip()
             or "SellerSignal Agent"
         ),
-        "address_line1": profile["return_address_line1"].strip(),
+        "address_line1": (profile.get("return_address_line1") or "").strip(),
         "address_line2": (profile.get("return_address_line2") or "").strip() or None,
-        "address_city":  profile["return_address_city"].strip(),
-        "address_state": profile["return_address_state"].strip().upper(),
-        "address_zip":   profile["return_address_zip"].strip(),
+        "address_city":  (profile.get("return_address_city")  or "").strip(),
+        "address_state": (profile.get("return_address_state") or "").strip().upper(),
+        "address_zip":   (profile.get("return_address_zip")   or "").strip(),
         "address_country": "US",
     }
 
