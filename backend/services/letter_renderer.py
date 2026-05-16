@@ -36,6 +36,7 @@ import base64
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any, Optional
@@ -197,7 +198,10 @@ def render_letter_html(
     )
 
     # Signature rendering — show the image if we have one, otherwise
-    # show the typed name in italic at the signature line.
+    # show the typed name in a script-like italic at the signature
+    # line. (No double-rendering — the italic name IS the signature
+    # in the fallback path, and the typed name is in the salutation
+    # of the letter body.)
     if signature_uri:
         signature_html = (
             f'<img src="{signature_uri}" alt="" '
@@ -206,14 +210,17 @@ def render_letter_html(
         )
     else:
         signature_html = (
-            f'<div style="font-style:italic;font-size:14pt;'
-            f'margin-bottom:0.05in;">{escape(agent_full_name)}</div>'
-            f'<div>{escape(agent_full_name)}</div>'
+            f'<div style="font-style:italic;font-size:16pt;'
+            f'font-family:Georgia,serif;">{escape(agent_full_name)}</div>'
         )
 
-    # The HTML is intentionally a single document with inline CSS.
-    # Page sized 8.5x11 with 0.5" margins. Address block positioned
-    # to land in the lower-left envelope window after tri-fold.
+    # The HTML uses normal document flow (not absolute positioning) so
+    # the layout is tight on screen / PDF and still folds correctly for
+    # Lob's #10 double-window envelope. The recipient block lands ~1.75"
+    # from the top of the unfolded page — when the letter is tri-folded
+    # (bottom third up, top third down) for a #10 envelope, that's the
+    # spot where the lower-left envelope window sits.
+    today = datetime.now(timezone.utc).strftime("%B %-d, %Y")
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -229,14 +236,13 @@ def render_letter_html(
     font-family: Georgia, 'Times New Roman', serif;
     font-size: 11pt;
     color: #1a1a1a;
-    line-height: 1.45;
+    line-height: 1.5;
   }}
   .page {{
     width: 8.5in;
-    height: 11in;
-    padding: 0.5in;
+    min-height: 11in;
+    padding: 0.6in 0.85in 0.6in 0.85in;
     box-sizing: border-box;
-    position: relative;
   }}
   .header {{
     display: flex;
@@ -244,34 +250,35 @@ def render_letter_html(
     align-items: flex-start;
     margin-bottom: 0.25in;
   }}
-  .recipient-block {{
-    /* Positioned to align with Lob's standard #10 double-window
-       envelope. The recipient window on a tri-folded letter sits
-       roughly 3.5"-4.5" from the top of the unfolded page, 0.5"-4.5"
-       from the left. Lob is forgiving within ~0.25" tolerance. */
-    position: absolute;
-    top: 3.625in;
-    left: 0.875in;
-    width: 4in;
-    font-size: 11pt;
-    line-height: 1.3;
+  .header .date {{
+    font-size: 10.5pt;
+    color: #555;
+    padding-top: 4px;
   }}
-  .body {{
-    margin-top: 5.25in;  /* push body below the address window area */
+  .header img {{
+    width: 0.9in;
+    height: 0.9in;
+    display: block;
+  }}
+  .recipient-block {{
+    margin: 0.2in 0 0.35in 0;
+    font-size: 11pt;
+    line-height: 1.35;
   }}
   .body p {{
-    margin: 0 0 0.12in 0;
+    margin: 0 0 0.14in 0;
     text-align: left;
   }}
   .signature-block {{
-    margin-top: 0.25in;
+    margin-top: 0.2in;
+    min-height: 0.6in;
   }}
 </style>
 </head>
 <body>
 <div class="page">
   <div class="header">
-    <div></div>
+    <div class="date">{today}</div>
     {logo_html}
   </div>
 
