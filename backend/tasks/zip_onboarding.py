@@ -13,8 +13,12 @@ This module collapses that into one function. The pipeline:
   2. seed         — load parcels_v3 from data/seeds/wa-king-{zip}-owners.json
                     (writes owner_name, last_transfer_date, tenure_years,
                      value, address, owner_type)
-  3. canonicalize — parse owner_name into owner_canonical_v3 via Haiku
-                    (cost ~$1 per 1k parcels, ~$10-15 per ZIP)
+  3. canonicalize — parse owner_name into owner_canonical_v3 via Haiku 4.5
+                    (cost ~$0.50 per 1k parcels at current pricing; ~$4-9
+                    for a typical 8-18k-parcel KC ZIP. See the canonicalize
+                    module docstring for the per-parcel rate;
+                    backend/ingest/backfill_owner_canonical.py prints
+                    measured cost at end of each run.)
   4. classify     — assign signal_family archetype based on owner_type
                     + tenure_years + value patterns
   5. band         — assign Band 0-4 based on archetype + hard
@@ -336,7 +340,8 @@ async def run_onboarding(
         log.info(f"[onboard {zip_code}] step 2/6: seed")
         await _step_seed(zip_code, json_path)
 
-        # Step 3: canonicalize  (the slow expensive step — ~30 min, ~$10-15)
+        # Step 3: canonicalize  (the slow step — wall-clock dominates here;
+        # cost ~$0.0005/parcel ≈ $4-9 per typical KC ZIP at Haiku 4.5 pricing)
         log.info(f"[onboard {zip_code}] step 3/6: canonicalize (slow)")
         await _step_canonicalize(zip_code)
 
