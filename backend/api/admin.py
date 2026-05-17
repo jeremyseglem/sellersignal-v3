@@ -1049,7 +1049,7 @@ async def reclassify_archetypes_zip(zip_code: str = Path(..., pattern=r'^\d{5}$'
 async def onboard_zip(
     zip_code: str = Path(..., pattern=r'^\d{5}$'),
     market_key: str = "WA_KING",
-    city: str = "Bellevue",
+    city: Optional[str] = None,
     state: str = "WA",
 ):
     """
@@ -1087,6 +1087,20 @@ async def onboard_zip(
     """
     from backend.tasks import zip_onboarding
     import asyncio
+
+    # Resolve city: explicit query param wins; otherwise look up the canonical
+    # ZIP→city map (KC first, then Snohomish). The "Bellevue" fallback should
+    # never actually fire — every onboarded ZIP should be in one of the maps.
+    # If it does fire, it's a sign the operator forgot to add the ZIP to the
+    # map before onboarding. (Background: pre-2026-05-17 this defaulted to
+    # "Bellevue" in the signature, which silently mis-tagged 98034 as Bellevue
+    # when an early curl misformat dropped the ?city= query param.)
+    if city is None:
+        city = (
+            KC_ZIP_TO_CITY.get(zip_code)
+            or SNO_ZIP_TO_CITY.get(zip_code)
+            or "Bellevue"
+        )
 
     # Verify the seed JSON is in place — fail-fast before kicking off
     json_path = f"/app/data/seeds/wa-king-{zip_code}-owners.json"
@@ -1136,6 +1150,84 @@ async def onboard_zip(
         "json_path":  found_path,
         "poll_url":   f"/api/admin/onboard-status/{zip_code}",
         "status":     zip_onboarding.get_status(zip_code),
+    }
+
+
+@router.post("/coverage-meta/{zip_code}", dependencies=[Depends(require_admin)])
+async def update_coverage_meta(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    city: Optional[str] = None,
+    state: Optional[str] = None,
+    market_key: Optional[str] = None,
+):
+    """
+    Update display-only metadata fields on an existing zip_coverage_v3 row.
+
+    Originally added 2026-05-17 to fix 98034 which got stuck with city="Bellevue"
+    after an early curl misformat dropped the ?city= query param during onboarding.
+    cmd_register is intentionally idempotent (insert-only, never updates) — this
+    endpoint provides the missing "update existing row's display metadata" path
+    without breaking that contract.
+
+    Only updates fields that are explicitly passed. Does NOT touch status,
+    parcel_count, current_call_now_count, or any other operationally-meaningful
+    field — only display metadata that could be wrong from a misformatted call.
+
+    Usage:
+        POST /api/admin/coverage-meta/98034?city=Kirkland
+        POST /api/admin/coverage-meta/99999?city=NewTown&state=WA&market_key=WA_KING
+
+    Returns the updated row.
+    """
+    from datetime import datetime, timezone
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(500, "Supabase not configured")
+
+    # Build the update payload — only fields the caller explicitly provided
+    update: dict = {}
+    if city is not None:
+        update["city"] = city
+    if state is not None:
+        update["state"] = state
+    if market_key is not None:
+        update["market_key"] = market_key
+
+    if not update:
+        raise HTTPException(
+            400,
+            "No fields to update. Pass at least one of: city, state, market_key",
+        )
+
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Verify the row exists first — clearer error than a silent zero-row update
+    existing = (supa.table("zip_coverage_v3")
+                .select("zip_code, city, state, market_key, status")
+                .eq("zip_code", zip_code)
+                .maybe_single()
+                .execute())
+    if not (existing and existing.data):
+        raise HTTPException(
+            404,
+            f"ZIP {zip_code} not in zip_coverage_v3. Use onboard-zip first.",
+        )
+
+    supa.table("zip_coverage_v3").update(update).eq("zip_code", zip_code).execute()
+
+    # Read back the updated row
+    after = (supa.table("zip_coverage_v3")
+             .select("zip_code, city, state, market_key, status, updated_at")
+             .eq("zip_code", zip_code)
+             .single()
+             .execute())
+
+    return {
+        "ok":     True,
+        "before": existing.data,
+        "after":  after.data,
+        "updated_fields": list(update.keys()),
     }
 
 
