@@ -18,10 +18,12 @@ This module collapses that into one function. The pipeline:
                     reads parcels_v3 directly)
   4. band         — assign Band 0-4 based on archetype + hard
                     disqualifiers (institutional, brokerage, etc.)
-  5. refresh_counts — compute zip_coverage_v3.current_call_now_count
-                    snapshot before publication
-  6. publish      — flip status from in_development to live; ZIP is
-                    now claimable + visible + Build Now leads render
+  5. publish      — flip status from in_development to live; ZIP is
+                    now claimable + visible + Build Now leads render.
+                    Must run before refresh_counts because the briefing
+                    endpoint is gated by require_live_zip.
+  6. refresh_counts — compute zip_coverage_v3.current_call_now_count
+                    snapshot from now-queryable briefing data
   ─── ZIP IS LIVE FOR BUILD NOW HERE — agents can use it ───
   7. canonicalize — parse owner_name into owner_canonical_v3 via Haiku 4.5
                     (best-effort; ~$0.50 per 1k parcels ≈ $4-9 per ZIP.
@@ -111,8 +113,8 @@ PIPELINE_STEPS = [
     "seed",
     "classify",
     "band",
-    "refresh_counts",
     "publish",
+    "refresh_counts",
     "canonicalize",
 ]
 
@@ -433,16 +435,18 @@ async def run_onboarding(
         log.info(f"[onboard {zip_code}] step 4/7: band")
         await _step_band(zip_code)
 
-        # Step 5: compute snapshot counts BEFORE publishing so the territory
-        # popup shows correct numbers the moment the ZIP goes live
-        log.info(f"[onboard {zip_code}] step 5/7: refresh_counts")
-        await _step_refresh_counts(zip_code)
-
-        # Step 6: flip status=live. ZIP is now visible, claimable, and
-        # rendering Build Now / Tier-2 leads. The moment this returns,
-        # agents can use this territory.
-        log.info(f"[onboard {zip_code}] step 6/7: publish (ZIP goes live)")
+        # Step 5: flip status=live FIRST so the briefing endpoint is
+        # queryable in step 6. refresh_counts hits /api/briefings which
+        # is gated by require_live_zip, so it 404s on in_development ZIPs.
+        # Briefings render correctly the moment publish returns.
+        log.info(f"[onboard {zip_code}] step 5/7: publish (ZIP goes live)")
         await _step_publish(zip_code)
+
+        # Step 6: compute snapshot counts now that briefings are queryable.
+        # Small window (~10s) where territory popup may show stale counts;
+        # acceptable since current_call_now_count is always a snapshot.
+        log.info(f"[onboard {zip_code}] step 6/7: refresh_counts")
+        await _step_refresh_counts(zip_code)
     except Exception as e:
         # Pre-publish failure — ZIP is NOT live. No special handling needed
         # beyond marking the orchestration state and returning.
