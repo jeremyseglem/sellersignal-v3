@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-05-17 (post 5-ZIP expansion + orchestrator redesign)
+**Last updated:** 2026-05-17 (post 5-ZIP expansion, orchestrator redesign, canonicalize autofill task, query-path fix)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -225,10 +225,13 @@ curl -s -H "X-Admin-Key: ${ADMIN_KEY}" "https://sellersignal.co/api/coverage"
 - **Database:** Supabase (Postgres). All tables `*_v3` to distinguish from archived v1 data.
 - **Auth:** Supabase Auth (magic-link email)
 - **Payments:** Stripe (carried from v1, not yet wired to V3 beta)
-- **Background tasks:** Three asyncio tasks in `backend/tasks/`:
+- **Background tasks:** Six asyncio tasks in `backend/tasks/`:
   - `autofill.py` — case-parties scraper
   - `obit_autofill.py` — multi-source obit harvester
   - `treasury_autofill.py` — tax-foreclosure harvester
+  - `rematch_autofill.py` — drains unmatched-signals queue
+  - `snohomish_tenure_autofill.py` — SCOPI per-parcel detail page scraper (idle by default)
+  - `canonicalize_autofill.py` — completes deferred / partial owner_canonical_v3 work
 - **Hosting:** Railway, single service, auto-deploy on push
 
 ---
@@ -257,6 +260,7 @@ curl -s -H "X-Admin-Key: ${ADMIN_KEY}" "https://sellersignal.co/api/coverage"
 | `harvesters/matcher.py` | Links raw_signals to parcels by canonicalized owner name |
 | `selection/weekly_selector.py` | Eligibility-contract selector (Rule 6) |
 | `tasks/zip_onboarding.py` | **Canonical orchestrator for adding a ZIP** |
+| `tasks/canonicalize_autofill.py` | Background task — completes deferred/partial owner_canonical_v3 work via Priority 1 (orchestrator-flagged) + Priority 2 (round-robin). Uses the same _CANONICALIZE_LOCK as the orchestrator. |
 | `tasks/autofill.py` | Background case-parties tick |
 | `tasks/obit_autofill.py` | Background obit ticks |
 | `tasks/treasury_autofill.py` | Background treasury ticks |
@@ -322,9 +326,13 @@ Documented above under "The canonical onboarding pipeline." Summary:
 | `GET /api/coverage` | Live ZIPs (add `?include_in_development=true` for all) |
 | `POST /api/admin/onboard-zip/{zip}?city=X` | Trigger orchestrator |
 | `GET /api/admin/onboard-status/{zip}` | Poll orchestrator state |
+| `POST /api/admin/coverage-meta/{zip}?city=X` | Update display metadata (city/state/market_key) on an existing live ZIP. Repair tool for rows stuck with wrong values from earlier curl misformats. |
+| `GET /api/harvest/canonicalize-autofill-status` | Background canon-autofill task state |
+| `POST /api/harvest/canonicalize-autofill-pause` | Pause canon-autofill |
+| `POST /api/harvest/canonicalize-autofill-resume` | Resume canon-autofill + clear backoff |
 | `GET /api/harvest/diag/parties-count` | case_parties_v3 row stats |
 | `GET /api/harvest/diag/recent-real-parties?limit=N` | Newest real participants vs sentinels |
-| `GET /api/harvest/autofill-status` | Background autofill state |
+| `GET /api/harvest/autofill-status` | Case-parties background autofill state |
 | `POST /api/harvest/backfill-parties?confirm=true&zip_code=X&limit=N` | Trigger parties scrape |
 | `POST /api/harvest/clear-sentinel-parties?confirm=true` | Wipe sentinel rows (DESTRUCTIVE) |
 
@@ -332,7 +340,9 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
-### 2026-05-17 — 5-ZIP expansion + orchestrator redesign (this session)
+### 2026-05-17 — 5-ZIP expansion + orchestrator redesign + canon autofill (this session)
+
+**Morning — seed builder + orchestrator redesign:**
 
 - Added `scripts/build_kc_owners.py` — canonical seed builder, committed to repo (commit `ec5344a`). Was previously living in an ephemeral container; not reproducible from repo. New version has 80% address-coverage gate that refuses to write a broken seed file (catches the May 10 bug shape automatically).
 - Fixed stale Haiku cost estimate in orchestrator docstring (commit `0e1a5e7`): was claiming $10-15/ZIP, actually ~$4-9/ZIP at current Haiku 4.5 pricing.
@@ -344,6 +354,13 @@ Documented above under "The canonical onboarding pipeline." Summary:
   - Dropped canonicalize concurrency from 10 to 3 after observing HTTP/2 stream pool saturation at conc=10.
   - New state semantics: `live_canonicalize_pending`, `live_canonicalize_failed`, `failed` (pre-publish only).
 - **Onboarded 5 new KC ZIPs to live state** sequentially (parallel-N onboarding fails on the HTTP/2 stream pool; this is a real constraint). Total ZIPs: 21 → 26. Added 63,302 parcels. Call Now leads on new ZIPs: 8 already firing before canonicalize completes.
+
+**Afternoon — manifesto + query path + canon autofill:**
+
+- Created **`MANIFESTO.md`** at repo top-level (commit `79e011d`). The handoff manifesto used in past Claude sessions lived only in the project context and was never committed; future sessions cloning the repo had no canonical document. This file is now the single source of truth.
+- **Fixed the `?city=` query-param fallback bug** (commit `e4ca29e`). The onboard-zip endpoint had `city: str = "Bellevue"` as a literal default; any operator who forgot to pass `?city=` (or whose curl was misformatted) silently mis-tagged the ZIP as Bellevue. Changed to `Optional[str] = None` with a runtime lookup against `KC_ZIP_TO_CITY` (then `SNO_ZIP_TO_CITY`). This was how 98034 ended up with city="Bellevue" instead of "Kirkland."
+- Added **`/admin/coverage-meta/{zip}`** repair endpoint (same commit). cmd_register is intentionally idempotent (insert-only, never updates), so once a row exists with wrong metadata, no pipeline path can fix it. This new endpoint provides a narrowly-scoped "update display metadata" path that only touches city/state/market_key. Used once to fix 98034's city. Kept in the codebase as a general-purpose repair tool.
+- **Built `canonicalize_autofill` background task** (commit `d113ee4`). Completes deferred and partial `owner_canonical_v3` work automatically so multi-ZIP onboarding becomes fully fire-and-forget. Two-tier priority: (1) ZIPs flagged by orchestrator state as `live_canonicalize_pending`/`live_canonicalize_failed`; (2) round-robin sweep across all live ZIPs for maintenance. Uses the same `_CANONICALIZE_LOCK` as the orchestrator. Admin endpoints: `GET/POST /api/harvest/canonicalize-autofill-{status,pause,resume}`. Wired into `main.py` lifespan as the 6th background task.
 
 ### 2026-05-16 — KC seed file address-bug fix
 
@@ -387,17 +404,21 @@ Project bootstrapped from v1 archive. Owner canonicalizer + classifier. ArcGIS i
 
 These are tracked here so they don't get lost. None are production blockers.
 
-### 1. `?city=` query param not flowing through to register
+### ~~1. `?city=` query param not flowing through to register~~ **RESOLVED 2026-05-17**
 
-98034 was onboarded with `?city=Kirkland` in the query string but parcels_v3 stored `city="Bellevue"` (the default). Same pattern likely affects 98029, 98053. The orchestrator's `_step_register` accepts a `city` parameter but the path from the admin endpoint to the orchestrator may not be wiring the query param through. Cosmetic only — `city` is display-only in parcels_v3 — but worth fixing for cleanliness and to prevent silent confusion. **Next on Jeremy's list (2026-05-17).**
+Was: 98034 onboarded with `?city=Kirkland` ended up with `city="Bellevue"` because the endpoint default was a literal "Bellevue" and an earlier curl misformat dropped the query param. The pipeline then no-op'd on re-fire because cmd_register is idempotent.
 
-### 2. No canonicalize_autofill background task
+Fix: endpoint signature changed to `city: Optional[str] = None` with runtime lookup against `KC_ZIP_TO_CITY`/`SNO_ZIP_TO_CITY`. Added `/admin/coverage-meta/{zip}` repair endpoint for the existing-row data fix. 98034's row corrected to Kirkland. Commit `e4ca29e`.
 
-When 3+ ZIPs are onboarded sequentially, only the first one's canonicalize runs to completion. The others land in `live_canonicalize_pending` because the concurrency lock is held. Currently, completing them requires manually re-firing the orchestrator on each one after the previous canon completes. A background `canonicalize_autofill` task that ticks every N minutes, scans for `live_canonicalize_pending` ZIPs (or `parcels_v3` rows without canonical) and processes them through the lock would make multi-ZIP expansion fully fire-and-forget. **Third on Jeremy's list (2026-05-17).**
+### ~~2. No canonicalize_autofill background task~~ **RESOLVED 2026-05-17**
+
+Was: When 3+ ZIPs were onboarded sequentially, only the first one's canonicalize ran to completion; the others landed in `live_canonicalize_pending` and stayed there indefinitely without manual orchestrator re-fires.
+
+Fix: built `backend/tasks/canonicalize_autofill.py`. Two-tier priority (orchestrator-flagged ZIPs first, then round-robin sweep), uses the same `_CANONICALIZE_LOCK` as the orchestrator. Admin endpoints at `/api/harvest/canonicalize-autofill-{status,pause,resume}`. Multi-ZIP onboarding is now fully fire-and-forget. Commit `d113ee4`.
 
 ### 3. MANIFESTO.md was previously not in the repo
 
-The handoff manifesto used in past Claude sessions lived in the project context only, not the repo. Future sessions cloning the repo had no canonical document. **Fixed by this commit** — this file is the new source of truth. `docs/STATUS.md` is severely stale (last updated April 18) and should not be relied on.
+The handoff manifesto used in past Claude sessions lived in the project context only, not the repo. Future sessions cloning the repo had no canonical document. **Fixed by commit `79e011d`** — this file is now the source of truth. `docs/STATUS.md` is severely stale (last updated April 18) and should not be relied on.
 
 ### 4. Stale documentation worth a separate pass
 
@@ -408,9 +429,15 @@ The handoff manifesto used in past Claude sessions lived in the project context 
 
 These can be deleted or marked deprecated in a separate cleanup pass.
 
-### 5. 98034 orchestrator state shows "failed" but ZIP is live
+### 5. canonicalize_autofill round-robin sweep overhead (~32 min per full cycle)
 
-The in-memory orchestrator state for 98034 reflects a failed retry attempt this morning, not the actual live state of the ZIP. ZIP is fully live in coverage. Cleared by next deploy or successful re-trigger.
+Per-tick, the autofill task picks one live ZIP and calls `backfill_zip` on it. Even on fully-canonicalized ZIPs, backfill_zip does a global canonical-PIN fetch (~30s on the current ~250k-row table) before discovering there's nothing to do. With 26 live ZIPs that's ~32 min for a full idle sweep. Not a problem at current scale; at multi-county scale (hundreds of ZIPs) this becomes wasteful.
+
+Two fixes available:
+- **(a)** Cache the global canonical PIN set in autofill state, refresh once per hour. ~30s overhead per hour instead of per ZIP.
+- **(b)** Add a `canon_complete_at TIMESTAMPTZ` column to `zip_coverage_v3`. Schema change, but lets the task skip ZIPs entirely if they're confirmed clean.
+
+Neither blocking. (a) is the cheaper option to start with.
 
 ---
 
@@ -418,14 +445,13 @@ The in-memory orchestrator state for 98034 reflects a failed retry attempt this 
 
 In Jeremy's stated order:
 
-1. **Fix the `?city=` query param flow** (current next step)
-2. **Build `canonicalize_autofill` background task**
-3. **5 next KC ZIPs** beyond the current 26 (good candidates: 98008 Bellevue east, 98144 Mt Baker/Leschi, 98109 Queen Anne South, 98144, 98011 Bothell south — but should be re-evaluated against current claim demand)
-4. **Multi-county strategy** — replicate the canonical pipeline against another county's assessor bulk data. Demand-driven expansion using the same orchestrator pattern. "Expediency plus accuracy is a moat" (Jeremy, 2026-05-17).
-5. **Beta growth path** — direct outreach to seed initial users, then Meta ads + Google search.
+1. **5 next KC ZIPs** beyond the current 26. Good candidates that pair with existing live clusters: 98008 (Bellevue east, completes the Bellevue 04/05/06/07 cluster), 98144 (Mt Baker/Leschi Seattle, luxury waterfront), 98109 (Queen Anne South/SLU, pairs with 98119), 98011 (Bothell south, pairs with 98034 Kirkland north), 98028 (Kenmore, pairs with 98072 Woodinville). Should be re-evaluated against current claim demand before committing.
+2. **Multi-county strategy** — replicate the canonical pipeline against another county's assessor bulk data. Demand-driven expansion using the same orchestrator pattern. "Expediency plus accuracy is a moat" (Jeremy, 2026-05-17).
+3. **Beta growth path** — direct outreach to seed initial users, then Meta ads + Google search.
 
 Deferred but on the longer-term roadmap:
 
+- canonicalize_autofill round-robin optimization (cache global canonical PIN set in task state) — see Active Issues #5
 - Mobile responsiveness rebuild from desktop-only inline-styled components
 - Real Lob letter integration (currently preview-only)
 - Real skip-trace integration
