@@ -9,40 +9,67 @@ identical to successes. Each new ZIP became 30-60 minutes of debugging.
 
 This module collapses that into one function. The pipeline:
 
-  1. register     — create zip_coverage_v3 row
+  1. register     — create zip_coverage_v3 row (status=in_development)
   2. seed         — load parcels_v3 from data/seeds/wa-king-{zip}-owners.json
                     (writes owner_name, last_transfer_date, tenure_years,
                      value, address, owner_type)
-  3. canonicalize — parse owner_name into owner_canonical_v3 via Haiku 4.5
-                    (cost ~$0.50 per 1k parcels at current pricing; ~$4-9
-                    for a typical 8-18k-parcel KC ZIP. See the canonicalize
-                    module docstring for the per-parcel rate;
-                    backend/ingest/backfill_owner_canonical.py prints
-                    measured cost at end of each run.)
-  4. classify     — assign signal_family archetype based on owner_type
-                    + tenure_years + value patterns
-  5. band         — assign Band 0-4 based on archetype + hard
+  3. classify     — assign signal_family archetype based on owner_type
+                    + tenure_years + value patterns (zero-API,
+                    reads parcels_v3 directly)
+  4. band         — assign Band 0-4 based on archetype + hard
                     disqualifiers (institutional, brokerage, etc.)
-  6. refresh-counts — update zip_coverage_v3.current_call_now_count
-                    snapshot for the territory map UI
+  5. refresh_counts — compute zip_coverage_v3.current_call_now_count
+                    snapshot before publication
+  6. publish      — flip status from in_development to live; ZIP is
+                    now claimable + visible + Build Now leads render
+  ─── ZIP IS LIVE FOR BUILD NOW HERE — agents can use it ───
+  7. canonicalize — parse owner_name into owner_canonical_v3 via Haiku 4.5
+                    (best-effort; ~$0.50 per 1k parcels ≈ $4-9 per ZIP.
+                     Used only by the probate-matcher for Call Now leads;
+                     Build Now / Tier-2 archetypes do NOT depend on it.)
+  ─── Call Now data fills in as canonicalize completes + rematch ticks ───
+
+Pipeline state semantics:
+  - "running"                     — actively executing steps 1-7
+  - "completed"                   — all 7 steps succeeded; canonicalize done
+  - "live_canonicalize_pending"   — steps 1-6 succeeded, canonicalize was
+                                    deferred (another ZIP was canonicalizing).
+                                    ZIP is live; canonicalize will run when
+                                    re-triggered or via background autofill.
+  - "live_canonicalize_failed"    — steps 1-6 succeeded, canonicalize itself
+                                    failed (rate limit, connection storm,
+                                    deploy mid-run). ZIP is live; canonicalize
+                                    can be retried out-of-band.
+  - "failed"                      — pre-publish step failed; ZIP is NOT live.
+
+The key invariant: anything pre-publish failing means ZIP didn't go live.
+Anything post-publish failing means ZIP is live and the failure is recoverable
+without affecting agent-visible state.
 
 NOT included (separate concerns):
   - rematch_autofill — global operation, not per-ZIP
   - obit harvest — global, runs on its own 12h cadence
   - tax foreclosure ingest — TBD, separate signal source
+  - canonicalize_autofill — TODO: background task to process
+    live_canonicalize_pending ZIPs without re-triggering the orchestrator
 
 Architecture:
   - Runs as an asyncio task started from the admin endpoint
   - Each step is idempotent — re-running picks up where it left off
   - Status tracked in module-level _STATE dict, served by /onboard-status
   - Each step uses the existing cmd_* functions from zip_builder
-  - Canonicalize uses cmd_canonicalize directly (synchronous in-process,
+  - Canonicalize uses backfill_zip directly (synchronous in-process,
     NOT the canonicalize-all endpoint which returns immediately and
     spawns a separate background task that gets killed by deploys)
+  - Concurrency guard on canonicalize: only one ZIP canonicalizes at a
+    time per Railway instance; others defer to live_canonicalize_pending.
+    Prevents the Supabase-connection-storm pattern (5 parallel
+    canonicalize jobs × concurrency=10 = 50 concurrent connections).
 
 Failure handling:
   - Transient (Supabase broken pipe, etc.) → retry up to 3x with backoff
-  - Hard error → mark step failed, halt pipeline, expose in status
+  - Hard error in steps 1-6 → mark step failed, halt pipeline, state=failed
+  - Hard error in step 7 → ZIP is already live, state=live_canonicalize_failed
 
 This is intentionally a thin orchestration layer. It does not duplicate
 logic that lives elsewhere — every step calls into existing code via
@@ -71,14 +98,22 @@ log = logging.getLogger(__name__)
 # we control deploy timing).
 _STATE: dict[str, dict] = {}
 
+# Process-wide lock around the canonicalize step. Only one ZIP canonicalizes
+# at a time per Railway instance — see "Concurrency guard" in the module
+# docstring. When held, other ZIPs' canonicalize attempts skip cleanly and
+# mark themselves as "deferred" rather than queuing or fighting for the
+# Supabase connection pool.
+_CANONICALIZE_LOCK = asyncio.Lock()
+
 # Pipeline step names in order
 PIPELINE_STEPS = [
     "register",
     "seed",
-    "canonicalize",
     "classify",
     "band",
     "refresh_counts",
+    "publish",
+    "canonicalize",
 ]
 
 
@@ -180,48 +215,66 @@ async def _step_canonicalize(zip_code: str):
     sys.argv and calls a CLI argparse main(), which is fragile in
     async/threaded context.
 
+    Concurrency guard: only one ZIP canonicalizes at a time per Railway
+    instance. If another ZIP currently holds _CANONICALIZE_LOCK, this
+    step marks itself "deferred" and returns cleanly without raising.
+    The orchestrator caller is responsible for translating "deferred"
+    into the live_canonicalize_pending end-state.
+
     This step keeps the canonicalize work bound to this onboarding task
     instead of spawning a separate background loop that gets killed by
     deploys.
     """
     from backend.ingest.backfill_owner_canonical import backfill_zip
 
-    def _run() -> tuple[int, str]:
-        try:
-            stats = backfill_zip(
-                zip_code=zip_code,
-                dry_run=False,
-                limit=None,
-                force=False,
-                sleep_ms=50,
-                verbose=False,   # don't spam stdout — orchestrator captures via state
-                concurrency=10,
-            )
-            # Render a one-line summary for the status feed
-            summary = (
-                f"eligible={stats.get('eligible')} "
-                f"already_done={stats.get('already_done')} "
-                f"processed={stats.get('processed')} "
-                f"low_conf={stats.get('low_conf')} "
-                f"errors={len(stats.get('errors') or [])} "
-                f"cost_usd={stats.get('cost_usd', 0):.2f} "
-                f"wall_time_s={stats.get('wall_time_s', 0):.1f}"
-            )
-            return 0, summary
-        except Exception as e:
-            import traceback
-            return 1, f"EXCEPTION: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+    # Concurrency guard. asyncio is cooperative single-threaded, so the
+    # locked() check and the subsequent acquire run atomically (no await
+    # between them = no other coroutine can run between them).
+    if _CANONICALIZE_LOCK.locked():
+        _set_step(zip_code, "canonicalize", "deferred",
+                  "Another ZIP is canonicalizing on this instance; "
+                  "deferred to avoid Supabase connection storm. "
+                  "Re-trigger this ZIP or wait for canonicalize_autofill.")
+        log.info(f"[onboard {zip_code}] canonicalize deferred (lock held by other ZIP)")
+        return
 
-    rc, output = await _retry(
-        lambda: asyncio.to_thread(_run),
-        attempts=2,            # canonicalize is expensive — fewer retries
-        backoff=30.0,
-        label="canonicalize",
-    )
-    _set_step(zip_code, "canonicalize", "ok" if rc == 0 else "failed",
-              output[-2000:] if output else None)
-    if rc != 0:
-        raise RuntimeError(f"canonicalize failed: {output}")
+    async with _CANONICALIZE_LOCK:
+        def _run() -> tuple[int, str]:
+            try:
+                stats = backfill_zip(
+                    zip_code=zip_code,
+                    dry_run=False,
+                    limit=None,
+                    force=False,
+                    sleep_ms=50,
+                    verbose=False,   # don't spam stdout — orchestrator captures via state
+                    concurrency=10,
+                )
+                # Render a one-line summary for the status feed
+                summary = (
+                    f"eligible={stats.get('eligible')} "
+                    f"already_done={stats.get('already_done')} "
+                    f"processed={stats.get('processed')} "
+                    f"low_conf={stats.get('low_conf')} "
+                    f"errors={len(stats.get('errors') or [])} "
+                    f"cost_usd={stats.get('cost_usd', 0):.2f} "
+                    f"wall_time_s={stats.get('wall_time_s', 0):.1f}"
+                )
+                return 0, summary
+            except Exception as e:
+                import traceback
+                return 1, f"EXCEPTION: {type(e).__name__}: {e}\n{traceback.format_exc()}"
+
+        rc, output = await _retry(
+            lambda: asyncio.to_thread(_run),
+            attempts=2,            # canonicalize is expensive — fewer retries
+            backoff=30.0,
+            label="canonicalize",
+        )
+        _set_step(zip_code, "canonicalize", "ok" if rc == 0 else "failed",
+                  output[-2000:] if output else None)
+        if rc != 0:
+            raise RuntimeError(f"canonicalize failed: {output}")
 
 
 async def _step_classify(zip_code: str):
@@ -295,6 +348,37 @@ async def _step_refresh_counts(zip_code: str):
         raise
 
 
+async def _step_publish(zip_code: str):
+    """
+    Flip zip_coverage_v3.status from 'in_development' to 'live'.
+
+    After this step succeeds, the ZIP is visible in /api/coverage,
+    claimable by agents, and serves real briefings. Build Now / Tier-2
+    leads render immediately because the classifier reads parcels_v3
+    directly and has no dependency on canonicalize/owner_canonical_v3.
+
+    Uses force=True because the legacy investigated_count safety check
+    in cmd_publish is irrelevant to this product (SerpAPI investigation
+    is the old Option-A pipeline; not used in the v3 harvester model).
+    This matches the pattern in scripts/onboard_kc_zips.sh which has
+    always used --force.
+
+    Idempotent: if already live, cmd_publish returns 0 as a no-op.
+    """
+    from backend.ingest.zip_builder import cmd_publish
+
+    def _run():
+        return _capture_stdout(cmd_publish, zip_code, force=True)
+
+    rc, output = await _retry(
+        lambda: asyncio.to_thread(_run), label="publish",
+    )
+    _set_step(zip_code, "publish", "ok" if rc == 0 else "failed",
+              output.strip()[-500:] if output else None)
+    if rc != 0:
+        raise RuntimeError(f"publish failed: {output}")
+
+
 # ─── Top-level orchestrator ──────────────────────────────────────────────────
 
 async def run_onboarding(
@@ -331,42 +415,79 @@ async def run_onboarding(
     log.info(f"[onboard {zip_code}] starting pipeline")
     t_start = time.time()
 
+    # ── Phase 1: pre-publish (steps 1-6). Failure here = ZIP is NOT live. ──
     try:
         # Step 1: register
-        log.info(f"[onboard {zip_code}] step 1/6: register")
+        log.info(f"[onboard {zip_code}] step 1/7: register")
         await _step_register(zip_code, market_key, city, state, json_path)
 
-        # Step 2: seed
-        log.info(f"[onboard {zip_code}] step 2/6: seed")
+        # Step 2: seed parcels_v3 from the bulk JSON
+        log.info(f"[onboard {zip_code}] step 2/7: seed")
         await _step_seed(zip_code, json_path)
 
-        # Step 3: canonicalize  (the slow step — wall-clock dominates here;
-        # cost ~$0.0005/parcel ≈ $4-9 per typical KC ZIP at Haiku 4.5 pricing)
-        log.info(f"[onboard {zip_code}] step 3/6: canonicalize (slow)")
-        await _step_canonicalize(zip_code)
-
-        # Step 4: classify archetypes
-        log.info(f"[onboard {zip_code}] step 4/6: classify")
+        # Step 3: classify archetypes (zero-API, reads parcels_v3 directly)
+        log.info(f"[onboard {zip_code}] step 3/7: classify")
         await _step_classify(zip_code)
 
-        # Step 5: band assignment
-        log.info(f"[onboard {zip_code}] step 5/6: band")
+        # Step 4: band assignment (zero-API, deterministic)
+        log.info(f"[onboard {zip_code}] step 4/7: band")
         await _step_band(zip_code)
 
-        # Step 6: refresh snapshot counts
-        log.info(f"[onboard {zip_code}] step 6/6: refresh_counts")
+        # Step 5: compute snapshot counts BEFORE publishing so the territory
+        # popup shows correct numbers the moment the ZIP goes live
+        log.info(f"[onboard {zip_code}] step 5/7: refresh_counts")
         await _step_refresh_counts(zip_code)
 
-        elapsed = time.time() - t_start
-        state_dict["state"] = "completed"
-        state_dict["completed_at"] = datetime.now(timezone.utc).isoformat()
-        state_dict["elapsed_sec"] = round(elapsed, 1)
-        log.info(f"[onboard {zip_code}] ✓ completed in {elapsed:.0f}s")
+        # Step 6: flip status=live. ZIP is now visible, claimable, and
+        # rendering Build Now / Tier-2 leads. The moment this returns,
+        # agents can use this territory.
+        log.info(f"[onboard {zip_code}] step 6/7: publish (ZIP goes live)")
+        await _step_publish(zip_code)
     except Exception as e:
+        # Pre-publish failure — ZIP is NOT live. No special handling needed
+        # beyond marking the orchestration state and returning.
         elapsed = time.time() - t_start
         state_dict["state"] = "failed"
         state_dict["failed_at"] = datetime.now(timezone.utc).isoformat()
         state_dict["error"] = f"{type(e).__name__}: {e}"
         state_dict["elapsed_sec"] = round(elapsed, 1)
-        log.error(f"[onboard {zip_code}] ✗ failed after {elapsed:.0f}s: {e}")
+        log.error(f"[onboard {zip_code}] ✗ pre-publish failure after {elapsed:.0f}s: {e}")
+        return  # don't proceed to canonicalize
+
+    # ── Phase 2: post-publish (step 7). ZIP is already live; canonicalize is
+    # best-effort. Failure or deferral here does NOT undo the live state. ──
+    log.info(f"[onboard {zip_code}] step 7/7: canonicalize (best-effort, ZIP already live)")
+    try:
+        await _step_canonicalize(zip_code)
+        canon_status = (state_dict.get("steps") or {}).get("canonicalize")
+        elapsed = time.time() - t_start
+        if canon_status == "ok":
+            state_dict["state"] = "completed"
+            state_dict["completed_at"] = datetime.now(timezone.utc).isoformat()
+            state_dict["elapsed_sec"] = round(elapsed, 1)
+            log.info(f"[onboard {zip_code}] ✓ completed in {elapsed:.0f}s")
+        elif canon_status == "deferred":
+            state_dict["state"] = "live_canonicalize_pending"
+            state_dict["live_at"] = state_dict.get("live_at") or \
+                datetime.now(timezone.utc).isoformat()
+            state_dict["elapsed_sec"] = round(elapsed, 1)
+            log.info(f"[onboard {zip_code}] live; canonicalize deferred "
+                     f"(another ZIP holds the lock)")
+        else:
+            # Shouldn't happen — _step_canonicalize either sets ok/deferred
+            # or raises. Defensive fallback.
+            state_dict["state"] = "live_canonicalize_unknown"
+            log.warning(f"[onboard {zip_code}] live; canonicalize state unclear: "
+                        f"{canon_status!r}")
+    except Exception as canon_exc:
+        # Canonicalize itself raised (rate limit, connection storm, deploy
+        # mid-run, etc.). ZIP is still live — publish already flipped it.
+        elapsed = time.time() - t_start
+        state_dict["state"] = "live_canonicalize_failed"
+        state_dict["live_at"] = state_dict.get("live_at") or \
+            datetime.now(timezone.utc).isoformat()
+        state_dict["canonicalize_error"] = f"{type(canon_exc).__name__}: {canon_exc}"
+        state_dict["elapsed_sec"] = round(elapsed, 1)
+        log.error(f"[onboard {zip_code}] live; canonicalize failed after "
+                  f"{elapsed:.0f}s: {canon_exc}")
         # Don't re-raise — task ran in background, errors propagate via state
