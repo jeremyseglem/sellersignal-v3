@@ -2025,6 +2025,53 @@ def rematch_autofill_resume(x_admin_key: Optional[str] = Header(None)):
     return {"enabled": True, "message": "Rematch autofill resumed."}
 
 
+@router.get("/canonicalize-autofill-status")
+def canonicalize_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Current state of the canonicalize autofill background task. The task
+    runs backfill_zip on ZIPs that need owner_canonical_v3 work — either
+    explicitly flagged by the orchestrator (Priority 1: states
+    live_canonicalize_pending / live_canonicalize_failed) or discovered
+    via a round-robin sweep across live ZIPs (Priority 2).
+
+    Key fields:
+      current_zip           — the ZIP currently being canonicalized, if any.
+                              When set, this task holds _CANONICALIZE_LOCK
+                              and any new onboarding will defer at step 7.
+      last_tick_result      — what the most recent tick did. Includes the
+                              priority (1 = orchestrator-flagged,
+                              2 = round-robin) and the processed/cost stats
+                              from backfill_zip.
+      total_zips_completed  — count of ZIPs cleared from the Priority 1
+                              queue since this Railway deploy started.
+      total_processed       — cumulative parcel owner names canonicalized.
+      backoff_until         — if set, the task is in error backoff.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.canonicalize_autofill import state
+    return dict(state)
+
+
+@router.post("/canonicalize-autofill-pause")
+def canonicalize_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause the canonicalize autofill task — loop keeps running but skips ticks."""
+    _require_admin(x_admin_key)
+    from backend.tasks.canonicalize_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Canonicalize autofill paused."}
+
+
+@router.post("/canonicalize-autofill-resume")
+def canonicalize_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume the canonicalize autofill task and clear any backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.canonicalize_autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "Canonicalize autofill resumed."}
+
+
 @router.post("/reclassify-parties")
 def harvest_reclassify_parties(
     x_admin_key: Optional[str] = Header(None),

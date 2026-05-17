@@ -79,6 +79,15 @@ async def lifespan(app: FastAPI):
     from backend.tasks.snohomish_tenure_autofill import snohomish_tenure_autofill_loop
     snohomish_tenure_autofill_task = asyncio.create_task(snohomish_tenure_autofill_loop())
 
+    # Canonicalize autofill — completes deferred/partial owner_canonical_v3
+    # work without manual orchestrator re-triggers. Picks up ZIPs left in
+    # live_canonicalize_pending state (from multi-ZIP onboarding batches
+    # where the concurrency lock deferred later ZIPs), then maintains the
+    # back-catalog via a round-robin sweep. Uses the same _CANONICALIZE_LOCK
+    # the orchestrator uses, so canon work stays serialized.
+    from backend.tasks.canonicalize_autofill import canonicalize_autofill_loop
+    canonicalize_autofill_task = asyncio.create_task(canonicalize_autofill_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
@@ -87,6 +96,7 @@ async def lifespan(app: FastAPI):
     treasury_autofill_task.cancel()
     rematch_autofill_task.cancel()
     snohomish_tenure_autofill_task.cancel()
+    canonicalize_autofill_task.cancel()
     try:
         await autofill_task
     except asyncio.CancelledError:
@@ -105,6 +115,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await snohomish_tenure_autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await canonicalize_autofill_task
     except asyncio.CancelledError:
         pass
 
