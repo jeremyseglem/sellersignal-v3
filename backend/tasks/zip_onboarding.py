@@ -250,7 +250,19 @@ async def _step_canonicalize(zip_code: str):
                     force=False,
                     sleep_ms=50,
                     verbose=False,   # don't spam stdout — orchestrator captures via state
-                    concurrency=10,
+                    # concurrency=3 chosen empirically on 2026-05-17 after
+                    # observing concurrency=10 saturating the Supabase HTTP/2
+                    # stream pool: while one ZIP's canon was running at conc=10,
+                    # other ZIPs' register/seed/classify/band steps bounced off
+                    # ConnectionTerminated errors at random points. At conc=3
+                    # canon takes ~3x longer per ZIP (~2 hours for a 15k-parcel
+                    # ZIP) but leaves stream headroom for parallel onboarding
+                    # of other ZIPs and for unrelated traffic (briefings,
+                    # rematch_autofill, harvester ticks). The lock above still
+                    # serializes canon-vs-canon; this lowers canon-vs-everything
+                    # else. Tune down further if multi-county scale-out exposes
+                    # residual saturation.
+                    concurrency=3,
                 )
                 # Render a one-line summary for the status feed
                 summary = (
