@@ -52,7 +52,7 @@ import SkipTracePanel from './SkipTracePanel.jsx';
  *   dossier   — full dossier response from /api/parcels/:pin
  *   onClose   — handler for the X button
  */
-export default function ParcelDossierV2({ dossier, onClose }) {
+export default function ParcelDossierV2({ dossier, onClose, preferredSignalType = null }) {
   const { session } = useAuth();
   const isColdVisitor = !session;
 
@@ -112,7 +112,10 @@ export default function ParcelDossierV2({ dossier, onClose }) {
   const parcel = dossier?.parcel || {};
   const harvesterMatches = dossier?.harvester_matches || [];
 
-  const archetype = useMemo(() => detectArchetype(dossier), [dossier]);
+  const archetype = useMemo(
+    () => detectArchetype(dossier, { preferredSignalType }),
+    [dossier, preferredSignalType]
+  );
   const equityDollars = useMemo(() => computeEquity(dossier), [dossier]);
   const inWaitWindow = useMemo(
     () => isWithinWaitWindow(dossier, archetype),

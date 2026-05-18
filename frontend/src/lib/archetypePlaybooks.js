@@ -295,20 +295,41 @@ export function resolveDefaultScripts(archetype, dossier) {
 
 
 /**
- * detectArchetype(dossier) → archetype playbook
+ * detectArchetype(dossier, opts) → archetype playbook
  *
  * Inspects the dossier's data and returns the right ARCHETYPES entry.
  * The detection order matters: harvester-driven signals (probate,
  * divorce) take precedence over structural ones (long-tenure, investor)
  * because they're stronger evidence.
+ *
+ * opts.preferredSignalType — when set (e.g. 'divorce' because the user
+ * is viewing the Divorce bucket tab), and the parcel has a match of that
+ * type, that archetype wins over the default precedence. Without this,
+ * a parcel with both probate AND divorce signals always renders as
+ * "Probate-Driven Seller" even when the user filtered to Divorce.
  */
-export function detectArchetype(dossier) {
+export function detectArchetype(dossier, opts = {}) {
   if (!dossier) return ARCHETYPES.general;
 
   const matches = dossier.harvester_matches || [];
   const parcel = dossier.parcel || {};
   const signalFamily = dossier.signal_family || parcel.signal_family;
   const archetype = dossier.archetype || parcel.archetype;
+  const { preferredSignalType } = opts;
+
+  // Filter-aware override: if the user is viewing a specific signal-type
+  // bucket and this parcel has a match of that type, surface that
+  // archetype regardless of the default precedence. Prevents the
+  // "filtered to Divorce, dossier says Probate" disagreement that
+  // LeadRow.jsx's comment warns about.
+  if (preferredSignalType === 'probate'
+      && matches.some((m) => m.signal_type === 'probate')) {
+    return ARCHETYPES.probate;
+  }
+  if (preferredSignalType === 'divorce'
+      && matches.some((m) => m.signal_type === 'divorce')) {
+    return ARCHETYPES.divorce;
+  }
 
   // Strict probate match present → Probate archetype, regardless of
   // contact_status. The dossier shell handles no_pr_yet / unworkable_pr

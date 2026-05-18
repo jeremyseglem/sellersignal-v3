@@ -557,6 +557,11 @@ function BriefingBody() {
           <ParcelDossier
             dossier={dossier}
             onClose={() => setSelectedPin(null)}
+            preferredSignalType={
+              activeBucket === 'probate' ? 'probate'
+              : activeBucket === 'divorce' ? 'divorce'
+              : null
+            }
           />
         )}
       </main>

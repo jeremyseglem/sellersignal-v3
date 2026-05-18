@@ -584,7 +584,7 @@ def cmd_seed(zip_code: str, json_path: str) -> int:
         return 1
 
     cov = (supa.table('zip_coverage_v3')
-           .select('market_key, status')
+           .select('market_key, status, city')
            .eq('zip_code', zip_code)
            .maybe_single()
            .execute())
@@ -593,7 +593,24 @@ def cmd_seed(zip_code: str, json_path: str) -> int:
         return 1
 
     market_key = cov.data['market_key']
-    print(f"\nSeed ingest for ZIP {zip_code} (market: {market_key})")
+
+    # Resolve city for parcels_v3.city. Without this lookup, parcels would
+    # get the load_parcels_from_json default ("Bellevue") regardless of
+    # the actual city — exactly the bug that mis-tagged 98034 parcels as
+    # Bellevue in the 2026-05-17 batch. Order of preference:
+    #   1. zip_coverage_v3.city (already correct for the ZIP)
+    #   2. KC_ZIP_TO_CITY / SNO_ZIP_TO_CITY lookup
+    #   3. "Bellevue" final fallback (matches load_parcels_from_json default;
+    #      should never actually fire for an onboarded ZIP).
+    from backend.api.admin import KC_ZIP_TO_CITY, SNO_ZIP_TO_CITY
+    city = (
+        cov.data.get('city')
+        or KC_ZIP_TO_CITY.get(zip_code)
+        or SNO_ZIP_TO_CITY.get(zip_code)
+        or "Bellevue"
+    )
+
+    print(f"\nSeed ingest for ZIP {zip_code} (market: {market_key}, city: {city})")
     print(f"  Loading from {json_path}...")
 
     from backend.ingest.seed_from_json import (
@@ -601,7 +618,12 @@ def cmd_seed(zip_code: str, json_path: str) -> int:
     )
 
     try:
-        rows = load_parcels_from_json(json_path, zip_code, market_key)
+        rows = load_parcels_from_json(
+            json_path,
+            zip_code,
+            market_key,
+            default_city=city,
+        )
     except FileNotFoundError as e:
         print(f"  ERROR: {e}")
         return 1
