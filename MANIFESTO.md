@@ -24,7 +24,7 @@ These apply to every Claude session. Non-negotiable.
 
 An AI-powered intelligence platform for luxury real estate agents in defined ZIP territories. It surfaces motivated sellers using a categorical pressure model on public-record investigation signals (probates, divorces, tax foreclosures, obituaries) joined to parcel data.
 
-**Differentiator:** identifies the decision-maker by name — the personal representative on a probate (a living adult child or spouse), not the deceased homeowner. Agent gets a Call Now lead with the actual person to call.
+**Differentiator:** identifies the decision-maker by name — the personal representative on a probate (a living adult child or spouse), not the deceased homeowner. Agent gets a Contact now lead with the actual person to call.
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
@@ -46,12 +46,14 @@ Seattle:        98103, 98105, 98112, 98115, 98117, 98119, 98136, 98199
 Snohomish:      98290 (cross-county pilot, separate market_key WA_SNOHOMISH)
 ```
 
-### Live measurements (snapshot 2026-05-17)
+### Live measurements (snapshot 2026-05-20)
 ```
-total live ZIPs:    26
-total parcels:      268,132
-total Call Now:     1,389
-total Build Now:    sum of build_now_total across briefings (~3000+ per ZIP)
+total live ZIPs:    28  (26 KC + 2 Edmonds onboarded today)
+total parcels:      271,878  (KC 268,132 + Snohomish 98020 1,602 + 98026 2,144)
+court signals harvested:   16,659  (~16,337 KC case_parties + 322 Snohomish raw_signals_v3)
+Snohomish 30-day Tier 1:   322 signals  (~11/day countywide, mostly probate + divorce)
+First Tier 1 leads in 98020 (Edmonds central):  1+ contact now after rematch
+First Tier 1 leads in 98026 (Edmonds north):    1+ contact now after rematch
 ```
 
 ---
@@ -92,7 +94,7 @@ playbook.call_now in /api/briefings/:zip
 agent UI (frontend/src/pages/BriefingPage.jsx)
 ```
 
-**Eligibility contract Rule 6 (added April 2026):** A probate match is only promoted to Call Now when `contact_status == 'family_pr_identified'`. Probate matches without an identified family PR stay in Build Now.
+**Eligibility contract Rule 6 (added April 2026):** A probate match is only promoted to Contact now when `contact_status == 'family_pr_identified'`. Probate matches without an identified family PR stay in Build Now.
 
 ---
 
@@ -112,7 +114,7 @@ The single canonical path for adding a new KC ZIP. Lives in `backend/tasks/zip_o
 ─── ZIP IS LIVE FOR BUILD NOW HERE — agents can claim, briefing renders ───
 7. canonicalize   — Haiku 4.5 name parsing for probate-matcher precision
                     (concurrency=3, best-effort, ~2 hours per ZIP)
-                    Required for Call Now precision; not for Build Now.
+                    Required for Contact now precision; not for Build Now.
 ```
 
 **End states the orchestrator can land in:**
@@ -124,7 +126,7 @@ The single canonical path for adding a new KC ZIP. Lives in `backend/tasks/zip_o
 **Operational rules learned the hard way (May 17, 2026):**
 - **Fire one ZIP at a time.** Parallel-N onboarding exhausts the Supabase HTTP/2 stream pool and produces random failures at register/seed/classify/band. Wait until a ZIP reaches live state before firing the next.
 - **Retry transient classify failures.** `ConnectionTerminated`/`Server disconnected` errors hit random pipeline steps. The orchestrator's 3-attempt `_retry` handles most, but occasionally a step exhausts retries — re-fire the whole orchestrator (idempotent, picks up where it left off).
-- **Canonicalize takes ~2 hours per ZIP at conc=3.** It's the long pole. ZIPs are usable for Build Now immediately after step 6; Call Now precision improves as canon completes.
+- **Canonicalize takes ~2 hours per ZIP at conc=3.** It's the long pole. ZIPs are usable for Build Now immediately after step 6; Contact now precision improves as canon completes.
 
 ---
 
@@ -484,7 +486,48 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
-### 2026-05-17 — 5-ZIP expansion + orchestrator redesign + canon autofill (this session)
+### 2026-05-19 to 2026-05-20 — Snohomish Phase 1: harvester + 98020/98026 launch
+
+**Monday morning — production fixes from Sunday's expansion:**
+
+- 5 newly-onboarded ZIPs (98034, 98115, 98117, 98029, 98053) all had `parcels_v3.city='Bellevue'` because cmd_seed's city default ran before the resolution table lookup. Dossiers were also showing "PROBATE-DRIVEN SELLER" for divorce-driven leads. Fixed both: cmd_seed now consults `zip_coverage_v3.city → KC_ZIP_TO_CITY → SNO_ZIP_TO_CITY → fallback` (commit `9bf67d6`); dossier's `detectArchetype` accepts a `preferredSignalType` opt so a probate parcel viewed under a divorce filter shows divorce framing (commit `a8cba28`). Re-fired `/admin/seed-from-json` for all 5 ZIPs to apply the city correction.
+- Auth was throwing intermittent 401s during background-task storms (rematch + canon both saturating Supabase HTTP/2 stream pool). Added retry-once on `RemoteProtocolError`/`ReadError`/broken-pipe in `user_from_authorization` with 250ms backoff (commit `56a82a4`). The deeper fix — dedicated Supabase client per task — is still in the backlog. Auth retry has been carrying production through the recurring contention all session.
+
+**Monday afternoon — Snohomish discovery + architecture:**
+
+- Two Edmonds agents wanted to subscribe. 98020/98026 are Snohomish County (not King). Only Snohomish ZIP live was 98290 pilot.
+- Mapped WA court system architecture (now documented in the "WA court system architecture" section above). Critical finding: only King County has its own custom portal. All 38 other counties use the statewide JIS at `dw.courts.wa.gov`, which is reCAPTCHA-gated and has no date+casetype discovery search. **The unlock for non-KC counties:** county clerks publish daily new-case-filing PDFs at predictable URLs — no captcha, no subscription, no auth. Pattern likely generalizes to Pierce, Thurston, Whatcom, Kitsap, and ~38 other WA counties. Strategic moat for cross-county expansion.
+- Confirmed case-type catalog from May 18 sample report (see "WA court system architecture" table).
+- Documented Phase 1 vs Phase 2 PR enrichment paths. Day-1 probate filings name only the decedent — PR appears in later "Letters Testamentary" filings. Snohomish probate leads launch in `contact_status='no_pr_yet'` state.
+- Updated MANIFESTO with all of the above (commit `e450390`).
+
+**Monday evening — Phase 1 code build:**
+
+- `scripts/build_snohomish_owners.py` — mirrors `build_kc_owners.py`. Pulls the Snohomish County Parcels FeatureServer (single endpoint at `services6.arcgis.com/.../FeatureServer/0`) paginated by `resultRecordCount` and `resultOffset` (commit `a017d56`). 98020 and 98026 seed files generated (1,602 + 2,144 parcels). 98290 pilot seed UNCHANGED at 15,436 PINs — the feature service only returned 4,676 (Phase 2 data coverage improvement; condos/sub-units appear excluded by the layer's geographic filter).
+- **Classifier bug caught during seed build:** `classify_owner_type`'s "USA" substring pattern was matching inside names like SUSAN, SARAUSAD, MOUSAVI — 43 false-positive individual→company misclassifications in 98020+98026. Fixed `" USA "` to word-boundary in both builders (commit `a2b1dee`). Regenerated seeds. **Carry-over impact:** KC's 21 existing ZIPs have an estimated ~1.1% records platform-wide misclassified individual→company because of this bug. Listed in active issues as a retroactive re-classify task.
+- `backend/harvesters/snohomish_daily_report.py` (commit `edf5f5b`) — the harvester core. `fetch_index()` scrapes the landing page for available report dates. `_pdf_to_text()` tries `pdftotext -layout` then falls back to `pypdf`. `parse_report()` walks the columnar PDF text. Two non-obvious bugs caught during local testing:
+  - All-caps party names (e.g., "ALVIAR, CHENG JIANG") were being misread as connection codes by a generic `[A-Z]{2,7}` pattern. Fixed by anchoring on the KNOWN connection-code set from `CONNECTION_TYPE_MAP`.
+  - TRS Trust cases have `type_code=TRS` AND parties with `connection_type=TRS` (trustee). Leftmost-match regex was picking the type code's TRS as the conn code, eating the entire row as party text. Fixed with `finditer` + take-rightmost-match.
+  Tested locally against the May 18 PDF: 217 party rows → 86 unique cases → 17 Tier 1 signals (10 divorce + 7 probate).
+- `backend/tasks/snohomish_daily_autofill.py` + orchestrator HARVESTERS dict entry + admin endpoints + `main.py` lifespan registration + `SNO_ZIP_TO_CITY` expansion + orchestrator dispatch (commit `c0817c8`). 24-hour tick interval (Snohomish publishes once per business day), 7-day default lookback. `admin.py:onboard_zip` auto-detects Snohomish via `SNO_ZIP_TO_CITY` membership: uses `wa-snohomish-{zip}-owners.json` seed path and defaults `market_key=WA_SNOHOMISH`.
+
+**Monday night — Railway GCP outage:**
+
+- Google Cloud incorrectly suspended Railway's production account at 22:20 UTC. Multi-hour outage. Webhook integration with GitHub got rate-limited during recovery; Railway's auto-deploy missed all my commits from `e450390` through `c0817c8`. Production stayed on `56a82a4` (auth retry).
+- Initial diagnosis path got it wrong: spent ~20min suspecting code issues / webhook delivery problems before Jeremy's screenshot showed the "Limited Access — Deploys paused" banner. Lesson logged: when Railway has no record of recent commits at all and previous commits deployed normally, suspect platform-side first.
+
+**Tuesday morning — outage recovery + Snohomish go-live:**
+
+- Railway resumed deploys for Pro tier first; hobby-tier remained paused while they drained backlog. Project was on hobby; Jeremy upgraded to Pro to unblock. Pro upgrade pulled all 7 queued commits in one build.
+- **Discovered missing `pypdf` dependency in production** via Railway logs: `RuntimeError: Neither pdftotext nor pypdf available for PDF extraction` for every report. Local container had `pdftotext` (from poppler-utils) so the fallback never exercised. Fixed by adding `pypdf>=3.0.0` to `requirements.txt` (commit `f86f2cf`).
+- Deploy landed. First Snohomish harvest tick fired. Still harvested 0 signals. **Discovered second bug:** pypdf's default `extract_text()` splits each table cell onto its own line — totally different from `pdftotext -layout`'s column-preserved output. My single-line parser regex matched 0 rows on every PDF. Switched to `extract_text(extraction_mode="layout")` which pypdf 4.x+ supports — output is virtually identical to pdftotext (commit `34097e7`). **Lesson:** any new external tool dependency needs a confirmed-on-Railway check, not just a local one.
+- **GitHub revoked the PAT** — committed in MANIFESTO.md, auto-detected by GitHub secret scanning. First replacement was a fine-grained PAT without `Contents: write` permission (rejected with 403). Second was a classic `ghp_...` PAT (worked). Active issue: PAT in MANIFESTO is structurally fragile; needs to be moved to Railway env vars.
+- **Snohomish harvester first production run** with `since_days_ago=30`: harvested 322 signals, all new, zero errors. ~11/day countywide.
+- **Onboarded 98020 + 98026** via `POST /api/admin/onboard-zip/{zip}`. Both ZIPs reached `state=completed` (98020) / `state=live_canonicalize_pending` (98026) within ~40s for the first 6 steps. Canonicalize ran via the canon_autofill task — 98020 done in one pass; 98026 was deferred by the lock but completed during a subsequent autofill tick (the `state=live_canonicalize_pending` label became stale).
+- **The matching snag and the rematch dance:** the initial 322 signals were harvested while only 98290 was canonicalized. The matcher processed them once, found 0 matches in 98290 (Lake Stevens), and set `matched_at=NOW`. After 98020/98026 finished canonicalizing, the new canonical owners existed but the signals weren't queued for rematch. Triggered `POST /api/harvest/rematch?confirm=true`. Endpoint deletes all `raw_signal_matches_v3`, resets `matched_at` to NULL, re-runs matcher. Production briefings showed 0 leads during the delete pass (real concern — agents would see empty briefings if they refreshed). Regeneration completed over the following ~5 min. Final state: 98020 had real contact-now leads, 98026 had contact-now leads, KC ZIPs regenerated to their previous match counts.
+- **Phase 1 outcome:** first-ever Tier 1 leads in Edmonds. The full daily-report pipeline works end-to-end. Architecture validated for cross-county replication.
+
+### 2026-05-17 — 5-ZIP expansion + orchestrator redesign + canon autofill
 
 **Morning — seed builder + orchestrator redesign:**
 
@@ -497,7 +540,7 @@ Documented above under "The canonical onboarding pipeline." Summary:
   - Added concurrency lock on canonicalize. Only one ZIP canonicalizes at a time per Railway instance. Others mark themselves `deferred` and exit cleanly.
   - Dropped canonicalize concurrency from 10 to 3 after observing HTTP/2 stream pool saturation at conc=10.
   - New state semantics: `live_canonicalize_pending`, `live_canonicalize_failed`, `failed` (pre-publish only).
-- **Onboarded 5 new KC ZIPs to live state** sequentially (parallel-N onboarding fails on the HTTP/2 stream pool; this is a real constraint). Total ZIPs: 21 → 26. Added 63,302 parcels. Call Now leads on new ZIPs: 8 already firing before canonicalize completes.
+- **Onboarded 5 new KC ZIPs to live state** sequentially (parallel-N onboarding fails on the HTTP/2 stream pool; this is a real constraint). Total ZIPs: 21 → 26. Added 63,302 parcels. Contact now leads on new ZIPs: 8 already firing before canonicalize completes.
 
 **Afternoon — manifesto + query path + canon autofill:**
 
@@ -524,7 +567,7 @@ Added 98290 (Snohomish County) as the cross-county test. Required a new `WA_SNOH
 
 ### 2026-04-30 — Multi-ZIP investigation resolved
 
-The April 29 investigation (only 98004 had Call Now leads; other 10 ZIPs had 0) resolved. Root cause: cumulative effects of the partial-success scraper rate combined with sentinel-poisoning. Resolution path: ran `clear-sentinel-parties` to wipe the 1,092 poisoned rows, then let autofill re-attempt them with the rebuilt `kc_court_participants` scraper. Multiple ZIPs started producing leads within hours.
+The April 29 investigation (only 98004 had Contact now leads; other 10 ZIPs had 0) resolved. Root cause: cumulative effects of the partial-success scraper rate combined with sentinel-poisoning. Resolution path: ran `clear-sentinel-parties` to wipe the 1,092 poisoned rows, then let autofill re-attempt them with the rebuilt `kc_court_participants` scraper. Multiple ZIPs started producing leads within hours.
 
 ### 2026-04-26 to 2026-04-28 — Slice C: archetype dossier + Lead Memory
 
@@ -532,7 +575,7 @@ Added archetype-driven dossier (5 archetypes + general fallback), Lead Memory pe
 
 ### 2026-04-24 to 2026-04-26 — Slice B: action-first briefing
 
-Briefing redesign: header oracle line, action list, pipeline, watch list. Eligibility Contract Rule 6 (family_pr_identified required for Call Now probate).
+Briefing redesign: header oracle line, action list, pipeline, watch list. Eligibility Contract Rule 6 (family_pr_identified required for Contact now probate).
 
 ### 2026-04-22 to 2026-04-23 — Harvester layer
 
@@ -544,7 +587,7 @@ Project bootstrapped from v1 archive. Owner canonicalizer + classifier. ArcGIS i
 
 ---
 
-## Active issues / known cracks (May 17, 2026)
+## Active issues / known cracks (May 20, 2026)
 
 These are tracked here so they don't get lost. None are production blockers.
 
@@ -560,11 +603,57 @@ Was: When 3+ ZIPs were onboarded sequentially, only the first one's canonicalize
 
 Fix: built `backend/tasks/canonicalize_autofill.py`. Two-tier priority (orchestrator-flagged ZIPs first, then round-robin sweep), uses the same `_CANONICALIZE_LOCK` as the orchestrator. Admin endpoints at `/api/harvest/canonicalize-autofill-{status,pause,resume}`. Multi-ZIP onboarding is now fully fire-and-forget. Commit `d113ee4`.
 
-### 3. MANIFESTO.md was previously not in the repo
+### ~~3. MANIFESTO.md was previously not in the repo~~ **RESOLVED 2026-05-17**
 
-The handoff manifesto used in past Claude sessions lived in the project context only, not the repo. Future sessions cloning the repo had no canonical document. **Fixed by commit `79e011d`** — this file is now the source of truth. `docs/STATUS.md` is severely stale (last updated April 18) and should not be relied on.
+Fixed by commit `79e011d`. This file is now the source of truth.
 
-### 4. Stale documentation worth a separate pass
+### ~~4. cmd_seed default city set to 'Bellevue'~~ **RESOLVED 2026-05-18**
+
+5 newly-onboarded ZIPs (98034, 98115, 98117, 98029, 98053) all had `parcels_v3.city='Bellevue'` because cmd_seed's default ran before the resolution table lookup. Dossiers also displayed "PROBATE-DRIVEN SELLER" on divorce-driven leads. Fixed both: cmd_seed now consults `zip_coverage_v3.city → KC_ZIP_TO_CITY → SNO_ZIP_TO_CITY → fallback` (commit `9bf67d6`); dossier's `detectArchetype` accepts a `preferredSignalType` opt so filter-mismatched probate parcels show divorce framing (commit `a8cba28`).
+
+### ~~5. Snohomish daily-report harvester not built~~ **RESOLVED 2026-05-19/20**
+
+Snohomish County onboarding required a different court-signal pipeline from KC's. Built `scripts/build_snohomish_owners.py`, `backend/harvesters/snohomish_daily_report.py`, `backend/tasks/snohomish_daily_autofill.py`, plus orchestrator dispatch + admin endpoints (commits `a017d56`, `edf5f5b`, `c0817c8`, `f86f2cf`, `34097e7`). 322 signals harvested on first 30-day run. 98020 + 98026 launched. First Tier 1 leads in Edmonds.
+
+### 6. canonicalize_autofill round-robin sweep overhead (~32 min per full cycle)
+
+Per-tick, the autofill task picks one live ZIP and calls `backfill_zip` on it. Even on fully-canonicalized ZIPs, backfill_zip does a global canonical-PIN fetch (~30s on the current ~250k-row table) before discovering there's nothing to do. With 28 live ZIPs that's ~32 min for a full idle sweep. Round-robin also doesn't yield to recently-deferred ZIPs effectively — observed 2026-05-20 when 98026 stayed at canonicalize=deferred while autofill spun on already-completed KC ZIPs. **The canon work still completed** (98026 done within ~10 min via some background path), but the round-robin priority logic appears not to deprioritize ZIPs marked `already_done=N/N` in the autofill state.
+
+Two fixes available:
+- **(a)** Cache the global canonical PIN set in autofill state, refresh once per hour. ~30s overhead per hour instead of per ZIP.
+- **(b)** Add a `canon_complete_at TIMESTAMPTZ` column to `zip_coverage_v3`. Schema change, but lets the task skip ZIPs entirely if they're confirmed clean.
+
+Neither blocking. (a) is the cheaper option to start with.
+
+### 7. PAT in MANIFESTO.md keeps getting auto-revoked by GitHub
+
+GitHub's secret scanning auto-revoked the PAT twice now (2026-05-19 and 2026-05-20). Sequence each time: PAT committed in MANIFESTO → GitHub scans → revokes silently → next push fails with 401 → operator regenerates.
+
+The PAT is in the doc because past sessions needed a way to push from Claude's sandbox. The right fix is to NOT keep the PAT in repo at all: store it in Railway env vars (visible only to authenticated dashboard users) and have Claude fetch it via an admin endpoint. Pre-fix interim: keep PATs out of MANIFESTO and pass them through chat each session (they're already chat-exposed).
+
+### 8. KC USA-classifier bug — retroactive re-classify needed
+
+`classify_owner_type` was matching "USA" as a substring (not word-boundary) — names like SUSAN, SARAUSAD, MOUSAVI were misclassified individual→company. Found in 98020/98026 seed builds (43 false positives); fix applied to both `build_kc_owners.py` and `build_snohomish_owners.py` (commit `a2b1dee`). **But the 21 existing KC ZIPs were never re-classified** — estimated ~1.1% of parcels platform-wide still mis-classified as company. Selective re-classify pass needed on KC ZIPs, OR a one-time admin endpoint to re-run `classify_owner_type` on existing rows.
+
+### 9. Snohomish probate signals showing as Contact Now (PR status check?)
+
+Snohomish probate filings name only the decedent on day-1 (PR appointed weeks later via Letters Testamentary). The harvester writes role=`decedent` only on these signals. Per the original Eligibility Contract Rule 6 (KC only), probate matches should require `contact_status='family_pr_identified'` to promote to Contact now — otherwise stay in Build now / no_pr_yet wait pattern. Observed 2026-05-20 that 98020/98026 probate matches show in `playbook.call_now`. Either the filter doesn't apply to `source_type=wa_state_courts` (might be only checking case_parties_v3 contact_status), or the rule needs to be extended to cover the Snohomish signal shape. Needs a code read of the briefing selector to confirm.
+
+### 10. /api/harvest/rematch is destructive AND blocks the curl while running synchronously
+
+The rematch endpoint deletes all matches platform-wide, resets matched_at=NULL on all signals, then re-runs matcher inline. With 16K signals this takes ~5-10 min during which: (a) production briefings show 0 leads (delete pass completed, regeneration in progress); (b) the curl that triggered it times out at ~30s; (c) operator has no visibility into progress. This is a known footgun. Two improvements possible:
+- Move rematch to a background task (similar to obit_autofill) so the HTTP call returns quickly with a job ID
+- OR have rematch reset matched_at first AND THEN regenerate match-by-match, so existing matches stay live until each signal's new matches commit
+
+Until then: rematch should only be triggered during low-traffic windows, with a clear comms plan if it'll be more than 2-3 min.
+
+### 11. Pre-existing background-task contention on Supabase HTTP/2 stream pool
+
+scopi-autofill hits `'code': '57014', 'message': 'canceling statement due to statement timeout'` periodically (`_fetch_pending_pins` query). canonicalize_autofill hits `RemoteProtocolError: Server disconnected` periodically on its ticks. Both back off and retry; not blocking. The auth retry shipped 2026-05-19 (commit `56a82a4`) protects user sign-ins from this storm.
+
+Deeper fix in the backlog: dedicated Supabase client per background task instead of all sharing the same default httpx connection pool. Single change but touches every task's import path.
+
+### 12. Stale documentation worth a separate pass
 
 - `docs/STATUS.md` — frozen at April 18, 2026 (5 commits). Says nothing about the harvester layer, orchestrator, or any of the 21 ZIPs added after.
 - `docs/ZIP_BUILD_GUIDE.md` — describes obsolete pre-orchestrator CLI flow with SerpAPI investigation. Replaced by this manifesto's "canonical onboarding pipeline" section.
@@ -572,16 +661,6 @@ The handoff manifesto used in past Claude sessions lived in the project context 
 - `docs/SESSION_END_2026-05-01.md` — historical session journal. Accurate for that window but doesn't reflect anything after.
 
 These can be deleted or marked deprecated in a separate cleanup pass.
-
-### 5. canonicalize_autofill round-robin sweep overhead (~32 min per full cycle)
-
-Per-tick, the autofill task picks one live ZIP and calls `backfill_zip` on it. Even on fully-canonicalized ZIPs, backfill_zip does a global canonical-PIN fetch (~30s on the current ~250k-row table) before discovering there's nothing to do. With 26 live ZIPs that's ~32 min for a full idle sweep. Not a problem at current scale; at multi-county scale (hundreds of ZIPs) this becomes wasteful.
-
-Two fixes available:
-- **(a)** Cache the global canonical PIN set in autofill state, refresh once per hour. ~30s overhead per hour instead of per ZIP.
-- **(b)** Add a `canon_complete_at TIMESTAMPTZ` column to `zip_coverage_v3`. Schema change, but lets the task skip ZIPs entirely if they're confirmed clean.
-
-Neither blocking. (a) is the cheaper option to start with.
 
 ---
 
@@ -617,18 +696,21 @@ Deferred but on the longer-term roadmap:
 ## Don't-do (without explicit confirmation)
 
 - `POST /api/harvest/clear-sentinel-parties` (destructive — 1,092+ rows)
+- `POST /api/harvest/rematch?confirm=true` (destructive AND blocks briefings for ~5-10 min during regeneration — see active issue #10)
 - Any backfill/admin endpoint that writes to production without prior confirmation
 - Propose new architectures while a live investigation is open
 - Reframe issues as "98004 working / others not" — Jeremy has rejected this framing in past sessions
 - Invent code paths that don't match the proven production path
-- Fire multiple onboard-zip calls in parallel (proven to fail on Supabase HTTP/2 stream pool)
+- Fire multiple onboard-zip calls in parallel (proven to fail on Supabase HTTP/2 stream pool — orchestrator's `_CANONICALIZE_LOCK` mitigates but doesn't eliminate)
 - Change canonicalize concurrency without measurement and a redeploy plan (98034's canon dies on the redeploy)
+- Commit PATs (or any secret) in MANIFESTO or any tracked file — GitHub secret scanning will auto-revoke. See active issue #7.
+- Push an external-dependency change (new Python lib, new system tool) without verifying it works on Railway's environment. Local dev container ≠ production. See `pypdf` vs `pdftotext` learning (2026-05-20).
 
 ---
 
 ## Final note
 
-This document is the canonical state of SellerSignal V3 as of 2026-05-17. Update it whenever:
+This document is the canonical state of SellerSignal V3 as of 2026-05-20. Update it whenever:
 
 - A ZIP is added, removed, or changes status
 - The canonical pipeline changes
