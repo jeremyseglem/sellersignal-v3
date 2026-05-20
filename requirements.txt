@@ -33,3 +33,4 @@ stripe==11.3.0
 # Utility
 python-dateutil==2.9.0
 pytz==2024.2
+pypdf>=3.0.0
