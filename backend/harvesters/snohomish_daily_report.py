@@ -303,7 +303,7 @@ def _pdf_to_text(pdf_bytes: bytes) -> str:
         try:
             import pypdf
             r = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-            return "\n".join(p.extract_text() or "" for p in r.pages)
+            return "\n".join(p.extract_text(extraction_mode="layout") or "" for p in r.pages)
         except ImportError:
             raise RuntimeError(
                 "Neither pdftotext nor pypdf available for PDF extraction"
