@@ -149,7 +149,7 @@ def classify_owner_type(name: str) -> str:
         "REALTY", "CHURCH", "MINISTRY", "FOUNDATION",
         "ASSOCIATION", "CITY OF", "HOUSING AUTHORITY",
         "STATE OF", "UNITED STATES", "COUNTY OF",
-        "DEPT OF", "DEPARTMENT OF", "USA",
+        "DEPT OF", "DEPARTMENT OF", " USA ",
     )):
         return "company"
     return "individual"

@@ -204,7 +204,7 @@
     "sale_price": "0",
     "address": "20727 81ST AVE W",
     "value": 790100,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00417800000100": {
     "owner_name": "SPADARO COURTNEY & DEREK",
@@ -456,7 +456,7 @@
     "sale_price": "0",
     "address": "8512 184TH ST SW",
     "value": 1477400,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00434600000914": {
     "owner_name": "HUNTER CHRISTOPHER W & SARAH L",
@@ -1797,7 +1797,7 @@
     "sale_price": "0",
     "address": "16032 68TH AVE W",
     "value": 1413600,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00513100004802": {
     "owner_name": "BURNS RICHARD J JR & MARY K",
@@ -3165,7 +3165,7 @@
     "sale_price": "0",
     "address": "17121 SEALAWN DR",
     "value": 1086800,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00566000000600": {
     "owner_name": "HANSEN WENDY R & CLARKE MORGAN S",
@@ -3624,7 +3624,7 @@
     "sale_price": "0",
     "address": "14107 50TH PL W",
     "value": 999700,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00568900000107": {
     "owner_name": "PRABHAKAR DILEEPA & RAMESH PRIYA",
@@ -4848,7 +4848,7 @@
     "sale_price": "0",
     "address": "11808 POSSESSION LN",
     "value": 1350300,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00614800005400": {
     "owner_name": "BNSF RAILWAY COMPANY",
@@ -4974,7 +4974,7 @@
     "sale_price": "0",
     "address": "POSSESSION LN",
     "value": 49400,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00614800009100": {
     "owner_name": "ROSEN SUSAN",
@@ -4983,7 +4983,7 @@
     "sale_price": "0",
     "address": "POSSESSION LN",
     "value": 49400,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00614800009302": {
     "owner_name": "WANG PING",
@@ -5064,7 +5064,7 @@
     "sale_price": "0",
     "address": "6629 158TH PL SW",
     "value": 715000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00638400003501": {
     "owner_name": "WICK RONALD & RUTH",
@@ -5730,7 +5730,7 @@
     "sale_price": "0",
     "address": "16117 74TH PL W",
     "value": 575400,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00790400099800": {
     "owner_name": "LORIAN WOODS HOA",
@@ -6657,7 +6657,7 @@
     "sale_price": "0",
     "address": "16322 49TH AVE W UNIT 1-B",
     "value": 624800,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00930700200201": {
     "owner_name": "SMITH STEPHANIE",
@@ -7053,7 +7053,7 @@
     "sale_price": "0",
     "address": "23616 EDMONDS WAY UNIT B",
     "value": 413000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00944200000300": {
     "owner_name": "FISCHER SHERRILL F",
@@ -9762,7 +9762,7 @@
     "sale_price": "0",
     "address": "22910 90TH AVE W UNIT B307",
     "value": 374000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01071300230800": {
     "owner_name": "PETERS AMIE/PETERS AMANDA",
@@ -11256,7 +11256,7 @@
     "sale_price": "0",
     "address": "22504 80TH AVE W",
     "value": 752900,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01112000000400": {
     "owner_name": "ELEFSON ELIJAH I",
@@ -11301,7 +11301,7 @@
     "sale_price": "0",
     "address": "5125 153RD PL SW",
     "value": 658500,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01112500000200": {
     "owner_name": "ZHANG LIANCHENG & QI",
@@ -11661,7 +11661,7 @@
     "sale_price": "0",
     "address": "12820 65TH PL W",
     "value": 833400,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01118100002200": {
     "owner_name": "BURKE SHEENA & KOLBY",
@@ -12795,7 +12795,7 @@
     "sale_price": "0",
     "address": "8825 234TH ST SW",
     "value": 1042800,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01140900000400": {
     "owner_name": "WU GUO QIN/ZHOU LI HONG",
@@ -16440,7 +16440,7 @@
     "sale_price": "0",
     "address": "23413 EDMONDS WAY UNIT D1",
     "value": 729200,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01225900002400": {
     "owner_name": "PRATAPA VENKATA SAI ANJANA",
@@ -17997,7 +17997,7 @@
     "sale_price": "0",
     "address": "5824 161ST ST SW",
     "value": 1502000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01231500001400": {
     "owner_name": "JONNALA SAI KRISHNA R/AVUTHU VASUDHA G",
@@ -19095,7 +19095,7 @@
     "sale_price": "0",
     "address": "8730 218TH ST SW",
     "value": 1050900,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "27043000210300": {
     "owner_name": "MYERS-PIGG FAMILY TRUST",
@@ -19257,7 +19257,7 @@
     "sale_price": "0",
     "address": "8719 236TH ST SW",
     "value": 1320200,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "27043100209200": {
     "owner_name": "PHILLIPS COREY J & KRISTINA I",
@@ -19275,7 +19275,7 @@
     "sale_price": "0",
     "address": "23423 74TH AVE W",
     "value": 1351300,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "28042900400700": {
     "owner_name": "GOLDWIRE NOREEN G",

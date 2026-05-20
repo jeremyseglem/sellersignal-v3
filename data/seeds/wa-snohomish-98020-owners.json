@@ -1401,7 +1401,7 @@
     "sale_price": "0",
     "address": "133 SUNSET AVE N",
     "value": 2741700,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00434401300600": {
     "owner_name": "JACOBSEN ARNE J",
@@ -1698,7 +1698,7 @@
     "sale_price": "0",
     "address": "9523 190TH PL SW",
     "value": 2068600,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00434600007802": {
     "owner_name": "MIONE CHRISTOPHER A & MERIN L",
@@ -2571,7 +2571,7 @@
     "sale_price": "0",
     "address": "931 12TH AVE N",
     "value": 2054700,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00507200001502": {
     "owner_name": "WALDBURGER ROBB & KENDRA",
@@ -3795,7 +3795,7 @@
     "sale_price": "0",
     "address": "24017 104TH AVE W",
     "value": 1115900,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00565600101501": {
     "owner_name": "RINGSTAD FAMILY LIVING TRUST",
@@ -3885,7 +3885,7 @@
     "sale_price": "0",
     "address": "1153 C AVE",
     "value": 1181300,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00568300001800": {
     "owner_name": "TEH LANNA/CEBAN PAVEL",
@@ -4173,7 +4173,7 @@
     "sale_price": "0",
     "address": "8216 198TH PL W",
     "value": 832000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00595100000100": {
     "owner_name": "SIEGRIST FAMILY REVOCABLE LIVING TRUST",
@@ -5838,7 +5838,7 @@
     "sale_price": "0",
     "address": "524 MAPLE ST #201",
     "value": 1038300,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00728900220200": {
     "owner_name": "CHOW MAY JING HUI/EDMUND CHUN YING",
@@ -6153,7 +6153,7 @@
     "sale_price": "0",
     "address": "1020 5TH AVE UNIT 11",
     "value": 446900,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00743000001200": {
     "owner_name": "VAN EVERY SUSAN R",
@@ -6162,7 +6162,7 @@
     "sale_price": "0",
     "address": "1020 5TH AVE UNIT 12",
     "value": 444500,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00743000001300": {
     "owner_name": "BENITZ JENAE NICOLE/BURRUSS TREY AUSTIN",
@@ -6549,7 +6549,7 @@
     "sale_price": "0",
     "address": "510 FORSYTH LN UNIT 405",
     "value": 465200,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "00762400040600": {
     "owner_name": "FIENE FREDERICK D",
@@ -7566,7 +7566,7 @@
     "sale_price": "0",
     "address": "7411 210TH ST SW UNIT 311",
     "value": 386000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01004200031200": {
     "owner_name": "BATTSON VICTOR AULD",
@@ -7629,7 +7629,7 @@
     "sale_price": "0",
     "address": "31 PINE ST UNIT 104",
     "value": 1708500,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01022603110500": {
     "owner_name": "WHITE CAROL",
@@ -8115,7 +8115,7 @@
     "sale_price": "0",
     "address": "41 PINE ST UNIT 307",
     "value": 3882600,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01022604130800": {
     "owner_name": "FORBES DANNY TRUST",
@@ -8484,7 +8484,7 @@
     "sale_price": "0",
     "address": "51 PINE ST UNIT 202",
     "value": 798800,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01022605120300": {
     "owner_name": "WALLACE SANDRA M & DANIEL L",
@@ -8835,7 +8835,7 @@
     "sale_price": "0",
     "address": "55 PINE ST UNIT 201",
     "value": 859700,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01022605520200": {
     "owner_name": "RAMSEY SHAWNA M FAMILY TRUST",
@@ -9033,7 +9033,7 @@
     "sale_price": "0",
     "address": "55 PINE ST UNIT 312",
     "value": 818300,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01022606110100": {
     "owner_name": "FIELDS CHARLES R/KATHLEEN A",
@@ -10293,7 +10293,7 @@
     "sale_price": "0",
     "address": "960 5TH AVE S UNIT 107",
     "value": 458900,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01050000010800": {
     "owner_name": "CHUMBLEY LAURYN M TRUST",
@@ -10464,7 +10464,7 @@
     "sale_price": "0",
     "address": "1115 4TH AVE S UNIT 1B",
     "value": 431000,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "01053700100300": {
     "owner_name": "KORPI CHRISTINA",
@@ -13047,7 +13047,7 @@
     "sale_price": "0",
     "address": "805 ALOHA ST",
     "value": 1619300,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "27032400222600": {
     "owner_name": "TAFFERA CHRISTOPHER A/GUTENPLAN JULIE L",
@@ -13281,7 +13281,7 @@
     "sale_price": "0",
     "address": "1008 WALNUT ST",
     "value": 1448100,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "27032500117100": {
     "owner_name": "MEDINA IRENE & ERIC",
@@ -13452,7 +13452,7 @@
     "sale_price": "0",
     "address": "808 9TH AVE S",
     "value": 1913100,
-    "owner_type": "company"
+    "owner_type": "individual"
   },
   "27032500221000": {
     "owner_name": "CAMPER TREG A & KIMBERLY B",
