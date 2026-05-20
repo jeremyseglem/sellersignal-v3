@@ -1,41 +1,43 @@
 #!/usr/bin/env node
 //
 // build-safe.mjs — wraps `vite build` with a post-build verification
-// step that confirms the Supabase config was actually inlined.
+// step that confirms the bundle uses runtime config fetch (not
+// build-time injection) for Supabase credentials.
 //
-// The problem this exists to prevent:
+// Background:
 //
-//   When VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY are not set in
-//   the build environment, Vite silently inlines `undefined` into
-//   the bundle. The build succeeds with no error or warning. The
-//   resulting JS ships supabase=null, and every auth call (both
-//   magic-link and password) fails in production with an
-//   "Authentication isn't configured" banner. There is no signal
-//   from npm/vite that anything went wrong until users try to sign
-//   in. This has shipped to production twice in one day.
+//   Originally this script verified the OPPOSITE — it checked that
+//   VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY were inlined into the
+//   bundle, because the frontend relied on Vite env-var injection.
+//   That model shipped auth-broken bundles whenever a rebuild ran
+//   without those env vars set (e.g., a Claude container with only
+//   backend env vars). The auth-broken bundle would init supabase=null
+//   and users would hit a "not configured" fallback once their cached
+//   session expired.
 //
-// What this script does:
+//   On 2026-05-20 the frontend was refactored to fetch credentials at
+//   runtime from `/api/config` (which reads SUPABASE_URL +
+//   SUPABASE_ANON_KEY from Railway env vars and returns them). The
+//   build no longer needs any VITE_SUPABASE_* env vars. Any environment
+//   can rebuild the frontend and the result will work in production.
+//
+// What this script verifies now:
 //
 //   1. Runs `vite build` as normal.
 //   2. Reads the built index-*.js bundle from dist/assets.
-//   3. Greps for two markers:
-//        - the Supabase project ref ("eeqsbvizgpuehphiaslo") proves
-//          VITE_SUPABASE_URL was inlined.
-//        - the canonical Supabase JWT header+iss prefix proves
-//          VITE_SUPABASE_ANON_KEY was inlined and is a Supabase JWT.
-//   4. If either marker is missing, exits non-zero with a clear
-//      explanation of what's wrong and how to fix it. The dist/
-//      output is left on disk so the developer can inspect it.
-//   5. If both markers are present, prints a confirmation line and
-//      exits zero.
+//   3. Confirms the bundle references `/api/config` (proves the
+//      runtime fetch code path is present).
+//   4. Confirms the bundle does NOT contain a hardcoded Supabase JWT
+//      anon key (proves we didn't accidentally re-introduce build-time
+//      injection by, e.g., importing `import.meta.env.VITE_*` somewhere).
+//   5. Exits zero if both invariants hold.
 //
 // How to use:
 //
 //   npm run build:safe
 //
-// The standard `npm run build` still works (raw vite, no check).
-// Use this script whenever the output will end up in git or
-// production — i.e., basically always.
+// Raw `npm run build` still works for development. Use build:safe
+// whenever the output will be committed.
 
 import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
@@ -47,20 +49,16 @@ const __dirname = dirname(__filename);
 const FRONTEND_ROOT = join(__dirname, '..');
 const DIST_ASSETS = join(FRONTEND_ROOT, 'dist', 'assets');
 
-// Markers we expect to find in a correctly-built bundle.
-//
-// The project ref is hardcoded because there is only one Supabase
-// project for SellerSignal. If a staging project is ever added,
-// extend this to accept multiple refs (e.g., via env var override).
-const EXPECTED_PROJECT_REF = 'eeqsbvizgpuehphiaslo';
-
 // Any Supabase-issued JWT (anon or service_role) starts with these
 // 76 characters because base64-decoding them yields
 //   {"alg":"HS256","typ":"JWT"}.{"iss":"supabase",...
-// This is a structural check, not a value check — it proves a
-// Supabase JWT was inlined without pinning to a specific key.
+// Presence in the bundle means we accidentally inlined a credential.
 const SUPABASE_JWT_PREFIX =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSI';
+
+// The runtime-config endpoint path. Presence in the bundle confirms
+// the runtime fetch code path is wired up.
+const RUNTIME_CONFIG_PATH = '/api/config';
 
 function fail(message, code) {
   console.error('');
@@ -84,14 +82,14 @@ console.log('→ Running vite build...');
 try {
   execSync('vite build', { cwd: FRONTEND_ROOT, stdio: 'inherit' });
 } catch {
-  // vite already printed its errors to stderr. Just exit with the
-  // same kind of code so callers can tell build failed.
+  // vite already printed errors to stderr; exit non-zero so callers
+  // can tell build failed.
   process.exit(1);
 }
 
 // ── Step 2: locate the bundle ───────────────────────────────────
 console.log('');
-console.log('→ Verifying bundle has Supabase config baked in...');
+console.log('→ Verifying bundle uses runtime config fetch...');
 
 if (!existsSync(DIST_ASSETS)) {
   fail(
@@ -127,30 +125,42 @@ const bundleFile = jsFiles[0];
 const bundlePath = join(DIST_ASSETS, bundleFile);
 const contents = readFileSync(bundlePath, 'utf-8');
 
-// ── Step 3: verify markers ──────────────────────────────────────
-const hasUrl = contents.includes(EXPECTED_PROJECT_REF);
-const hasAnonKey = contents.includes(SUPABASE_JWT_PREFIX);
-
-if (!hasUrl || !hasAnonKey) {
-  const missing = [];
-  if (!hasUrl) missing.push(`Supabase project ref ("${EXPECTED_PROJECT_REF}")`);
-  if (!hasAnonKey) missing.push('Supabase JWT (the anon key)');
-
+// ── Step 3: positive invariant — /api/config must be referenced ──
+const hasRuntimeFetch = contents.includes(RUNTIME_CONFIG_PATH);
+if (!hasRuntimeFetch) {
   fail(
-    `Bundle ${bundleFile} is missing: ${missing.join(' AND ')}.\n` +
+    `Bundle ${bundleFile} does not reference '${RUNTIME_CONFIG_PATH}'.\n` +
       `\n` +
-      `This means VITE_SUPABASE_URL and/or VITE_SUPABASE_ANON_KEY were\n` +
-      `not set when vite built. The bundle would ship with supabase=null\n` +
-      `and break all auth in production.\n` +
-      `\n` +
-      `Fix:\n` +
-      `  export VITE_SUPABASE_URL="https://${EXPECTED_PROJECT_REF}.supabase.co"\n` +
-      `  export VITE_SUPABASE_ANON_KEY="<anon key from Supabase or Railway>"\n` +
-      `  npm run build:safe\n` +
+      `The frontend is supposed to fetch Supabase config from the backend\n` +
+      `at runtime. If that string isn't in the bundle, either:\n` +
+      `  (a) frontend/src/lib/supabase.js was modified to not fetch config\n` +
+      `      at runtime — verify it still calls fetch('/api/config'), or\n` +
+      `  (b) Vite tree-shook the fetch call because nothing imports the\n` +
+      `      supabase module — investigate why supabase.js is unreferenced.\n` +
       `\n` +
       `Aborting before this broken bundle gets committed.`,
     3,
   );
 }
 
-ok(`${bundleFile} has Supabase config baked in — safe to commit.`);
+// ── Step 4: negative invariant — no Supabase JWT in the bundle ──
+const hasInlinedJwt = contents.includes(SUPABASE_JWT_PREFIX);
+if (hasInlinedJwt) {
+  fail(
+    `Bundle ${bundleFile} contains an inlined Supabase JWT.\n` +
+      `\n` +
+      `Since the 2026-05-20 refactor, no Supabase credentials should be\n` +
+      `inlined into the JS bundle. The frontend fetches them from\n` +
+      `/api/config at runtime. If a JWT made it into the bundle, someone\n` +
+      `accidentally reintroduced build-time injection — likely by:\n` +
+      `  (a) referencing import.meta.env.VITE_SUPABASE_* somewhere, or\n` +
+      `  (b) hardcoding a key in a .js or .jsx file.\n` +
+      `\n` +
+      `Grep the source for 'eyJhbGc' to find it.\n` +
+      `\n` +
+      `Aborting before this leaked-credential bundle gets committed.`,
+    4,
+  );
+}
+
+ok(`${bundleFile} uses runtime config fetch — safe to commit.`);

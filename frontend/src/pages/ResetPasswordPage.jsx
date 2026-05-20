@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
+import { updatePassword } from '../lib/supabase.js';
 import { useAuth } from '../lib/AuthContext.jsx';
-import { updatePassword, supabaseConfigured } from '../lib/supabase.js';
 
 // ResetPasswordPage — landing page from the password-reset email.
 //
@@ -25,7 +25,8 @@ import { updatePassword, supabaseConfigured } from '../lib/supabase.js';
 //                     reset link.
 //   3. has session  — show the form.
 export default function ResetPasswordPage() {
-  const { loading, session } = useAuth();
+  const { isConfigured, loading: authLoading, session } = useAuth();
+  const loading = authLoading;
   const navigate = useNavigate();
 
   const [password, setPassword] = useState('');
@@ -86,7 +87,7 @@ export default function ResetPasswordPage() {
           Set a new password
         </h1>
 
-        {!supabaseConfigured && (
+        {!authLoading && !isConfigured && (
           <div style={warnStyle}>
             Authentication isn&rsquo;t configured in this environment.
             Contact the SellerSignal team for access.
@@ -97,7 +98,7 @@ export default function ResetPasswordPage() {
           <p style={mutedStyle}>Verifying reset link\u2026</p>
         )}
 
-        {!loading && !session && supabaseConfigured && (
+        {!loading && !session && isConfigured && (
           <div style={confirmStyle}>
             <div style={{
               fontSize: 11,

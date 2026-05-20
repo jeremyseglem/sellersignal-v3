@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
-import { signUpWithPassword, supabaseConfigured } from '../lib/supabase.js';
+import { signUpWithPassword } from '../lib/supabase.js';
+import { useAuth } from '../lib/AuthContext.jsx';
 
 // SignupPage — email + password 'request access' flow. Replaces the
 // previous magic-link-only signup, which would have been broken on
@@ -23,6 +24,7 @@ import { signUpWithPassword, supabaseConfigured } from '../lib/supabase.js';
 // agent_profiles_v3 row (same path as the previous magic-link flow,
 // so nothing schema-side needs to change).
 export default function SignupPage() {
+  const { isConfigured, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -101,7 +103,7 @@ export default function SignupPage() {
           territory.
         </p>
 
-        {!supabaseConfigured && (
+        {!authLoading && !isConfigured && (
           <div style={warnStyle}>
             Authentication isn&rsquo;t configured in this environment.
             Contact the SellerSignal team at{' '}
@@ -120,7 +122,7 @@ export default function SignupPage() {
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@brokerage.com"
             autoFocus
-            disabled={submitting || !supabaseConfigured}
+            disabled={submitting || !isConfigured}
             style={inputStyle}
           />
           <label style={{ ...labelStyle, marginTop: 'var(--space-md)' }}>
@@ -132,7 +134,7 @@ export default function SignupPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="At least 8 characters"
-            disabled={submitting || !supabaseConfigured}
+            disabled={submitting || !isConfigured}
             style={inputStyle}
           />
           <label style={{ ...labelStyle, marginTop: 'var(--space-md)' }}>
@@ -144,7 +146,7 @@ export default function SignupPage() {
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="Re-enter your password"
-            disabled={submitting || !supabaseConfigured}
+            disabled={submitting || !isConfigured}
             style={inputStyle}
           />
           {error && (
@@ -152,8 +154,8 @@ export default function SignupPage() {
           )}
           <button
             type="submit"
-            disabled={submitting || !email || !password || !confirm || !supabaseConfigured}
-            style={primaryButtonStyle(submitting || !email || !password || !confirm || !supabaseConfigured)}
+            disabled={submitting || !email || !password || !confirm || !authLoading && !isConfigured}
+            style={primaryButtonStyle(submitting || !email || !password || !confirm || !authLoading && !isConfigured)}
           >
             {submitting ? 'Creating account\u2026' : 'Create account'}
           </button>

@@ -4,8 +4,8 @@ import SiteLayout from '../components/shell/SiteLayout.jsx';
 import {
   sendMagicLink,
   signInWithPassword,
-  supabaseConfigured,
 } from '../lib/supabase.js';
+import { useAuth } from '../lib/AuthContext.jsx';
 
 // LoginPage — two sign-in modes on one page.
 //
@@ -28,6 +28,7 @@ import {
 // password?" to set a password and use the password mode going
 // forward. Nothing forces them to migrate.
 export default function LoginPage() {
+  const { isConfigured, loading: authLoading } = useAuth();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const next = searchParams.get('next') || '/territories';
@@ -106,7 +107,7 @@ export default function LoginPage() {
             : 'Enter your email and we\u2019ll send you a one-time sign-in link.'}
         </p>
 
-        {!supabaseConfigured && (
+        {!authLoading && !isConfigured && (
           <div style={warnStyle}>
             Authentication isn&rsquo;t configured in this environment.
             Contact the SellerSignal team for access.
@@ -123,7 +124,7 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@brokerage.com"
               autoFocus
-              disabled={submitting || !supabaseConfigured}
+              disabled={submitting || !isConfigured}
               style={inputStyle}
             />
             <label style={{ ...labelStyle, marginTop: 'var(--space-md)' }}>
@@ -135,7 +136,7 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Your password"
-              disabled={submitting || !supabaseConfigured}
+              disabled={submitting || !isConfigured}
               style={inputStyle}
             />
             {error && (
@@ -143,8 +144,8 @@ export default function LoginPage() {
             )}
             <button
               type="submit"
-              disabled={submitting || !email || !password || !supabaseConfigured}
-              style={primaryButtonStyle(submitting || !email || !password || !supabaseConfigured)}
+              disabled={submitting || !email || !password || !authLoading && !isConfigured}
+              style={primaryButtonStyle(submitting || !email || !password || !authLoading && !isConfigured)}
             >
               {submitting ? 'Signing in\u2026' : 'Sign in'}
             </button>
@@ -169,7 +170,7 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@brokerage.com"
               autoFocus
-              disabled={submitting || !supabaseConfigured}
+              disabled={submitting || !isConfigured}
               style={inputStyle}
             />
             {error && (
@@ -177,8 +178,8 @@ export default function LoginPage() {
             )}
             <button
               type="submit"
-              disabled={submitting || !email || !supabaseConfigured}
-              style={primaryButtonStyle(submitting || !email || !supabaseConfigured)}
+              disabled={submitting || !email || !authLoading && !isConfigured}
+              style={primaryButtonStyle(submitting || !email || !authLoading && !isConfigured)}
             >
               {submitting ? 'Sending\u2026' : 'Send sign-in link'}
             </button>

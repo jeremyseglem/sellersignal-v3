@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
-import { sendPasswordReset, supabaseConfigured } from '../lib/supabase.js';
+import { sendPasswordReset } from '../lib/supabase.js';
+import { useAuth } from '../lib/AuthContext.jsx';
 
 // ForgotPasswordPage — request a password-reset email. Supabase
 // sends an email containing a link to /reset-password with a
@@ -20,6 +21,7 @@ import { sendPasswordReset, supabaseConfigured } from '../lib/supabase.js';
 // auth. Their magic-link login still works on /login. Resetting
 // just sets a password on top of their existing account.
 export default function ForgotPasswordPage() {
+  const { isConfigured, loading: authLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
@@ -64,7 +66,7 @@ export default function ForgotPasswordPage() {
           new password.
         </p>
 
-        {!supabaseConfigured && (
+        {!authLoading && !isConfigured && (
           <div style={warnStyle}>
             Authentication isn&rsquo;t configured in this environment.
             Contact the SellerSignal team for access.
@@ -104,7 +106,7 @@ export default function ForgotPasswordPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@brokerage.com"
               autoFocus
-              disabled={submitting || !supabaseConfigured}
+              disabled={submitting || !isConfigured}
               style={inputStyle}
             />
             {error && (
@@ -112,8 +114,8 @@ export default function ForgotPasswordPage() {
             )}
             <button
               type="submit"
-              disabled={submitting || !email || !supabaseConfigured}
-              style={primaryButtonStyle(submitting || !email || !supabaseConfigured)}
+              disabled={submitting || !email || !authLoading && !isConfigured}
+              style={primaryButtonStyle(submitting || !email || !authLoading && !isConfigured)}
             >
               {submitting ? 'Sending\u2026' : 'Send reset link'}
             </button>
