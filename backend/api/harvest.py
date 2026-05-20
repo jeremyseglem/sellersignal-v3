@@ -1929,6 +1929,56 @@ def obit_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
     return {"message": "Backoff cleared. Task will tick on its normal schedule."}
 
 
+# ─── Snohomish daily new-case report autofill admin ────────────────────
+
+@router.get("/snohomish-daily-autofill-status")
+def snohomish_daily_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Current state of the Snohomish daily new-case report autofill. Ticks
+    once per day, calls /api/harvest/run?source=snohomish_daily to pull
+    the County Clerk's daily PDFs and feed probate / divorce signals into
+    raw_signals_v3. Returns total ticks, last tick result, error state,
+    and configuration.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.snohomish_daily_autofill import state
+    return dict(state)
+
+
+@router.post("/snohomish-daily-autofill-pause")
+def snohomish_daily_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause Snohomish daily autofill — loop keeps running but skips ticks."""
+    _require_admin(x_admin_key)
+    from backend.tasks.snohomish_daily_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Snohomish daily autofill paused."}
+
+
+@router.post("/snohomish-daily-autofill-resume")
+def snohomish_daily_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume Snohomish daily autofill and clear any active backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.snohomish_daily_autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "Snohomish daily autofill resumed."}
+
+
+@router.post("/snohomish-daily-autofill-trigger")
+def snohomish_daily_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
+    """
+    Clear backoff state on the Snohomish daily autofill task. The tick
+    interval still applies — to force an immediate harvest, call
+    POST /api/harvest/run with source=snohomish_daily directly.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.snohomish_daily_autofill import state
+    state["backoff_until"]      = None
+    state["consecutive_errors"] = 0
+    return {"message": "Backoff cleared. Task will tick on its normal schedule."}
+
+
 # ─── KC Treasury autofill background task admin ───────────────────────
 
 @router.get("/treasury-autofill-status")

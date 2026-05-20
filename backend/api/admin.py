@@ -1102,13 +1102,26 @@ async def onboard_zip(
             or "Bellevue"
         )
 
-    # Verify the seed JSON is in place — fail-fast before kicking off
-    json_path = f"/app/data/seeds/wa-king-{zip_code}-owners.json"
+    # Auto-detect Snohomish ZIPs and switch the market_key + seed-file
+    # pattern accordingly. Operator can still override market_key explicitly
+    # via query param; this only kicks in when the default ("WA_KING") was
+    # left in place and the ZIP is actually a Snohomish one. Same shape
+    # as the city auto-resolution above.
+    is_snohomish = zip_code in SNO_ZIP_TO_CITY
+    if is_snohomish and market_key == "WA_KING":
+        market_key = "WA_SNOHOMISH"
+
+    # Verify the seed JSON is in place — fail-fast before kicking off.
+    # Seed-file pattern depends on county:
+    #   KC:        wa-king-{zip}-owners.json
+    #   Snohomish: wa-snohomish-{zip}-owners.json
+    seed_prefix = "wa-snohomish" if is_snohomish else "wa-king"
+    json_path = f"/app/data/seeds/{seed_prefix}-{zip_code}-owners.json"
     # Railway dist may not be at /app — try a few common paths
     candidates = [
-        f"/app/data/seeds/wa-king-{zip_code}-owners.json",
-        f"data/seeds/wa-king-{zip_code}-owners.json",
-        f"/tmp/sellersignal-v3/data/seeds/wa-king-{zip_code}-owners.json",
+        f"/app/data/seeds/{seed_prefix}-{zip_code}-owners.json",
+        f"data/seeds/{seed_prefix}-{zip_code}-owners.json",
+        f"/tmp/sellersignal-v3/data/seeds/{seed_prefix}-{zip_code}-owners.json",
     ]
     found_path = None
     import os as _os
@@ -1118,10 +1131,12 @@ async def onboard_zip(
             break
 
     if not found_path:
+        builder = ("build_snohomish_owners.py" if is_snohomish
+                   else "build_kc_owners.py")
         raise HTTPException(
             400,
             f"Seed JSON not found. Looked in: {candidates}. "
-            f"Build via build_kc_owners.py and commit to data/seeds/ first.",
+            f"Build via {builder} and commit to data/seeds/ first.",
         )
 
     # Don't restart a completed onboarding unless explicitly forced
@@ -1420,6 +1435,8 @@ KC_ZIP_TO_CITY = {
 # TARGET_ZIP. The market_key is WA_SNOHOMISH and the ArcGIS endpoint lives
 # in MARKET_CONFIGS.
 SNO_ZIP_TO_CITY = {
+    "98020": "Edmonds",
+    "98026": "Edmonds",
     "98290": "Snohomish",
 }
 

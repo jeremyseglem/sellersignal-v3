@@ -88,6 +88,14 @@ async def lifespan(app: FastAPI):
     from backend.tasks.canonicalize_autofill import canonicalize_autofill_loop
     canonicalize_autofill_task = asyncio.create_task(canonicalize_autofill_loop())
 
+    # Snohomish daily new-case report autofill — ticks once per day, calls
+    # /api/harvest/run?source=snohomish_daily to harvest the County Clerk's
+    # daily PDFs and feed Tier 1 court signals (probate / divorce) into
+    # raw_signals_v3 for the matcher. Independent of any KC portal state.
+    # See backend/tasks/snohomish_daily_autofill.py for cadence/config.
+    from backend.tasks.snohomish_daily_autofill import snohomish_daily_autofill_loop
+    snohomish_daily_autofill_task = asyncio.create_task(snohomish_daily_autofill_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
@@ -97,6 +105,7 @@ async def lifespan(app: FastAPI):
     rematch_autofill_task.cancel()
     snohomish_tenure_autofill_task.cancel()
     canonicalize_autofill_task.cancel()
+    snohomish_daily_autofill_task.cancel()
     try:
         await autofill_task
     except asyncio.CancelledError:
@@ -119,6 +128,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await canonicalize_autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await snohomish_daily_autofill_task
     except asyncio.CancelledError:
         pass
 

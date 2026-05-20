@@ -33,6 +33,7 @@ from .kc_superior_court import KCSuperiorCourtHarvester
 from .kc_treasury import KCTreasuryForeclosureHarvester
 from .kc_delinquent_taxes import KCDelinquentTaxesHarvester
 from .obituary import ObituaryHarvester
+from .snohomish_daily_report import SnohomishDailyReportHarvester
 from backend.api.db import get_supabase_client
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,12 @@ HARVESTERS = {
     # catching earlier delinquency stages (1-2 years overdue) before formal
     # foreclosure (3+ years). Same Socrata pattern, different dataset.
     "kc_delinquent_taxes": lambda _unused:  KCDelinquentTaxesHarvester(),
+    # Snohomish County: harvests the Clerk's daily New Case Report PDFs.
+    # Different shape from KC's portal scraper — see backend/harvesters/
+    # snohomish_daily_report.py for the why. This generalizes to other
+    # WA counties (Pierce, Thurston, Whatcom, Kitsap) that publish similar
+    # daily reports; one harvester per county is the current plan.
+    "snohomish_daily":   lambda case_types: SnohomishDailyReportHarvester(case_types),
     # Future: "kc_recorder" (captcha-blocked — see kc_treasury.py comments),
     # "wa_sos", "zillow_sitemap"
 }

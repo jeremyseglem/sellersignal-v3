@@ -633,3 +633,123 @@ def harvest_recent(lookback_days: int = 7) -> tuple[list[dict], HarvestResult]:
         time.sleep(POLITE_DELAY_SECS)
 
     return all_signals, combined
+
+
+# ── BaseHarvester adapter (for orchestrator integration) ──────────────────────
+
+# The orchestrator at backend/harvesters/orchestrator.py:run_harvest() expects
+# a BaseHarvester subclass that yields RawSignal objects. The function-based
+# API above is what does the actual work; this class is a thin adapter so the
+# Snohomish harvester plugs into the same run_harvest() entry point as the
+# KC harvesters. Wiring the autofill task through /api/harvest/run with
+# source='snohomish_daily' (rather than calling harvest_recent() directly)
+# means we automatically get the matcher invocation, dedup, and stats
+# accounting for free.
+
+class SnohomishDailyReportHarvester:
+    """
+    Adapter exposing the snohomish_daily_report module as a BaseHarvester
+    subclass for the orchestrator. Iterates the report index, downloads
+    each PDF in the date range, and yields RawSignal objects.
+    """
+    source_type  = "wa_state_courts"
+    jurisdiction = "WA_SNOHOMISH"
+
+    def __init__(self, case_types: Optional[list[str]] = None):
+        # case_types is ignored — we always extract our Tier 1 set
+        # (probate + divorce) defined by CASE_TYPE_MAP. The argument is
+        # accepted for interface compatibility with the KC harvester
+        # registry signature in orchestrator.HARVESTERS.
+        self.case_types = case_types
+
+    def harvest(self, since: date, until: Optional[date] = None):
+        """
+        Yield one RawSignal per qualifying case across reports in
+        [since, until]. Resilient to per-day failures: a malformed or
+        unreachable PDF for one date doesn't stop the rest.
+        """
+        # Import here to avoid a circular-load risk at module import time
+        # (base imports happen at orchestrator.py boot).
+        from backend.harvesters.base import RawSignal, Party
+
+        until = until or date.today()
+
+        try:
+            index = fetch_index()
+        except Exception as e:
+            log.error(f"snohomish: failed to fetch report index: {e}")
+            return
+
+        targets = [e for e in index if since <= e.report_date <= until]
+        log.info(
+            f"snohomish: harvesting {len(targets)} report(s) "
+            f"from {since} to {until}"
+        )
+
+        for entry in sorted(targets, key=lambda e: e.report_date):
+            try:
+                pdf_bytes = _http_get(entry.url, timeout=60)
+                text  = _pdf_to_text(pdf_bytes)
+                rows  = parse_report(text)
+                cases = group_by_case(rows)
+            except Exception as e:
+                log.warning(
+                    f"snohomish: skipping {entry.report_date} — "
+                    f"{type(e).__name__}: {e}"
+                )
+                continue
+
+            for case in cases:
+                mapping = CASE_TYPE_MAP.get(case.type_code)
+                if not mapping:
+                    continue
+                signal_type, _label = mapping
+
+                # Build the Party objects. Sort so matchable roles
+                # (decedent, petitioner, etc.) come BEFORE attorneys and
+                # protected-info parties — the matcher reads parties[0]
+                # as the primary lookup name for some signal types.
+                parties: list = []
+                for p in case.parties:
+                    raw = (p.party_raw or "").strip()
+                    if not raw:
+                        continue
+                    role = CONNECTION_TYPE_MAP.get(
+                        p.connection_type, p.connection_type.lower(),
+                    )
+                    norm = _normalize_party_name(raw)
+                    parties.append(Party(
+                        raw    = raw,
+                        role   = role,
+                        first  = norm.get("first") or None,
+                        last   = norm.get("last")  or None,
+                        middle = norm.get("middle") or None,
+                    ))
+
+                if not parties:
+                    continue
+
+                # Stable sort: matchable roles first, then by role name
+                parties.sort(key=lambda p: (p.role not in MATCHABLE_ROLES, p.role))
+
+                yield RawSignal(
+                    source_type   = "wa_state_courts",
+                    signal_type   = signal_type,
+                    trust_level   = "high",
+                    party_names   = parties,
+                    document_ref  = case.case_number,
+                    event_date    = case.file_date,
+                    jurisdiction  = "WA_SNOHOMISH",
+                    property_hint = None,
+                    raw_data      = {
+                        "case_number": case.case_number,
+                        "file_date":   case.file_date.isoformat() if case.file_date else None,
+                        "type_code":   case.type_code,
+                        "type_desc":   case.type_desc,
+                        "category":    case.parties[0].category if case.parties else "",
+                        "harvester":   "snohomish_daily_report",
+                        "report_date": entry.report_date.isoformat(),
+                    },
+                )
+
+            time.sleep(POLITE_DELAY_SECS)
