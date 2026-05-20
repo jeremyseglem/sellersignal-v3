@@ -155,6 +155,150 @@ See module docstring at the top of the file for full details.
 
 ---
 
+## WA court system architecture (cross-county signal harvesting)
+
+Discovered during the Snohomish discovery session (May 18-19, 2026). This is the master picture for how court signals work across all Washington counties — KC is the exception, not the template.
+
+**Two distinct court records systems in WA:**
+
+1. **King County only** — KC built its own custom portal at `dja-prd-ecexap1.kingcounty.gov`. Supports date-range + case-type filtered search via case listings → case detail → parties tab. Our existing harvesters (`kc_superior_court.py` + `kc_court_participants.py`) target this. KC is the **only** county on its own system.
+
+2. **All other 38 WA counties** — use the statewide **Judicial Information System (JIS)** at `dw.courts.wa.gov` (ColdFusion, AOC-maintained). Name-search or case-number-search only — **no "all probate cases in date range" search exists.** Search form is reCAPTCHA-v2 gated. Results render via Tabulator (JS table from JSON XHR). Direct case-detail URLs (`?fa=home.casedetail&caseNumber=X`) return error pages — must go through the search flow.
+
+**The unlock for non-KC counties: Daily New Case Reports.**
+
+Most/all WA county clerks publish daily PDF reports of new case filings — no reCAPTCHA, no name search required, no subscription. Snohomish publishes at `https://snohomishcountywa.gov/5516/Daily-New-Case-and-Judgment-Audit-Report`. The PDF includes a structured table:
+
+```
+Case Number | File Date | Category | Case Type Code | Case Type Desc | Connection Type | Party
+26-3-01021-31 | 5/15/2026 | Family | DIC | Dissolution of Marriage | PET | KAUR, TAYLOR LYNN
+26-4-01015-31 | 5/18/2026 | Probate or Family | EST | Estate | DEC | Zettl, Judith Ann
+```
+
+**Case type code catalog (Snohomish, observed May 18 sample):**
+
+| Code | Description | Signal type |
+|------|-------------|-------------|
+| EST | Estate | probate |
+| WLL | Will Only | probate |
+| TRS | Trust | probate |
+| GDN | Guardianship | probate |
+| DIC | Dissolution of Marriage (contested) | divorce |
+| DIN | Dissolution of Marriage (notice) | divorce |
+| TAXDOR | Revenue Tax Warrant | tax_foreclosure |
+| TAXESD | Employment Security Dept tax warrant | tax_foreclosure |
+| TAXLI | Labor & Industries tax warrant | tax_foreclosure |
+| COM | Commercial | (potential LLC signal) |
+| ABJ | Abstract of Judgment | (potential property judgment) |
+
+**Connection types (parties on a case):**
+- `DEC` — decedent (the deceased — primary match key for probate)
+- `PET` — petitioner (often the personal representative once appointed, OR the divorce filer)
+- `RSP` — respondent (divorce respondent, guardianship subject)
+- `ATY` / `ATYZ` — attorney
+- `WIPPET` / `WIPRSP` — petitioner/respondent with information protected
+- `PLA` / `DEF` — civil cases
+- `MNR` — minor
+
+**Critical limitation: PR not on day-1 filing.**
+
+The day a probate case is filed, only the decedent is named. The Personal Representative is appointed in a later filing (Petition for Letters Testamentary) — typically weeks later. This means Snohomish probate leads launch in `contact_status='no_pr_yet'` state (same as KC's transient probate state — the dossier UI handles it). PR enrichment is **Phase 2** (see "On the horizon").
+
+**Snohomish-specific URL patterns:**
+
+```
+Daily New Case Reports landing page:
+  https://snohomishcountywa.gov/5516/Daily-New-Case-and-Judgment-Audit-Report
+
+Per-day report file:
+  https://snohomishcountywa.gov/DocumentCenter/View/{doc_id}/{Month-DD-YYYY-New-Case-Report}
+
+Daily Judgment Audit Reports also published (separate file):
+  https://snohomishcountywa.gov/DocumentCenter/View/{doc_id}/{Month-DD-YYYY-Judgment-Audit-Report}
+```
+
+Reports are released after court close on each business day. May 18 (Mon) report covered cases entered into the system 5/15 (Fri) through 5/18.
+
+**Phase 2 — PR enrichment (post-launch, not yet built):**
+
+Three options for upgrading no_pr_yet leads to family_pr_identified:
+1. **Statewide JIS scrape with reCAPTCHA solving** (2captcha-style integration, ~$2-3 per 1000 captchas) — works for all 38 non-KC counties.
+2. **Snohomish County Odyssey Portal subscription** (paid annual, billed Feb 1) — authenticated access to case detail. Snohomish only.
+3. **Daily court docket scrape** — if county clerks publish daily "case activity" reports (not just new filings) with party additions, we can detect PR appointments without scraping case detail.
+
+Decision deferred until Phase 1 is live and we know how often agents ask for PR names that aren't yet populated.
+
+---
+
+## Snohomish County onboarding pipeline
+
+Same orchestrator (`backend/tasks/zip_onboarding.py`) as KC ZIPs — the pipeline is source-agnostic. The only Snohomish-specific layers are the **seed builder** and the **court signal harvester**.
+
+**Bulk parcel data source — Snohomish County Open Data Portal:**
+
+- Catalog URL: `https://snohomish-county-open-data-portal-snoco-gis.hub.arcgis.com/api/feed/dcat-us/1.1` (DCAT JSON, 478KB, full county dataset index)
+- Parcels feature service: `https://services6.arcgis.com/z6WYi9VRHfgwgtyW/arcgis/rest/services/Parcels/FeatureServer/0`
+  - Direct REST query (recommended over CSV export for our use):
+    `{FeatureServer/0}/query?where=SITUSZIP='98020'&outFields=*&f=json&returnGeometry=false`
+  - Pagination via `resultOffset` / `resultRecordCount` (max 2000/page)
+- Updated 3x per week by Snohomish County Assessor
+
+**Schema highlights (vs KC's RPSale + RPAcct split):**
+
+Snohomish has owner data **in a single feature service** — better than KC's two-file structure:
+
+| Snohomish field | KC equivalent | Notes |
+|-----------------|---------------|-------|
+| `PARCEL_ID` | `Major+Minor` | primary parcel key |
+| `OWNERNAME` | `BuyerName` (from RPSale) | joint owners on one line ("HANSON BART W & CHERYL K") |
+| `OWNERLINE1`/`CITY`/`ZIP` | TaxpayerName mailing | for absentee detection |
+| `TAXPRNAME` | (separate field) | useful for trustee/LLC distinction |
+| `SITUSADDRESS`/`SITUSZIP` | `SitusAddr` | property address |
+| `USECODE` | `PropertyType` | "111 Single Family Residence" etc. |
+| `MKTTL` | `AppraisedTotal` | total market value (band input) |
+
+**Target ZIPs and volumes (May 19, 2026 snapshot):**
+
+| ZIP | City | Total parcels | Residential | Status |
+|-----|------|---------------|-------------|--------|
+| 98020 | Edmonds | 1,602 | 1,483 | beta-onboarding-target |
+| 98026 | Edmonds (north) | 2,144 | 1,963 | beta-onboarding-target |
+| 98290 | Snohomish/Lake Stevens | 4,676 | 3,966 | live (pilot, May 10 seed) |
+
+**To-build modules (Phase 1 — to ship 98020/98026 launch):**
+
+1. `scripts/build_snohomish_owners.py` — downloads Parcels feature service via paginated REST queries, normalizes to seed JSON. Mirrors `build_kc_owners.py` pattern. Output: `data/seeds/wa-snohomish-{zip}-owners.json`.
+2. `backend/harvesters/snohomish_daily_report.py` — downloads daily New Case Report PDF, parses table, writes to `raw_signals_v3` with case_type/decedent/case_number. Mirrors `kc_superior_court.py` shape.
+3. `backend/tasks/snohomish_daily_autofill.py` — background task that ticks once daily, calls the harvester for yesterday's new cases. Mirrors KC's autofill pattern.
+4. SNO_ZIP_TO_CITY map additions in `backend/api/admin.py` for 98020 → "Edmonds", 98026 → "Edmonds".
+
+The downstream pipeline (matcher, canonicalize, briefings, dossier) is already source-agnostic — no changes needed.
+
+**98290 bonus:** Once the harvester writes Snohomish probate/divorce signals into `raw_signals_v3`, the matcher will pick them up against existing 98290 parcels' canonicalized owners. 98290 gains Tier 1 leads automatically alongside the new ZIPs.
+
+**Already-existing Snohomish infrastructure (do not rebuild):**
+
+- `backend/harvesters/snohomish_scopi.py` — per-parcel sales-history scraper. Used by `snohomish_tenure_autofill.py` to backfill the long-tail of pre-5-year transfers (Snohomish's bulk Sales Excel only goes back 5 years; SCOPI provides full history for tenure classification). Keep as-is.
+- `data/seeds/wa-snohomish-98290-owners.json` — pilot seed, one-off (no committed builder). Will be regenerated cleanly via the new `build_snohomish_owners.py` when ready.
+
+---
+
+## Generic WA county onboarding template (future expansion beyond Snohomish)
+
+The Snohomish work generalizes. The pattern for adding any non-KC WA county:
+
+1. **Find the county's ArcGIS Open Data Portal.** Most counties publish at `{county}-county-open-data-portal-{org}.hub.arcgis.com` or via a county-branded ArcGIS Hub. Pull the DCAT catalog at `/api/feed/dcat-us/1.1` for the full dataset list. Find "Parcels" (sometimes "Tax Parcels" or "Cadastral").
+2. **Find the County Clerk's Daily New Case Reports.** Search `{county} county clerk daily new case report site:gov`. Most publish PDFs to their DocumentCenter. Verify probate (EST/WLL/TRS/GDN), divorce (DIC/DIN), and tax warrant (TAXDOR) case types are included.
+3. **Add `{COUNTY}_ZIP_TO_CITY` map** in `backend/api/admin.py` with the county's ZIPs.
+4. **Add `WA_{COUNTY}` market_key** if not already present.
+5. **Build the seed file** via the county's Parcels feature service (paginated REST query, max 2000/page).
+6. **Run orchestrator** the same as KC.
+
+Counties currently planned for post-Snohomish expansion: Pierce, Thurston, Whatcom, Kitsap (the major non-KC Puget Sound counties).
+
+---
+
+
 ## Where things live
 
 ### Code
