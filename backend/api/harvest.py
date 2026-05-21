@@ -541,11 +541,16 @@ def diag_scrape_attempts(
 def diag_signal_date_range(
     x_admin_key: Optional[str] = Header(None),
     signal_type: str = "probate",
+    source_type: str = "kc_superior_court",
 ):
     """
     Diagnostic: summary of event_date distribution for a signal type.
     Shows min/max date, how many signals have null event_date, and
     a few sample rows from each extreme.
+
+    source_type defaults to kc_superior_court for back-compat; pass
+    ?source_type=wa_state_courts to inspect Snohomish County daily
+    report signals.
     """
     _require_admin(x_admin_key)
     supa = get_supabase_client()
@@ -553,7 +558,7 @@ def diag_signal_date_range(
     # Count total
     total_res = (supa.table('raw_signals_v3')
                  .select('id', count='exact')
-                 .eq('source_type', 'kc_superior_court')
+                 .eq('source_type', source_type)
                  .eq('signal_type', signal_type)
                  .limit(1)
                  .execute())
@@ -562,17 +567,37 @@ def diag_signal_date_range(
     # Count with null event_date
     null_res = (supa.table('raw_signals_v3')
                 .select('id', count='exact')
-                .eq('source_type', 'kc_superior_court')
+                .eq('source_type', source_type)
                 .eq('signal_type', signal_type)
                 .is_('event_date', 'null')
                 .limit(1)
                 .execute())
     null_count = null_res.count or 0
 
+    # Also count matched vs unmatched, and signals_with_zero_matches
+    matched_res = (supa.table('raw_signals_v3')
+                   .select('id', count='exact')
+                   .eq('source_type', source_type)
+                   .eq('signal_type', signal_type)
+                   .not_.is_('matched_at', 'null')
+                   .limit(1)
+                   .execute())
+    matched_count = matched_res.count or 0
+
+    zero_match_res = (supa.table('raw_signals_v3')
+                      .select('id', count='exact')
+                      .eq('source_type', source_type)
+                      .eq('signal_type', signal_type)
+                      .not_.is_('matched_at', 'null')
+                      .eq('match_count', 0)
+                      .limit(1)
+                      .execute())
+    zero_match_count = zero_match_res.count or 0
+
     # Earliest 5 rows by event_date
     earliest = (supa.table('raw_signals_v3')
-                .select('id, document_ref, event_date')
-                .eq('source_type', 'kc_superior_court')
+                .select('id, document_ref, event_date, match_count, matched_at')
+                .eq('source_type', source_type)
                 .eq('signal_type', signal_type)
                 .not_.is_('event_date', 'null')
                 .order('event_date', desc=False)
@@ -581,8 +606,8 @@ def diag_signal_date_range(
 
     # Latest 5 rows by event_date
     latest = (supa.table('raw_signals_v3')
-              .select('id, document_ref, event_date')
-              .eq('source_type', 'kc_superior_court')
+              .select('id, document_ref, event_date, match_count, matched_at, party_names')
+              .eq('source_type', source_type)
               .eq('signal_type', signal_type)
               .not_.is_('event_date', 'null')
               .order('event_date', desc=True)
@@ -592,7 +617,7 @@ def diag_signal_date_range(
     # Also sample 5 of the NULL-event-date signals
     null_samples = (supa.table('raw_signals_v3')
                     .select('id, document_ref, raw_data')
-                    .eq('source_type', 'kc_superior_court')
+                    .eq('source_type', source_type)
                     .eq('signal_type', signal_type)
                     .is_('event_date', 'null')
                     .limit(5)
@@ -603,12 +628,16 @@ def diag_signal_date_range(
     ]
 
     return {
-        "signal_type":       signal_type,
-        "total_signals":     total,
-        "null_event_date":   null_count,
-        "earliest_signals":  earliest,
-        "latest_signals":    latest,
-        "null_samples":      null_samples_min,
+        "signal_type":          signal_type,
+        "source_type":          source_type,
+        "total_signals":        total,
+        "matched_signals":      matched_count,
+        "unmatched_signals":    total - matched_count,
+        "matched_with_0_hits":  zero_match_count,
+        "null_event_date":      null_count,
+        "earliest_signals":     earliest,
+        "latest_signals":       latest,
+        "null_samples":         null_samples_min,
     }
 
 
