@@ -560,6 +560,7 @@ function BriefingBody() {
             preferredSignalType={
               activeBucket === 'probate' ? 'probate'
               : activeBucket === 'divorce' ? 'divorce'
+              : activeBucket === 'obituary' ? 'obituary'
               : null
             }
           />

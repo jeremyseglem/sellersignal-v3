@@ -352,6 +352,16 @@ export function detectArchetype(dossier, opts = {}) {
       && matches.some((m) => m.signal_type === 'divorce')) {
     return ARCHETYPES.divorce;
   }
+  // Obituary leads don't have their own archetype yet — there's no
+  // estate filing, no PR identified, just a public death announcement.
+  // Routing to general until a proper obituary archetype is authored.
+  // The lead row header still says "Obituary X ago" via signal_type;
+  // the dossier body just doesn't pretend an estate filing or divorce
+  // is also in play.
+  if (preferredSignalType === 'obituary'
+      && matches.some((m) => m.signal_type === 'obituary')) {
+    return ARCHETYPES.general;
+  }
 
   // Strict probate match present → Probate archetype, regardless of
   // contact_status. The dossier shell handles no_pr_yet / unworkable_pr
@@ -359,6 +369,14 @@ export function detectArchetype(dossier, opts = {}) {
   // states is in the WHY section, not a separate archetype).
   if (matches.some((m) => m.signal_type === 'probate')) {
     return ARCHETYPES.probate;
+  }
+
+  // Obituary match → general framing (see comment above). Checked
+  // before divorce so a parcel with both obit and divorce doesn't
+  // render with divorce-specific copy when the row is being shown
+  // as an obit lead.
+  if (matches.some((m) => m.signal_type === 'obituary')) {
+    return ARCHETYPES.general;
   }
 
   // Divorce match → Divorce archetype with the wait-window behavior.
