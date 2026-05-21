@@ -486,6 +486,25 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-05-20 (afternoon) — Frontend auth fix + runtime config refactor
+
+**The bug.** Jeremy hit the "Authentication isn't configured in this environment" sign-in screen. Root cause traced to commit `a8cba28` from Monday morning ("Rebuild frontend/dist for dossier filter-awareness fix") — me, in this Claude container, ran raw `vite build` instead of `npm run build:safe`. The Claude container has backend env vars (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, etc.) but NOT the Vite frontend variants (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`). Vite silently inlined `undefined` for both, supabase-js initialized as `null`, every auth call hit a "not configured" fallback. The committed bundle had been auth-broken since Monday morning. Jeremy ran on his cached localStorage session until the access token finally expired this afternoon, at which point the auto-refresh path hit the null client and rendered the sign-in error.
+
+The `frontend/scripts/build-safe.mjs` script existed specifically to prevent this — its docstring says *"This has shipped to production twice in one day"* — but I bypassed it by calling `vite` directly.
+
+**Immediate fix.** Jeremy provided the anon key. Rebuilt with `npm run build:safe` (which verified the URL + JWT prefix were both inlined before allowing commit). Bundle shipped (commit `127cd27`, bundle `index-C4LSwQjQ.js`, 732KB up from 533KB because the supabase-js client was now actually bundled instead of being null). Sign-in worked again.
+
+**Structural fix (commit `895f935`).** Eliminated the failure class entirely by moving Supabase config from build-time injection to runtime fetch. Architecture:
+
+- New backend endpoint `GET /api/config` (in `backend/api/health.py`) returns `{supabase_url, supabase_anon_key}` from Railway env vars. No auth required — the anon key is a public routing token meant to be embedded in every browser; RLS in Postgres enforces real permissions.
+- `frontend/src/lib/supabase.js` rewritten: triggers `fetch('/api/config')` at module load, caches result in `localStorage` under key `sellersignal:supabase_config_v1`, builds the supabase-js client from fetched values. 5-second timeout with graceful fallback if the backend is unreachable. Subsequent page loads init instantly from cache while a background refresh handles rare key rotation.
+- `frontend/src/lib/AuthContext.jsx` updated: awaits `getSupabase()` in its bootstrap effect; exposes a new `isConfigured` boolean on the context value.
+- Four pages updated (`LoginPage`, `SignupPage`, `ForgotPasswordPage`, `ResetPasswordPage`) to read `useAuth().isConfigured` instead of importing the legacy `supabaseConfigured` const. Banner only shows when `!loading && !isConfigured` (avoids a false-positive flash during the brief init window).
+- `frontend/scripts/build-safe.mjs` flipped polarity: was verifying credentials WERE inlined; now verifies they are NOT (catches accidental regression to build-time injection). Also verifies the `/api/config` string is present (proves runtime-fetch code path is wired up).
+- `frontend/.env.example` updated to document that VITE_SUPABASE_* env vars are no longer needed at build time.
+
+**Net effect.** Any environment — Claude sandbox, dev machine, CI without secrets — can rebuild the frontend and the resulting bundle works in production as long as the backend has `SUPABASE_URL` + `SUPABASE_ANON_KEY` in Railway env. The build-time injection failure mode is structurally impossible going forward, and the guard would catch any regression.
+
 ### 2026-05-19 to 2026-05-20 — Snohomish Phase 1: harvester + 98020/98026 launch
 
 **Monday morning — production fixes from Sunday's expansion:**
@@ -662,6 +681,12 @@ Deeper fix in the backlog: dedicated Supabase client per background task instead
 
 These can be deleted or marked deprecated in a separate cleanup pass.
 
+### ~~13. Frontend Supabase config was inlined at build time~~ **RESOLVED 2026-05-20**
+
+Was: `frontend/src/lib/supabase.js` read `import.meta.env.VITE_SUPABASE_*` at module load. Vite inlined those values into the JS bundle at `vite build` time. A rebuild in any environment that lacked those env vars (e.g., Claude container with only backend env vars) produced an auth-broken bundle that initialized supabase=null. Users only noticed once their cached localStorage session expired and the auto-refresh path surfaced the broken init. The `build:safe` guard existed to catch this but was bypass-able by calling `vite build` directly. Incident on 2026-05-20.
+
+Fix: backend now exposes `GET /api/config` returning `{supabase_url, supabase_anon_key}` from Railway env vars. Frontend fetches at runtime on module load, caches result in `localStorage` under `sellersignal:supabase_config_v1`. `build:safe` polarity flipped — was verifying credentials WERE inlined; now verifies they are NOT (catches accidental regression to build-time injection). Any environment can rebuild the frontend without env vars. Commits `127cd27` (immediate fix) and `895f935` (structural refactor). Architecture documented in the 2026-05-20 afternoon build journal entry above.
+
 ---
 
 ## On the horizon (post-this-session priorities)
@@ -705,6 +730,7 @@ Deferred but on the longer-term roadmap:
 - Change canonicalize concurrency without measurement and a redeploy plan (98034's canon dies on the redeploy)
 - Commit PATs (or any secret) in MANIFESTO or any tracked file — GitHub secret scanning will auto-revoke. See active issue #7.
 - Push an external-dependency change (new Python lib, new system tool) without verifying it works on Railway's environment. Local dev container ≠ production. See `pypdf` vs `pdftotext` learning (2026-05-20).
+- Run raw `vite build` to produce a committed bundle. Always use `npm run build:safe` — its guard verifies the bundle uses runtime config fetch and contains no inlined Supabase JWTs. Since the 2026-05-20 refactor (active issue #13) the build no longer needs `VITE_SUPABASE_*` env vars at all; build:safe will catch any accidental regression to build-time injection.
 
 ---
 
