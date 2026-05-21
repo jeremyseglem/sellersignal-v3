@@ -5045,40 +5045,69 @@ def _check_court_history_depth(supa, zip_code: str) -> dict:
     """Query span between earliest and latest matched signal event_dates
     for this ZIP. Threshold: 12 months."""
     try:
-        matches = (supa.table('raw_signal_matches_v3')
-                   .select('event_date')
-                   .like('pin', '%')  # all pins
+        # Get pins for this ZIP
+        pins_set = set()
+        page = 0
+        while True:
+            res = (supa.table('parcels_v3')
+                   .select('pin')
+                   .eq('zip_code', zip_code)
+                   .range(page * 1000, (page + 1) * 1000 - 1)
                    .execute()).data or []
-        # Filter to this ZIP's pins by joining via parcels_v3
-        zip_pins_res = (supa.table('parcels_v3')
-                        .select('pin')
-                        .eq('zip_code', zip_code)
-                        .execute()).data or []
-        zip_pins = {p['pin'] for p in zip_pins_res}
-        zip_dates = sorted(m['event_date'] for m in matches
-                           if m.get('event_date') and m.get('pin') in zip_pins) \
-                    if 'pin' in (matches[0] if matches else {}) else []
-        # Simpler: query matches_v3 directly joined to parcels via PIN
-        # For now fall back to scanning all matches and filtering — slow but correct
-        if not zip_dates:
-            # Fall back: ask matches table for this ZIP via the existing index
-            matches2 = (supa.table('raw_signal_matches_v3')
-                        .select('event_date, pin')
-                        .execute()).data or []
-            zip_dates = sorted(m['event_date'] for m in matches2
-                               if m.get('event_date') and m.get('pin') in zip_pins)
+            if not res: break
+            pins_set.update(r['pin'] for r in res)
+            page += 1
+            if page > 30: break
 
-        if not zip_dates:
+        if not pins_set:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no parcels for this ZIP"}
+
+        # Get matches for those pins — paginate matches table
+        signal_ids = set()
+        page = 0
+        while True:
+            res = (supa.table('raw_signal_matches_v3')
+                   .select('raw_signal_id, pin')
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            for r in res:
+                if r['pin'] in pins_set:
+                    signal_ids.add(r['raw_signal_id'])
+            page += 1
+            if page > 40: break
+
+        if not signal_ids:
             return {"value": 0, "passed": False, "credit": 0,
                     "reason": "no matched signals for this ZIP"}
 
+        # Get event_dates from raw_signals_v3 for those signal IDs
+        # (chunk to stay under Cloudflare URL limit)
+        ids_list = list(signal_ids)
+        dates = []
+        for chunk_start in range(0, len(ids_list), 200):
+            chunk = ids_list[chunk_start:chunk_start + 200]
+            res = (supa.table('raw_signals_v3')
+                   .select('event_date')
+                   .in_('id', chunk)
+                   .not_.is_('event_date', 'null')
+                   .execute()).data or []
+            dates.extend(r['event_date'] for r in res if r.get('event_date'))
+
+        if not dates:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no event_dates on matched signals"}
+
+        dates.sort()
         from datetime import datetime
-        earliest = datetime.fromisoformat(zip_dates[0])
-        latest   = datetime.fromisoformat(zip_dates[-1])
+        earliest = datetime.fromisoformat(dates[0])
+        latest   = datetime.fromisoformat(dates[-1])
         months = (latest.year - earliest.year) * 12 + (latest.month - earliest.month)
         return {"value": months, "threshold": 12,
                 "passed": months >= 12, "credit": min(months / 12.0, 1.0),
-                "earliest": zip_dates[0], "latest": zip_dates[-1]}
+                "earliest": dates[0], "latest": dates[-1],
+                "signal_count": len(dates)}
     except Exception as e:
         return {"value": None, "passed": False, "credit": 0,
                 "error": str(e)[:200]}
@@ -5258,7 +5287,7 @@ def _check_signal_density(supa, zip_code: str) -> dict:
         page = 0
         while True:
             res = (supa.table('raw_signal_matches_v3')
-                   .select('pin, event_date')
+                   .select('pin')
                    .range(page * 1000, (page + 1) * 1000 - 1)
                    .execute()).data or []
             if not res: break
@@ -5294,19 +5323,33 @@ def _check_signal_diversity(supa, zip_code: str) -> dict:
             page += 1
             if page > 30: break
 
-        types_seen = set()
+        # Pull matches for this ZIP's pins, then look up signal_type
+        # via the raw_signal_id join in raw_signals_v3.
+        signal_ids = set()
         page = 0
         while True:
             res = (supa.table('raw_signal_matches_v3')
-                   .select('pin, signal_type')
+                   .select('pin, raw_signal_id')
                    .range(page * 1000, (page + 1) * 1000 - 1)
                    .execute()).data or []
             if not res: break
             for r in res:
-                if r['pin'] in pins_set and r.get('signal_type'):
-                    types_seen.add(r['signal_type'])
+                if r['pin'] in pins_set:
+                    signal_ids.add(r['raw_signal_id'])
             page += 1
             if page > 40: break
+
+        types_seen = set()
+        ids_list = list(signal_ids)
+        for chunk_start in range(0, len(ids_list), 200):
+            chunk = ids_list[chunk_start:chunk_start + 200]
+            res = (supa.table('raw_signals_v3')
+                   .select('signal_type')
+                   .in_('id', chunk)
+                   .execute()).data or []
+            for r in res:
+                if r.get('signal_type'):
+                    types_seen.add(r['signal_type'])
 
         count = len(types_seen)
         return {"value": count, "threshold": 2,
