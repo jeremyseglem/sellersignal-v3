@@ -4647,3 +4647,199 @@ def diag_briefing_impact(
         "promotion_pressure":    dict(pressure_counter),
         "converged_pin_sample":  list(converged_pins)[:10],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# /diag/snohomish-matcher-truth-test   (added 2026-05-20)
+#
+# TEMPORARY DIAGNOSTIC. Truth-extraction step before any system repair.
+#
+# Question this endpoint answers: "When the matcher is invoked correctly
+# on the 178 unmatched wa_state_courts probate signals, how many match
+# against parcels in the onboarded Snohomish ZIPs (98020, 98026, 98290),
+# and what are the failure modes for the ones that don't?"
+#
+# This was prompted by the 2026-05-20 investigation: rematch_autofill
+# task has total_ticks=0, all 178 wa_state_courts probate signals have
+# matched_at=null, and we needed to know whether the issue is "matcher
+# never ran" vs "matcher would produce 0 yield even if it ran." Direct
+# matcher invocation gives the cleanest answer without conflating with
+# a scheduler fix.
+#
+# READ-ONLY. Writes nothing to any table. Returns yield + failure modes.
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/diag/snohomish-matcher-truth-test")
+def diag_snohomish_matcher_truth_test(
+    x_admin_key: Optional[str] = Header(None),
+    source_type: str = "wa_state_courts",
+    signal_type: str = "probate",
+    limit: int = 500,
+):
+    """
+    In-memory match simulation for non-KC court signals against
+    onboarded Snohomish ZIP parcels. Reports yield (strict vs weak),
+    ZIP distribution, and top failure modes for signals that produced
+    no candidates.
+
+    Note: temporarily mirrors the matcher's internal logic
+    (_dispatch_probate + _surname_gate) so we can instrument outcomes
+    per-signal. The underlying functions are imported from
+    backend.harvesters.matcher to keep this in lockstep with production.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    from backend.harvesters import matcher as M
+    from collections import Counter, defaultdict
+
+    SNOHOMISH_ZIPS = ['98020', '98026', '98290']
+
+    # 1. Load owners_db for the Snohomish ZIPs only — one ZIP at a time
+    #    because _load_owners_db takes a single zip_filter.
+    owners_by_zip: dict = {}
+    use_codes_by_zip: dict = {}
+    parcels_per_zip: dict = {}
+    for ZIP in SNOHOMISH_ZIPS:
+        owners_db, use_codes = M._load_owners_db(supa, ZIP)
+        owners_by_zip[ZIP] = owners_db
+        use_codes_by_zip[ZIP] = use_codes
+        parcels_per_zip[ZIP] = len(owners_db)
+
+    # Merge for the dispatcher (it scans all owners — we'll attribute
+    # the match back to a ZIP via pin_to_zip after dispatch).
+    merged_owners: dict = {}
+    merged_use_codes: dict = {}
+    pin_to_zip: dict = {}
+    for ZIP, owners in owners_by_zip.items():
+        for pin, info in owners.items():
+            merged_owners[pin] = info
+            merged_use_codes[pin] = use_codes_by_zip[ZIP][pin]
+            pin_to_zip[pin] = ZIP
+
+    # 2. Pull all unmatched signals of the requested source + type.
+    signals_res = (supa.table('raw_signals_v3')
+                   .select('id, document_ref, event_date, '
+                           'party_names, source_type, signal_type, '
+                           'matched_at')
+                   .eq('source_type', source_type)
+                   .eq('signal_type', signal_type)
+                   .limit(limit)
+                   .execute())
+    signals = signals_res.data or []
+
+    # 3. Run each through dispatch + surname gate. In-memory only.
+    results: dict = {
+        "input": {
+            "source_type":  source_type,
+            "signal_type":  signal_type,
+            "signals_pulled":      len(signals),
+            "snohomish_zips":      SNOHOMISH_ZIPS,
+            "parcels_per_zip":     parcels_per_zip,
+            "total_parcels":       len(merged_owners),
+        },
+        "yield": {
+            "signals_with_zero_candidates":   0,
+            "signals_with_zero_after_gate":   0,
+            "signals_with_at_least_one_match": 0,
+            "total_match_rows":               0,
+            "strict_match_rows":              0,
+            "weak_match_rows":                0,
+        },
+        "zip_distribution": {z: 0 for z in SNOHOMISH_ZIPS},
+        "failure_modes": Counter(),
+        "sample_successes": [],
+        "sample_failures":  [],
+    }
+
+    dispatcher = M._DISPATCH.get(signal_type)
+    if not dispatcher:
+        results["error"] = f"No dispatcher for signal_type={signal_type}"
+        return results
+
+    for sig in signals:
+        # Strip predeceased survivors as the real matcher does.
+        parties = [
+            p for p in (sig.get('party_names') or [])
+            if not (isinstance(p, dict)
+                    and str(p.get('role', '')).startswith('predeceased_'))
+        ]
+        if not parties:
+            results["failure_modes"]["no_parties"] += 1
+            results["yield"]["signals_with_zero_candidates"] += 1
+            continue
+
+        # Phase 1: dispatcher produces candidates
+        candidates = dispatcher(sig, merged_owners, merged_use_codes)
+
+        if not candidates:
+            results["failure_modes"]["dispatcher_zero_candidates"] += 1
+            results["yield"]["signals_with_zero_candidates"] += 1
+            if len(results["sample_failures"]) < 5:
+                results["sample_failures"].append({
+                    "id":            sig.get("id"),
+                    "document_ref":  sig.get("document_ref"),
+                    "decedent_raw":  (parties[0].get("raw")
+                                      if isinstance(parties[0], dict) else None),
+                    "stage":         "dispatcher",
+                    "reason":        "no name overlap with any Snohomish parcel owner",
+                })
+            continue
+
+        # Phase 2: surname gate (replicates _process_one's logic)
+        filtered = []
+        gate_strengths: dict = {}
+        for c in candidates:
+            strength = M._surname_gate(c["parcel_id"], merged_owners, parties)
+            if strength is None:
+                continue
+            gate_strengths[c["parcel_id"]] = strength
+            filtered.append(c)
+
+        if not filtered:
+            results["failure_modes"]["surname_gate_rejected_all"] += 1
+            results["yield"]["signals_with_zero_after_gate"] += 1
+            if len(results["sample_failures"]) < 10:
+                results["sample_failures"].append({
+                    "id":            sig.get("id"),
+                    "document_ref":  sig.get("document_ref"),
+                    "decedent_raw":  (parties[0].get("raw")
+                                      if isinstance(parties[0], dict) else None),
+                    "stage":         "surname_gate",
+                    "candidates_before_gate": len(candidates),
+                    "reason":        "all candidates failed surname overlap",
+                })
+            continue
+
+        # Phase 3: combine dispatcher + gate strengths (mirror _process_one)
+        results["yield"]["signals_with_at_least_one_match"] += 1
+        for c in filtered:
+            disp_str = c.get("trigger_hint", {}).get("match_strength", "strict")
+            gate_str = gate_strengths[c["parcel_id"]]
+            final_str = "weak" if (disp_str == "weak" or gate_str == "weak") else "strict"
+            results["yield"]["total_match_rows"] += 1
+            if final_str == "strict":
+                results["yield"]["strict_match_rows"] += 1
+            else:
+                results["yield"]["weak_match_rows"] += 1
+            zip_of_match = pin_to_zip.get(c["parcel_id"], "?")
+            results["zip_distribution"][zip_of_match] = (
+                results["zip_distribution"].get(zip_of_match, 0) + 1
+            )
+            if len(results["sample_successes"]) < 10:
+                results["sample_successes"].append({
+                    "signal_id":     sig.get("id"),
+                    "document_ref":  sig.get("document_ref"),
+                    "decedent_raw":  (parties[0].get("raw")
+                                      if isinstance(parties[0], dict) else None),
+                    "pin":           c["parcel_id"],
+                    "zip":           zip_of_match,
+                    "owner_name":    merged_owners[c["parcel_id"]].get("owner_name"),
+                    "strength":      final_str,
+                })
+
+    # Failure modes are a Counter; convert to dict for JSON serialization
+    results["failure_modes"] = dict(results["failure_modes"])
+    return results
