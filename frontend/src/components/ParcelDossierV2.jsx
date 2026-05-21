@@ -1040,7 +1040,7 @@ function WhatToSaySection({
   //   - staticDefaults.{phone, letter, door}: per-archetype templates
   //     with token substitution from resolveDefaultScripts()
   const agentScripts   = agentGeneratedScripts(profile, archetype, dossier);
-  const staticDefaults = resolveDefaultScripts(archetype, dossier);
+  const staticDefaults = resolveDefaultScripts(archetype, dossier, profile);
 
   const channels = [
     { key: 'call', label: 'Phone',

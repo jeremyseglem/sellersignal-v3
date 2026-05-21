@@ -208,10 +208,11 @@ export const ARCHETYPES = {
 
 
 /**
- * resolveDefaultScripts(archetype, dossier) → { phone, letter, door }
+ * resolveDefaultScripts(archetype, dossier, profile) → { phone, letter, door }
  *
  * Substitutes tokens in the archetype's defaultScripts against the
- * dossier data. Returns the three rendered scripts as plain strings.
+ * dossier data and (optionally) the agent profile. Returns the three
+ * rendered scripts as plain strings.
  *
  * Token resolution rules:
  *   {pr_first}      — personal_representative.name_first from harvester
@@ -225,13 +226,18 @@ export const ARCHETYPES = {
  *   {address}       — parcel.address. Falls back to "this property".
  *   {city}          — parcel.city. Falls back to "the area".
  *   {tenure_years}  — rounded tenure_years if available.
+ *   [your name]     — profile.full_name. If empty, the literal
+ *                     placeholder stays visible (option b) so the
+ *                     agent sees they need to fill in /profile rather
+ *                     than silently signing letters with no name.
+ *   [your brokerage]— profile.brokerage. Same fallback as above.
  *
  * The fallback strings are deliberate: a script that says "Dear
  * Friend" reads worse than one with a real name, but it never reads
  * WRONG. The previous Deep Signal bug was a script that confidently
  * addressed a deceased person — fallbacks here never invent.
  */
-export function resolveDefaultScripts(archetype, dossier) {
+export function resolveDefaultScripts(archetype, dossier, profile) {
   if (!archetype || !archetype.defaultScripts) return null;
   const tpl = archetype.defaultScripts;
 
@@ -286,10 +292,26 @@ export function resolveDefaultScripts(archetype, dossier) {
   const fill = (s) => s.replace(/\{(\w+)\}/g, (_, key) =>
     tokens[key] !== undefined ? tokens[key] : `{${key}}`);
 
+  // Agent-specific bracket placeholders. Option (b) fallback: when the
+  // field is missing on the profile, leave the literal placeholder
+  // visible so the agent sees they need to fill it in on /profile —
+  // better than silently producing "this is Jeremy with ." or signing
+  // a letter with no name.
+  const agentFill = (s) => {
+    let out = s;
+    if (profile?.full_name) {
+      out = out.replace(/\[your name\]/g, profile.full_name);
+    }
+    if (profile?.brokerage) {
+      out = out.replace(/\[your brokerage\]/g, profile.brokerage);
+    }
+    return out;
+  };
+
   return {
-    phone:  fill(tpl.phone),
-    letter: fill(tpl.letter),
-    door:   fill(tpl.door),
+    phone:  agentFill(fill(tpl.phone)),
+    letter: agentFill(fill(tpl.letter)),
+    door:   agentFill(fill(tpl.door)),
   };
 }
 
