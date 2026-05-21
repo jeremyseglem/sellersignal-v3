@@ -5012,3 +5012,373 @@ def admin_run_matcher_snohomish_real(
 
     stats["parcels_per_zip"] = parcels_per_zip
     return stats
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# /admin/zip-quality-score   (added 2026-05-21)
+#
+# Canonical onboarding validator. Computes a 0-100 quality score for a
+# ZIP across 7 dimensions of ingestion completeness:
+#
+#   1. court_history_depth_months    weight 20  threshold 12 months
+#   2. matched_signals_pct           weight 20  threshold 95%
+#   3. tenure_coverage_pct           weight 15  threshold 90%
+#   4. canonicalization_success_pct  weight 15  threshold 99%
+#   5. prop_type_eligibility_pct     weight 10  threshold 95%
+#   6. historical_signal_density     weight 10  threshold 5/1000/yr
+#   7. transition_signal_diversity   weight 10  threshold ≥2 sig types
+#
+# Per the operating principle (Step 3 — validator first, gating later):
+# this endpoint is READ-ONLY DIAGNOSTIC. It produces the score but
+# does NOT block onboarding or modify state. After running across all
+# 28 live ZIPs we'll calibrate thresholds and then wire it as a gate.
+#
+# Total weight = 100. Each check contributes its weight × (value /
+# threshold), capped at full weight. Numeric checks get partial credit;
+# boolean checks (e.g. signal_diversity) are pass/fail.
+#
+# verdict: "pass" if score >= 80, "warn" if 50-79, "fail" if < 50.
+# These thresholds will be tuned after the all-ZIP audit.
+# ═══════════════════════════════════════════════════════════════════════
+
+def _check_court_history_depth(supa, zip_code: str) -> dict:
+    """Query span between earliest and latest matched signal event_dates
+    for this ZIP. Threshold: 12 months."""
+    try:
+        matches = (supa.table('raw_signal_matches_v3')
+                   .select('event_date')
+                   .like('pin', '%')  # all pins
+                   .execute()).data or []
+        # Filter to this ZIP's pins by joining via parcels_v3
+        zip_pins_res = (supa.table('parcels_v3')
+                        .select('pin')
+                        .eq('zip_code', zip_code)
+                        .execute()).data or []
+        zip_pins = {p['pin'] for p in zip_pins_res}
+        zip_dates = sorted(m['event_date'] for m in matches
+                           if m.get('event_date') and m.get('pin') in zip_pins) \
+                    if 'pin' in (matches[0] if matches else {}) else []
+        # Simpler: query matches_v3 directly joined to parcels via PIN
+        # For now fall back to scanning all matches and filtering — slow but correct
+        if not zip_dates:
+            # Fall back: ask matches table for this ZIP via the existing index
+            matches2 = (supa.table('raw_signal_matches_v3')
+                        .select('event_date, pin')
+                        .execute()).data or []
+            zip_dates = sorted(m['event_date'] for m in matches2
+                               if m.get('event_date') and m.get('pin') in zip_pins)
+
+        if not zip_dates:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no matched signals for this ZIP"}
+
+        from datetime import datetime
+        earliest = datetime.fromisoformat(zip_dates[0])
+        latest   = datetime.fromisoformat(zip_dates[-1])
+        months = (latest.year - earliest.year) * 12 + (latest.month - earliest.month)
+        return {"value": months, "threshold": 12,
+                "passed": months >= 12, "credit": min(months / 12.0, 1.0),
+                "earliest": zip_dates[0], "latest": zip_dates[-1]}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0,
+                "error": str(e)[:200]}
+
+
+def _check_matched_signals_pct(supa, zip_code: str) -> dict:
+    """Of all probate signals (county-level), what fraction have
+    matched_at set? Threshold: 95%."""
+    try:
+        # Determine which state.county this ZIP belongs to
+        # For now treat all signals as ZIP-relevant (county-level)
+        # because raw_signals_v3 is harvested per-county
+        total_res = (supa.table('raw_signals_v3')
+                     .select('id', count='exact')
+                     .limit(1)
+                     .execute())
+        total = total_res.count or 0
+        matched_res = (supa.table('raw_signals_v3')
+                       .select('id', count='exact')
+                       .not_.is_('matched_at', 'null')
+                       .limit(1)
+                       .execute())
+        matched = matched_res.count or 0
+        if total == 0:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no signals harvested"}
+        pct = matched / total * 100
+        return {"value": round(pct, 1), "threshold": 95,
+                "passed": pct >= 95, "credit": min(pct / 95.0, 1.0),
+                "matched": matched, "total": total}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0, "error": str(e)[:200]}
+
+
+def _check_tenure_coverage(supa, zip_code: str) -> dict:
+    """Fraction of this ZIP's parcels with tenure_years populated.
+    Threshold: 90%."""
+    try:
+        total_res = (supa.table('parcels_v3')
+                     .select('pin', count='exact')
+                     .eq('zip_code', zip_code)
+                     .limit(1)
+                     .execute())
+        total = total_res.count or 0
+        with_tenure_res = (supa.table('parcels_v3')
+                           .select('pin', count='exact')
+                           .eq('zip_code', zip_code)
+                           .not_.is_('tenure_years', 'null')
+                           .limit(1)
+                           .execute())
+        with_tenure = with_tenure_res.count or 0
+        if total == 0:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no parcels for this ZIP"}
+        pct = with_tenure / total * 100
+        return {"value": round(pct, 1), "threshold": 90,
+                "passed": pct >= 90, "credit": min(pct / 90.0, 1.0),
+                "with_tenure": with_tenure, "total": total}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0, "error": str(e)[:200]}
+
+
+def _check_canonicalization(supa, zip_code: str) -> dict:
+    """Fraction of parcels with an owner_canonical_v3 row. Threshold: 99%."""
+    try:
+        total_res = (supa.table('parcels_v3')
+                     .select('pin', count='exact')
+                     .eq('zip_code', zip_code)
+                     .limit(1)
+                     .execute())
+        total = total_res.count or 0
+
+        # Pull all PINs for this ZIP, then count which exist in owner_canonical_v3
+        # (paginate)
+        all_pins = set()
+        page = 0
+        while True:
+            res = (supa.table('parcels_v3')
+                   .select('pin')
+                   .eq('zip_code', zip_code)
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            for r in res:
+                all_pins.add(r['pin'])
+            page += 1
+            if page > 30: break  # safety
+
+        # Now count how many appear in owner_canonical_v3
+        pins_list = list(all_pins)
+        canon_count = 0
+        for chunk_start in range(0, len(pins_list), 200):
+            chunk = pins_list[chunk_start:chunk_start + 200]
+            res = (supa.table('owner_canonical_v3')
+                   .select('pin', count='exact')
+                   .in_('pin', chunk)
+                   .execute())
+            canon_count += res.count or 0
+
+        if total == 0:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no parcels for this ZIP"}
+        pct = canon_count / total * 100
+        return {"value": round(pct, 1), "threshold": 99,
+                "passed": pct >= 99, "credit": min(pct / 99.0, 1.0),
+                "canonicalized": canon_count, "total": total}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0, "error": str(e)[:200]}
+
+
+def _check_prop_type_eligibility(supa, zip_code: str) -> dict:
+    """Fraction of parcels whose prop_type passes _is_eligible_prop_type.
+    Threshold: 95%. Catches the 98290-style failure where prop_type
+    contains a long descriptive string instead of a single-char code."""
+    try:
+        from backend.harvesters.matcher import _is_eligible_prop_type
+        # Pull all prop_types for this ZIP
+        eligible = 0
+        total = 0
+        page = 0
+        while True:
+            res = (supa.table('parcels_v3')
+                   .select('prop_type')
+                   .eq('zip_code', zip_code)
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            for r in res:
+                total += 1
+                if _is_eligible_prop_type(r.get('prop_type')):
+                    eligible += 1
+            page += 1
+            if page > 30: break
+
+        if total == 0:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no parcels for this ZIP"}
+        pct = eligible / total * 100
+        return {"value": round(pct, 1), "threshold": 95,
+                "passed": pct >= 95, "credit": min(pct / 95.0, 1.0),
+                "eligible": eligible, "total": total}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0, "error": str(e)[:200]}
+
+
+def _check_signal_density(supa, zip_code: str) -> dict:
+    """Matches per 1000 parcels per 12 months. Threshold: 5."""
+    try:
+        # Parcel count
+        total_res = (supa.table('parcels_v3')
+                     .select('pin', count='exact')
+                     .eq('zip_code', zip_code)
+                     .limit(1)
+                     .execute())
+        total = total_res.count or 0
+        if total == 0:
+            return {"value": 0, "passed": False, "credit": 0,
+                    "reason": "no parcels for this ZIP"}
+
+        # Pull all this-ZIP PINs (already done above; redundant but
+        # endpoint stays self-contained)
+        pins_set = set()
+        page = 0
+        while True:
+            res = (supa.table('parcels_v3')
+                   .select('pin')
+                   .eq('zip_code', zip_code)
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            pins_set.update(r['pin'] for r in res)
+            page += 1
+            if page > 30: break
+
+        # Count matches in this ZIP — paginate matches and filter
+        match_count = 0
+        page = 0
+        while True:
+            res = (supa.table('raw_signal_matches_v3')
+                   .select('pin, event_date')
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            match_count += sum(1 for r in res if r['pin'] in pins_set)
+            page += 1
+            if page > 40: break  # safety
+
+        # Normalize to per 1000 parcels per year
+        # Use 12-month assumption for now; actual time window from check #1
+        density = (match_count / total) * 1000
+        return {"value": round(density, 1), "threshold": 5,
+                "passed": density >= 5, "credit": min(density / 5.0, 1.0),
+                "matches_in_zip": match_count, "parcels": total}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0, "error": str(e)[:200]}
+
+
+def _check_signal_diversity(supa, zip_code: str) -> dict:
+    """Distinct signal_type values appearing in matches for this ZIP.
+    Threshold: ≥2."""
+    try:
+        # Pull all this-ZIP PINs
+        pins_set = set()
+        page = 0
+        while True:
+            res = (supa.table('parcels_v3')
+                   .select('pin')
+                   .eq('zip_code', zip_code)
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            pins_set.update(r['pin'] for r in res)
+            page += 1
+            if page > 30: break
+
+        types_seen = set()
+        page = 0
+        while True:
+            res = (supa.table('raw_signal_matches_v3')
+                   .select('pin, signal_type')
+                   .range(page * 1000, (page + 1) * 1000 - 1)
+                   .execute()).data or []
+            if not res: break
+            for r in res:
+                if r['pin'] in pins_set and r.get('signal_type'):
+                    types_seen.add(r['signal_type'])
+            page += 1
+            if page > 40: break
+
+        count = len(types_seen)
+        return {"value": count, "threshold": 2,
+                "passed": count >= 2, "credit": min(count / 2.0, 1.0),
+                "signal_types": sorted(types_seen)}
+    except Exception as e:
+        return {"value": None, "passed": False, "credit": 0, "error": str(e)[:200]}
+
+
+@router.get("/admin/zip-quality-score/{zip_code}")
+def admin_zip_quality_score(
+    zip_code: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Canonical onboarding validator. Read-only diagnostic. Produces
+    a 0-100 quality score across 7 ingestion-completeness dimensions.
+
+    No gating, no writes, no UI side effects. Run this across all live
+    ZIPs to inform threshold calibration before wiring it as an
+    onboarding gate (Step 4 of the runbook).
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # The 7 checks, with weights summing to 100
+    check_defs = [
+        ('court_history_depth_months',    20, _check_court_history_depth),
+        ('matched_signals_pct',           20, _check_matched_signals_pct),
+        ('tenure_coverage_pct',           15, _check_tenure_coverage),
+        ('canonicalization_success_pct',  15, _check_canonicalization),
+        ('prop_type_eligibility_pct',     10, _check_prop_type_eligibility),
+        ('historical_signal_density',     10, _check_signal_density),
+        ('transition_signal_diversity',   10, _check_signal_diversity),
+    ]
+
+    checks = []
+    total_score = 0.0
+    for name, weight, fn in check_defs:
+        result = fn(supa, zip_code)
+        credit = result.get('credit', 0) or 0
+        contribution = round(weight * credit, 1)
+        checks.append({
+            'name':         name,
+            'weight':       weight,
+            'value':        result.get('value'),
+            'threshold':    result.get('threshold'),
+            'passed':       result.get('passed', False),
+            'credit':       round(credit, 2),
+            'contribution': contribution,
+            'detail':       {k: v for k, v in result.items()
+                             if k not in ('value', 'threshold',
+                                          'passed', 'credit')},
+        })
+        total_score += contribution
+
+    score = round(total_score, 1)
+    if score >= 80:
+        verdict = "pass"
+    elif score >= 50:
+        verdict = "warn"
+    else:
+        verdict = "fail"
+
+    return {
+        'zip_code':    zip_code,
+        'score':       score,
+        'verdict':     verdict,
+        'checks':      checks,
+        'note': (
+            'Read-only diagnostic. Thresholds will be calibrated '
+            'after the all-ZIP audit. No onboarding gating yet.'
+        ),
+    }
