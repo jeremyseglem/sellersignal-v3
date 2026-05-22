@@ -26,6 +26,58 @@ router = APIRouter()
 
 
 # ============================================================================
+# Bbox outlier filter — drops contaminated parcels from map output
+# ============================================================================
+
+# Distance thresholds from the ZIP's median lat/lng. Parcels farther than
+# these are dropped from map rendering. The KC ingest source (ZIP5 field)
+# sometimes tags parcels with a ZIP whose geometry sits miles away —
+# 98053 had 41.6% off-bbox parcels with coords reaching 25+ miles west
+# into Seattle. We can't fix the source data, but we can refuse to
+# render visibly wrong dots.
+#
+# Sizing: ~10 miles in each direction. 1 deg lat ≈ 69 mi; 1 deg lng at
+# lat 47.6 ≈ 46.7 mi. So 0.15 lat / 0.21 lng ≈ 10 mi. Generous enough
+# to keep legitimate edge parcels (annexes, boundary residences) while
+# catching the egregious Seattle/Bothell contamination.
+_BBOX_FILTER_MAX_LAT_DELTA = 0.15
+_BBOX_FILTER_MAX_LNG_DELTA = 0.21
+_BBOX_FILTER_MIN_SAMPLE    = 50  # don't filter on tiny samples — median unreliable
+
+
+def _median(values: list[float]) -> float:
+    """Sort + middle element. Not asyncio-safe but inputs are sync lists."""
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 == 1 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _filter_bbox_outliers(coords: list[tuple[float, float]]) -> tuple[float, float, set[int]]:
+    """
+    Returns (median_lat, median_lng, indices_of_outliers).
+
+    indices_of_outliers is a set of positions into the input `coords` list
+    representing parcels that sit more than ~10 mi from the ZIP's median
+    centroid. Caller filters its own parcel list using these indices.
+
+    For samples below MIN_SAMPLE size the function returns an empty
+    outlier set — median isn't reliable enough to filter against.
+    """
+    if len(coords) < _BBOX_FILTER_MIN_SAMPLE:
+        if not coords:
+            return 0.0, 0.0, set()
+        return _median([c[0] for c in coords]), _median([c[1] for c in coords]), set()
+    med_lat = _median([c[0] for c in coords])
+    med_lng = _median([c[1] for c in coords])
+    outliers = set()
+    for i, (lat, lng) in enumerate(coords):
+        if (abs(lat - med_lat) > _BBOX_FILTER_MAX_LAT_DELTA
+                or abs(lng - med_lng) > _BBOX_FILTER_MAX_LNG_DELTA):
+            outliers.add(i)
+    return med_lat, med_lng, outliers
+
+
+# ============================================================================
 # Map data — heatmap + pin payload
 # ============================================================================
 
@@ -130,7 +182,30 @@ async def get_map_data(
                 'pressure':      pressure,
             })
 
-        # Compute bounding box from parcels with coords
+        # Bbox outlier filter — drop parcels whose coords sit > ~10 mi
+        # from the ZIP's median centroid. These are KC ingest
+        # contamination (parcels tagged with ZIP5=X whose geometry sits
+        # in ZIP Y). Source data we can't fix; we just refuse to render
+        # the visibly-wrong dots on the map.
+        coords_with_idx = [(i, p['lat'], p['lng']) for i, p in enumerate(out)
+                           if p['lat'] is not None and p['lng'] is not None]
+        filtered_count = 0
+        if coords_with_idx:
+            med_lat, med_lng, outlier_positions = _filter_bbox_outliers(
+                [(c[1], c[2]) for c in coords_with_idx])
+            # Map positions in coords_with_idx back to indices in `out`
+            outlier_out_indices = {coords_with_idx[pos][0]
+                                   for pos in outlier_positions}
+            if outlier_out_indices:
+                filtered_count = len(outlier_out_indices)
+                # Decrement category stats for filtered parcels
+                for idx in outlier_out_indices:
+                    cat = out[idx]['category']
+                    stats[cat] = max(0, stats.get(cat, 0) - 1)
+                out = [p for i, p in enumerate(out)
+                       if i not in outlier_out_indices]
+
+        # Compute bounding box from filtered parcels with coords
         coords = [(p['lat'], p['lng']) for p in out if p['lat'] and p['lng']]
         bounds = None
         if coords:
@@ -151,7 +226,8 @@ async def get_map_data(
             'zip':     zip_code,
             'parcels': out,
             'bounds':  bounds,
-            'stats':   {'total': len(out), **stats},
+            'stats':   {'total': len(out), **stats,
+                        'filtered_out_of_bbox': filtered_count},
         }
 
     except HTTPException:
@@ -162,7 +238,13 @@ async def get_map_data(
 
 @router.get("/{zip_code}/bounds")
 async def get_zip_bounds(zip_code: str = Depends(require_live_zip)):
-    """Bounding box for a ZIP — used to center map on load."""
+    """Bounding box for a ZIP — used to center map on load.
+
+    Applies the same bbox-outlier filter as /map so the initial zoom
+    isn't pulled wide by contaminated parcels (e.g., 98053 has parcels
+    tagged with ZIP5=98053 whose geometry sits in Seattle — without
+    filtering, the map would initially zoom to span Seattle→Snoqualmie).
+    """
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
@@ -175,13 +257,23 @@ async def get_zip_bounds(zip_code: str = Depends(require_live_zip)):
                   .limit(10000)
                   .execute())
         rows = result.data or []
-        coords = [(r['lat'], r['lng']) for r in rows if r.get('lat') and r.get('lng')]
+        coords = [(float(r['lat']), float(r['lng']))
+                  for r in rows if r.get('lat') and r.get('lng')]
 
         if not coords:
             raise HTTPException(404, f"No geocoded parcels in {zip_code}")
 
-        lats = [float(c[0]) for c in coords]
-        lngs = [float(c[1]) for c in coords]
+        # Strip outliers before computing bounds
+        _med_lat, _med_lng, outlier_positions = _filter_bbox_outliers(coords)
+        filtered = [c for i, c in enumerate(coords)
+                    if i not in outlier_positions]
+        # Fallback: if filtering removed everything (shouldn't happen on
+        # a ZIP with > 50 parcels — would mean median itself is junk),
+        # fall back to the unfiltered set rather than 404.
+        use = filtered if filtered else coords
+
+        lats = [c[0] for c in use]
+        lngs = [c[1] for c in use]
 
         return {
             'zip': zip_code,
@@ -191,7 +283,8 @@ async def get_zip_bounds(zip_code: str = Depends(require_live_zip)):
             'max_lng': max(lngs),
             'center':  {'lat': (min(lats) + max(lats)) / 2,
                         'lng': (min(lngs) + max(lngs)) / 2},
-            'parcel_count': len(coords),
+            'parcel_count': len(use),
+            'filtered_out_of_bbox': len(coords) - len(use),
         }
     except HTTPException:
         raise
