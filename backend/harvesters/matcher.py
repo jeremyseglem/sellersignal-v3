@@ -135,7 +135,7 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
     parcels: list[dict] = []
     while True:
         q = supa.table('parcels_v3').select(
-            'pin, owner_name, owner_type, prop_type, zip_code'
+            'pin, owner_name, owner_type, prop_type, zip_code, market_key'
         )
         if zip_filter:
             q = q.eq('zip_code', zip_filter)
@@ -168,8 +168,38 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
             # itself runs unfiltered (e.g. via the rematch_autofill task).
             'zip_code':       p.get('zip_code') or '',
         }
+        # Market-aware prop_type default. The existing `or 'R'` defaults
+        # falsy values (NULL, empty) to 'R'. That covered KC parcels where
+        # most missing values are genuinely unknown.
+        #
+        # 98290 (and other Snohomish ZIPs) trip a different failure mode:
+        # whatever Supabase returns for these parcels' prop_type column
+        # passes the truthy check but doesn't equal 'R' or 'K' after
+        # uppercase+strip, so _is_eligible_prop_type rejects all of them.
+        # Confirmed by /admin/zip-quality-score validator: 98290 reports
+        # 0/15436 prop_type-eligible, blocking every probate match attempt
+        # before name comparison runs.
+        #
+        # Snohomish County's parcel layer simply doesn't expose KC-style
+        # single-char prop type codes. For matching purposes we default
+        # all Snohomish parcels to 'R' (residential) — the matcher's
+        # name + HOA + government filters still gate out non-residential
+        # candidates, just one layer downstream.
+        raw_pt = (p.get('prop_type') or '').upper().strip()
+        market = (p.get('market_key') or '').upper()
+        if raw_pt in {'R', 'K'}:
+            final_pt = raw_pt
+        elif market == 'WA_SNOHOMISH':
+            final_pt = 'R'
+        elif not raw_pt:
+            final_pt = 'R'
+        else:
+            # KC junk values (C/X/V/M/N/T/U) flow through and get rejected
+            # by _is_eligible_prop_type — that filter is doing legitimate
+            # work on KC, just over-rejecting on Snohomish.
+            final_pt = raw_pt
         use_codes[pin] = {
-            'prop_type': p.get('prop_type') or 'R',  # default to residential
+            'prop_type': final_pt,
         }
 
     return owners_db, use_codes
