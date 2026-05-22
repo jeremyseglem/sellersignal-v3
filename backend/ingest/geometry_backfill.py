@@ -44,6 +44,19 @@ MARKET_CONFIGS = {
         'url':       'https://gismaps.kingcounty.gov/arcgis/rest/services/Property/KingCo_Parcels/MapServer/0/query',
         'pin_field': 'PIN',
     },
+    'WA_SNOHOMISH': {
+        # Snohomish County public Parcels FeatureServer — same layer used
+        # by backend/ingest/arcgis.py for the full Snohomish ingest. Returns
+        # geometry by default (returnGeometry=true is still set explicitly
+        # for clarity). PARCEL_ID is a 14-char string with leading zeros
+        # (e.g., '00371900100300'), matching how parcels_v3.pin stores
+        # Snohomish PINs.
+        'url': (
+            'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/'
+            'arcgis/rest/services/Parcels/FeatureServer/0/query'
+        ),
+        'pin_field': 'PARCEL_ID',
+    },
 }
 
 BATCH_SIZE = 50        # PINs per ArcGIS IN clause. 200 was too large —

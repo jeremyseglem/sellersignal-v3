@@ -342,12 +342,19 @@ async def geometry_backfill_endpoint(
         raise HTTPException(503, "Supabase not configured.")
 
     cov = (supa.table('zip_coverage_v3')
-           .select('parcel_count')
+           .select('parcel_count, market_key')
            .eq('zip_code', zip_code)
            .maybe_single()
            .execute())
     if not cov or not cov.data:
         raise HTTPException(404, f"ZIP {zip_code} not in coverage.")
+
+    # Auto-resolve market_key from the coverage row. Without this, calling
+    # /api/admin/geometry/98020 (a Snohomish ZIP) would default to 'WA_KING'
+    # and silently no-op because KC ArcGIS doesn't know about Snohomish
+    # PINs. The query param is still respected if explicitly passed for
+    # ops override; it just no longer wins by default.
+    resolved_market_key = cov.data.get('market_key') or market_key
 
     # Guard: full-ZIP ArcGIS + Supabase updates can easily exceed 60-120s HTTP timeout.
     # Require explicit --limit for any run with more than 500 missing coords.
@@ -371,7 +378,7 @@ async def geometry_backfill_endpoint(
     try:
         result = await backfill_geometry_zip_async(
             zip_code=zip_code,
-            market_key=market_key,
+            market_key=resolved_market_key,
             dry_run=dry_run,
             limit=limit,
             verbose=False,
