@@ -153,18 +153,57 @@ async def _fetch_geometry_for_pins(pins: list[str],
 # ──────────────────────────────────────────────────────────────────────
 # Supabase query + update
 # ──────────────────────────────────────────────────────────────────────
+
+# Module-level flag — set to False after the first time we detect that
+# the geocode_skipped column doesn't exist on parcels_v3 (i.e., the
+# 024 migration hasn't been applied yet). Avoids hitting the same
+# fallback path repeatedly. Resets on process restart.
+_geocode_skipped_column_available: Optional[bool] = None
+
+
 def _fetch_pins_missing_geometry(supa, zip_code: str) -> list[str]:
-    """PINs in this ZIP where lat or lng is NULL."""
+    """PINs in this ZIP where lat or lng is NULL.
+
+    Excludes PINs marked geocode_skipped=TRUE (the 024 migration's
+    "we tried and the source has no record" flag) so they don't sit
+    at the top of the queue and block progress on findable PINs.
+
+    Defensive: if the column doesn't exist (migration not applied
+    yet), falls back to the legacy query and logs a one-time warning.
+    """
+    global _geocode_skipped_column_available
     out: list[str] = []
     offset = 0
     PAGE = 1000
+
+    def _query(use_skipped_filter: bool):
+        q = (supa.table('parcels_v3')
+             .select('pin')
+             .eq('zip_code', zip_code)
+             .or_('lat.is.null,lng.is.null')
+             .range(offset, offset + PAGE - 1))
+        if use_skipped_filter:
+            q = q.eq('geocode_skipped', False)
+        return q.execute()
+
     while True:
-        res = (supa.table('parcels_v3')
-               .select('pin')
-               .eq('zip_code', zip_code)
-               .or_('lat.is.null,lng.is.null')
-               .range(offset, offset + PAGE - 1)
-               .execute())
+        try:
+            if _geocode_skipped_column_available is not False:
+                res = _query(use_skipped_filter=True)
+                _geocode_skipped_column_available = True
+            else:
+                res = _query(use_skipped_filter=False)
+        except Exception as e:
+            err = str(e)
+            if 'geocode_skipped' in err and _geocode_skipped_column_available is None:
+                print("[geometry_backfill] WARN: geocode_skipped column not present "
+                      "(schema/024_geocode_skipped.sql not applied). Falling back to "
+                      "unfiltered query — stuck PINs will continue to block the queue.")
+                _geocode_skipped_column_available = False
+                res = _query(use_skipped_filter=False)
+            else:
+                raise
+
         batch = res.data or []
         out.extend(r['pin'] for r in batch)
         if len(batch) < PAGE:
@@ -173,6 +212,38 @@ def _fetch_pins_missing_geometry(supa, zip_code: str) -> list[str]:
         if offset > 200000:
             break
     return out
+
+
+def _mark_pins_geocode_skipped(supa, pins: list[str]) -> int:
+    """Mark PINs as geocode_skipped=TRUE so future backfills skip them.
+
+    These are PINs the source ArcGIS had no record for — retired,
+    subdivided, or condo-unit parcels the county doesn't expose
+    geometry for. Per-pin update (slow but the slow path here is
+    the ArcGIS fetch, not the Supabase update).
+
+    Returns count of PINs successfully marked. Returns 0 if the
+    column doesn't exist (migration not applied), without raising.
+    """
+    global _geocode_skipped_column_available
+    if _geocode_skipped_column_available is False:
+        return 0
+    marked = 0
+    for pin in pins:
+        try:
+            supa.table('parcels_v3').update({
+                'geocode_skipped': True
+            }).eq('pin', pin).execute()
+            marked += 1
+        except Exception as e:
+            err = str(e)
+            if 'geocode_skipped' in err:
+                _geocode_skipped_column_available = False
+                print("[geometry_backfill] WARN: cannot mark geocode_skipped, "
+                      "column missing. Apply schema/024_geocode_skipped.sql.")
+                return marked
+            print(f"[geometry_backfill] mark skipped failed for {pin}: {e}")
+    return marked
 
 
 def _bulk_update_coords(supa, coords: dict[str, tuple[float, float]]) -> int:
@@ -249,6 +320,15 @@ async def backfill_geometry_zip_async(
     log(f"[geometry_backfill] fetched coords for {len(coords)} of {len(pins)} PINs")
     if stats['not_found']:
         log(f"[geometry_backfill] {stats['not_found']} PINs had no ArcGIS geometry (may be retired parcels)")
+        # Mark the not-found PINs as geocode_skipped so the next backfill
+        # call doesn't re-fetch the same set and stall progress. This is
+        # the fix for the poisoned-queue pattern that capped 98053 at
+        # ~8 new geocodes per call after the first few batches.
+        not_found_pins = [pin for pin in pins if pin not in coords]
+        skipped_count = _mark_pins_geocode_skipped(supa, not_found_pins)
+        stats['marked_skipped'] = skipped_count
+        if skipped_count:
+            log(f"[geometry_backfill] marked {skipped_count} PINs geocode_skipped=TRUE")
 
     if coords:
         log(f"[geometry_backfill] updating Supabase...")

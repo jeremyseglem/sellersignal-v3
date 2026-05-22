@@ -36,12 +36,16 @@ router = APIRouter()
 # into Seattle. We can't fix the source data, but we can refuse to
 # render visibly wrong dots.
 #
-# Sizing: ~10 miles in each direction. 1 deg lat ≈ 69 mi; 1 deg lng at
-# lat 47.6 ≈ 46.7 mi. So 0.15 lat / 0.21 lng ≈ 10 mi. Generous enough
-# to keep legitimate edge parcels (annexes, boundary residences) while
-# catching the egregious Seattle/Bothell contamination.
-_BBOX_FILTER_MAX_LAT_DELTA = 0.15
-_BBOX_FILTER_MAX_LNG_DELTA = 0.21
+# Sizing: ~5 miles in each direction. 1 deg lat ≈ 69 mi; 1 deg lng at
+# lat 47.6 ≈ 46.7 mi. So 0.075 lat / 0.105 lng ≈ 5 mi.
+#
+# Tightened from 10 mi after the initial deploy left too much nearby
+# contamination (Bothell, Woodinville parcels 5-10 mi from 98053
+# center). 5 mi keeps Sahalee / Cottage Lake / Union Hill (98053's
+# real annexes) in-bounds while catching the cross-ZIP leakage that
+# was making the map look wrong.
+_BBOX_FILTER_MAX_LAT_DELTA = 0.075
+_BBOX_FILTER_MAX_LNG_DELTA = 0.105
 _BBOX_FILTER_MIN_SAMPLE    = 50  # don't filter on tiny samples — median unreliable
 
 
