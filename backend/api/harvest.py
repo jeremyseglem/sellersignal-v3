@@ -3600,6 +3600,107 @@ def harvest_rematch_reset(
     }
 
 
+@router.post("/rematch-reset-scoped")
+def harvest_rematch_reset_scoped(
+    source_type: str,
+    signal_type: str,
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+):
+    """
+    Scoped variant of /rematch-reset — only resets matched_at on signals
+    matching (source_type, signal_type). Used when a matcher code change
+    affects a specific signal class and we want to re-process only those
+    signals without forcing a full global rematch through all 20K+ rows.
+
+    Concrete case: 98290 prop_type fix (commit fcf6900). After the fix
+    deployed, the Snohomish probate signals were still marked matched_at
+    from a previous run that produced 0 matches under the broken code.
+    Resetting just those (~183 signals) lets the matcher reprocess them
+    without disturbing KC signals that don't need re-matching.
+
+    Same UPDATE pattern as the global reset, just with two extra .eq()
+    filters. Same pagination + safety cap. Idempotent.
+
+    Pass ?confirm=true to actually execute. Returns 410 with usage if
+    source_type or signal_type is missing.
+    """
+    _require_admin(x_admin_key)
+    if not source_type or not signal_type:
+        raise HTTPException(
+            400,
+            "source_type and signal_type are required query params. "
+            "Use /rematch-reset (no scope) for a full global reset.",
+        )
+    if not confirm:
+        raise HTTPException(
+            400,
+            f"This resets matched_at on raw_signals_v3 where "
+            f"source_type='{source_type}' AND signal_type='{signal_type}'. "
+            f"Pass ?confirm=true to proceed.",
+        )
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    # Same paged-update pattern as the global reset, with the scope filter.
+    page = 1000
+    reset_count = 0
+    safety = 0
+    while True:
+        try:
+            rows = (supa.table('raw_signals_v3')
+                    .select('id')
+                    .eq('source_type', source_type)
+                    .eq('signal_type', signal_type)
+                    .not_.is_('matched_at', 'null')
+                    .order('id', desc=False)
+                    .range(0, page - 1)
+                    .execute()).data or []
+        except Exception as e:
+            log.warning(f"rematch-reset-scoped page fetch failed: {e}")
+            break
+        if not rows:
+            break
+        ids = [r['id'] for r in rows]
+        try:
+            (supa.table('raw_signals_v3')
+             .update({'matched_at': None, 'match_count': None})
+             .in_('id', ids)
+             .execute())
+        except Exception as e:
+            log.warning(f"rematch-reset-scoped update batch failed: {e}")
+            break
+        reset_count += len(ids)
+        safety += 1
+        if safety > 50:  # 50k scoped signals — much smaller than global cap
+            break
+
+    # Verify — how many in scope are now unmatched
+    try:
+        unmatched = (supa.table('raw_signals_v3')
+                     .select('id', count='exact')
+                     .eq('source_type', source_type)
+                     .eq('signal_type', signal_type)
+                     .is_('matched_at', 'null')
+                     .execute())
+        unmatched_count = unmatched.count or 0
+    except Exception:
+        unmatched_count = -1
+
+    return {
+        "scope": {"source_type": source_type, "signal_type": signal_type},
+        "signals_reset":             reset_count,
+        "signals_unmatched_in_scope": unmatched_count,
+        "next_step": (
+            "Re-fire the matcher for this scope. For Snohomish probate, "
+            "POST /api/harvest/admin/run-matcher-snohomish-real?confirm=true. "
+            "For other scopes, POST /api/harvest/rematch-process."
+        ),
+    }
+
+
 @router.post("/rematch-process")
 def harvest_rematch_process(
     x_admin_key: Optional[str] = Header(None),
