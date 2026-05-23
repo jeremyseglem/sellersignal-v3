@@ -3666,7 +3666,7 @@ def harvest_rematch_reset_scoped(
         ids = [r['id'] for r in rows]
         try:
             (supa.table('raw_signals_v3')
-             .update({'matched_at': None, 'match_count': None})
+             .update({'matched_at': None, 'match_count': 0})
              .in_('id', ids)
              .execute())
         except Exception as e:
