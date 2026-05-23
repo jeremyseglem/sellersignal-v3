@@ -418,7 +418,7 @@ function MapLegend() {
       </div>
       <div style={row}>
         <span style={swatch(PICK_STYLES.build_now.color)} />
-        Build now
+        In pipeline
       </div>
       <div style={row}>
         <span style={swatch(PICK_STYLES.strategic_hold.color, 0.7)} />
