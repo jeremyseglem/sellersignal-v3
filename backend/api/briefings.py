@@ -301,9 +301,28 @@ async def get_briefing(
                     break
             return out
 
-        parcels = _fetch_all('parcels_v3', zip_code)
-        if not parcels:
+        parcels_all = _fetch_all('parcels_v3', zip_code)
+        if not parcels_all:
             raise HTTPException(404, f"No parcels in ZIP {zip_code}")
+
+        # Drop parcels with no usable street address. An agent can't
+        # door-knock, mail a letter, or otherwise act on a parcel without
+        # an address — leaving these in produced "ghost" leads visible
+        # only as owner_name + parcel_number. Three tax_foreclosure leads
+        # on 98074 surfaced this; the shape is generic across signal
+        # types and stems from stale phantom parcels (in parcels_v3 from
+        # an old seed but no longer in KC's live ArcGIS source —
+        # typically retired, subdivided, or merged parcels). Applying
+        # the filter here at the briefing front-door covers every
+        # downstream bucket (call_now / build_now / hold / watch) in
+        # one place rather than per-bucket.
+        parcels = [p for p in parcels_all
+                   if (p.get('address') or '').strip()]
+        addressless_dropped = len(parcels_all) - len(parcels)
+        if addressless_dropped:
+            print(f"[briefings] {zip_code}: dropped "
+                  f"{addressless_dropped} addressless parcel(s) "
+                  f"from briefing")
 
         # ── Load investigations ──
         inv_rows = _fetch_all('investigations_v3', zip_code)
