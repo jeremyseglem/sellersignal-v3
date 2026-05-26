@@ -46,14 +46,20 @@ Seattle:        98103, 98105, 98112, 98115, 98117, 98119, 98136, 98199
 Snohomish:      98290 (cross-county pilot, separate market_key WA_SNOHOMISH)
 ```
 
-### Live measurements (snapshot 2026-05-20)
+### Live measurements (snapshot 2026-05-21)
 ```
-total live ZIPs:    28  (26 KC + 2 Edmonds onboarded today)
-total parcels:      271,878  (KC 268,132 + Snohomish 98020 1,602 + 98026 2,144)
-court signals harvested:   16,659  (~16,337 KC case_parties + 322 Snohomish raw_signals_v3)
-Snohomish 30-day Tier 1:   322 signals  (~11/day countywide, mostly probate + divorce)
-First Tier 1 leads in 98020 (Edmonds central):  1+ contact now after rematch
-First Tier 1 leads in 98026 (Edmonds north):    1+ contact now after rematch
+total live ZIPs:    28  (26 KC + 2 Edmonds Snohomish)
+total parcels:      ~277,500  (98020 grew to 8,351 after today's reingest; see below)
+court signals harvested:   ~16,850  (~16,337 KC case_parties + 513 Snohomish raw_signals_v3)
+Snohomish probate matches: 93 strict+weak rows after today's matcher re-run
+                           (98020=20, 98026=3, 98290=70)
+Snohomish Call-Now buckets after today's coverage refresh:
+                           98020 probate=24, 98026 probate=15, 98290 probate=12
+                           98020 absentee=100 (was 0 — see today's reingest)
+Map geometry coverage (post-backfill):
+                           98020=100% (1602/1602 — Snohomish backfill newly wired)
+                           98053=90.9% (7349/8082 — rest are stuck PINs not in KC source)
+                           98074=91.6% (11173/12196 — same)
 ```
 
 ---
@@ -432,7 +438,7 @@ curl -s -H "X-Admin-Key: ${ADMIN_KEY}" "https://sellersignal.co/api/coverage"
 
 ### Schema (`schema/`)
 
-11 SQL migration files applied sequentially to the Supabase project.
+24 SQL migration files applied sequentially to the Supabase project. Most recent: `024_geocode_skipped.sql` (2026-05-21) adds `parcels_v3.geocode_skipped BOOLEAN NOT NULL DEFAULT FALSE` plus a partial index for the geometry backfill query path — lets stuck PINs (no record in source ArcGIS) be flagged and skipped on subsequent backfill runs instead of re-fetching the same set every call.
 
 ---
 
@@ -481,10 +487,104 @@ Documented above under "The canonical onboarding pipeline." Summary:
 | `GET /api/harvest/autofill-status` | Case-parties background autofill state |
 | `POST /api/harvest/backfill-parties?confirm=true&zip_code=X&limit=N` | Trigger parties scrape |
 | `POST /api/harvest/clear-sentinel-parties?confirm=true` | Wipe sentinel rows (DESTRUCTIVE) |
+| `POST /api/harvest/rematch-reset-scoped?source_type=X&signal_type=Y&confirm=true` | **(2026-05-21)** Reset matched_at on a scoped slice of signals. Safer than the global `/rematch-reset`; touches only signals matching the source+type filter. Used today for the Snohomish probate re-run after the prop_type fix. |
+| `POST /api/admin/geometry/{zip}?limit=500` | Geometry backfill. Auto-resolves market_key from `zip_coverage_v3` (works for KC and Snohomish without query param). Call repeatedly until `missing_geom=0` or matches the `not_found` floor. |
+| `POST /api/admin/reingest-property-details/{zip}?market_key=X` | Backfills `owner_city`, `owner_state`, `is_absentee`, `is_out_of_state`, `prop_type`, `acres`, `*_value` from live ArcGIS. **Side effect to know:** adds new parcels that aren't in the seed JSON (live source may have more parcels for SITUSZIP=X than the seed captured). Required for absentee bucket to populate. |
+| `POST /api/coverage/refresh-counts?confirm=true&zip_code=X` | Recomputes `zip_coverage_v3.contact_now_*` bucket counts. Run after any operation that adds/removes parcels or changes bucket-deciding fields (owner_state, prop_type). |
+| `GET /api/harvest/admin/zip-quality-score/{zip}` | Onboarding validator with 7+ checks including `prop_type_eligibility_pct`. Will catch the 98290-style failure where every parcel fails the matcher's eligibility filter. |
 
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-05-21 — Bug sweep: letter templates, dossier framing, map data, Snohomish probate
+
+Jeremy ran a "bug man" walkthrough across the live ZIPs. Eleven distinct issues reduced to six root-cause buckets; all six resolved in one session. 11 commits, 1 schema migration, 2 new admin endpoints, multiple data-side operations. Net visible impact: 98290 went from 0 probate leads to 12; 98020 absentee bucket went from 0 to 100 (cap); 98053/98074 maps now show tightly-bounded dots instead of scattering across Seattle/Bothell/Snoqualmie.
+
+**E. Letter template substitution (commit `d9b8bc0`)**
+
+Dossier's "What to Say" section and the 6-letter modal preview both rendered with literal `[your name]` and `[your brokerage]` strings showing through. `archetypePlaybooks.js → resolveDefaultScripts` filled the lead-specific curly-brace tokens (`{owner_first}`, `{address}`) but not the agent-specific bracket placeholders. Added a second substitution pass for `[your name]` → `profile.full_name` and `[your brokerage]` → `profile.brokerage`. Option-b fallback: if either profile field is empty, the literal placeholder stays visible (signals the agent to fill in their profile rather than silently signing letters with no name). The actual Lob-sent letter uses a different code path (`letter_content.py` → renderer appends agent signature) and was never affected — bug was in-app preview only. Also confirmed `sixLetters_probate_v2.js` / `sixLetters_trust_v2.js` are orphaned (no imports) — separate cleanup candidate.
+
+**A. Obit dossier framing (commit `869d741`)**
+
+98020 lead 1 and Paul S Fletcher (98074) both showed correct "Obituary X months ago" header but the dossier body rendered with divorce-archetype framing ("divorce filed", etc.). `detectArchetype` had no `obituary` case anywhere — not in `preferredSignalType` override, not in default precedence, not in `ARCHETYPES`. When an obit lead's parcel also carried a divorce signal, divorce won by default and the dossier body framed the wrong signal type.
+
+Stop-the-bleeding fix per Jeremy's pick of option C: route obit to the `general` archetype. The lead row header still says "Obituary X ago" via signal_type; the dossier body just stops pretending an estate filing or divorce is in play. Generic "I work with homeowners in {city}" framing instead. Three edits: `archetypePlaybooks.js` adds `preferredSignalType === 'obituary'` override case AND a default-precedence obit check ABOVE divorce (so obit+divorce parcels stop showing divorce framing even without an active bucket filter); `BriefingPage.jsx` extends the bucket→preferredSignalType chain with the obituary case.
+
+Proper fix (own `obituary` archetype with condolence-respectful scripts that don't pretend an estate filing exists) is queued — needs Jeremy's eyes on copy. Tax_foreclosure has the same shape problem and same workaround applies — not in today's bug list but worth knowing.
+
+**B. Map pins broken across three new ZIPs (commits `1233bff`, `37fab3a`, `2301651`)**
+
+Three different symptoms on three ZIPs, three different root causes:
+
+  - **98020 — no dots at all.** Geometry never backfilled because `geometry_backfill.py` `MARKET_CONFIGS` only had `WA_KING`. The Snohomish ingest two days ago landed parcel rows but the geometry backfill module had no way to call Snohomish ArcGIS, so `/api/admin/geometry/98020` silently used the KC URL and no-op'd. Added `WA_SNOHOMISH` market config (URL: `services6.arcgis.com/.../Parcels/FeatureServer/0/query`, pin field: `PARCEL_ID`). Same change unblocks all future Snohomish ZIPs. Also made the admin endpoint auto-resolve `market_key` from `zip_coverage_v3.market_key` so calling `/api/admin/geometry/98020` doesn't silently default to WA_KING again. Then ran the backfill: 100% (1602/1602) in 5 calls of 500.
+  - **98053 — dots all over Seattle / Snoqualmie.** Two stacked problems: (a) only 4% geocoded initially (backfill never finished), and (b) of the geocoded ones, 41.6% sat 25+ miles outside the real 98053 boundary — KC source data tags some parcels with ZIP5=98053 whose geometry sits in Seattle, Bothell, Woodinville. Fixed both: ran more backfill passes (climbed to 64.9% before plateauing on stuck PINs — see C below), then shipped a bbox-outlier filter at `/api/map/{zip}` and `/api/map/{zip}/bounds` that drops parcels >5 miles from the ZIP's median centroid. Filter sized to keep legitimate annexes (Sahalee, Cottage Lake, Union Hill for 98053) while catching cross-ZIP leakage. Tightened from initial 10 mi to 5 mi after data showed the 10-mi threshold left too much nearby contamination.
+  - **98074 — dots outside Sammamish boundary.** Same shape as 98053 but milder (4.3% off-bbox after wide-bbox filter). Same fix applies — bbox filter handles it.
+
+`schema/024_geocode_skipped.sql` added during this work. The geometry backfill had a poisoned-queue pattern: when KC ArcGIS has no record for a PIN (retired parcel, condo unit, recently subdivided), the fetch returns nothing and the row stays at NULL lat/lng — so the same stuck PIN sits at the top of the queue every call, gets re-tried, fails again. Saw this on 98053 converging to ~8 new geocodes per call because ~492 stuck PINs were blocking the queue. Per the April lesson on poisoned-retry architecture (case_parties_v3 sentinels), DO NOT co-locate failure state with truth data. Added a small `geocode_skipped BOOLEAN NOT NULL DEFAULT FALSE` column with a partial index on `(zip_code) WHERE skipped=FALSE AND (lat IS NULL OR lng IS NULL)`. Geometry backfill now marks not-found PINs as skipped after each batch and filters them out of subsequent runs. Defensive — code falls back to the legacy unfiltered query if the migration hasn't been applied yet, with a one-time warning. After applying: 98053 → 90.9%, 98074 → 91.6%, both at their true ceiling (remaining missing are genuinely not in KC source).
+
+**C.1. 98290 zero probate matches (commits `fcf6900`, `10a3013`, `ff0f168`)**
+
+98290 had 0 probate matches despite 15,394 parcels and 183 Snohomish probate signals harvested. Investigation: `/api/harvest/admin/zip-quality-score/98290` reports `prop_type_eligibility_pct=0%` (eligible=0, total=15436). The matcher's `_dispatch_probate` rejected every 98290 parcel at the prop_type filter before name matching ran.
+
+Initial hypothesis (owner-name corruption — sampled a few weird "Of Snohomish City" strings) was wrong; Q2 SQL showed 98290 owner names are actually slightly cleaner proportionally than 98020 (63% vs 59% in clean First-[Middle]-Last format). The real cause was prop_type: Snohomish County's parcel layer doesn't expose KC-style single-char codes (R/K). The existing `or 'R'` default in `_load_owners_db` only handles falsy values — whatever's stored in 98290's `prop_type` column passes the truthy check but doesn't equal R or K after `upper().strip()`, so the matcher rejects all 15,394 parcels before name matching runs.
+
+Fix: market-aware default in `_load_owners_db`. When `market_key='WA_SNOHOMISH'`, default unrecognized prop_type values to 'R' (the matcher's name + HOA + government filters still gate non-residential candidates downstream). KC parcels with legitimate non-R/K codes (commercial, exempt) flow through unchanged — `_is_eligible_prop_type` filters them correctly. Also added `market_key` to the `parcels_v3` select in `_load_owners_db`.
+
+Truth-test confirmation: 8 matches → 93 matches (98290 specifically 0 → 70). Production matcher needed an unblock — the 191 signals were already marked `matched_at` from a prior run, so `run-matcher-snohomish-real` (which filters by `matched_at IS NULL`) saw 0 in scope. Built `/api/harvest/rematch-reset-scoped` as a targeted alternative to the global `/rematch-reset`: takes `source_type` + `signal_type` query params, resets only matching signals' `matched_at` to NULL. Fixed one own-goal during build — `match_count INTEGER NOT NULL DEFAULT 0` rejected `match_count=NULL`, so the first batch silently failed. Changed to `match_count=0`. After fix: 191 reset → 93 matches written → coverage refresh → 98290 probate **0 → 12** in the Call-Now bucket (70 raw matches; 12 made it through the family_pr_identified + freshness gates). 98020 also gained 5 (19 → 24) — the broken filter was over-rejecting some KC parcels too.
+
+**C.2/C.3. 98053/98074/98020 absentee zero (reingest + refresh-counts)**
+
+98053 had `contact_now_absentee=0`; 98074 had 1; while 98004 baseline had 100 (cap). Root cause: when these ZIPs were onboarded via `seed-from-json` (the bulk-CSV path), the seed file contained `owner_name, address, value, tenure_years` but NOT `owner_state`. The absentee bucket selector at `weekly_selector.py:803-804` requires `owner_state IN _VALID_US_STATES AND owner_state != 'WA'`. Empty/null `owner_state` → excluded → zero count. 98004 was seeded earlier via a path that did include owner_state, hence 100 absentees.
+
+Fix path was already in the codebase: `POST /api/admin/reingest-property-details/{zip}` backfills `owner_city`, `owner_state`, `is_absentee`, `is_out_of_state` from live ArcGIS. Ran for 98053 (8589 upserted), 98074 (10394 upserted), and 98020 with `market_key=WA_SNOHOMISH` (8351 upserted — note 98020 had 1602 in seed; reingest added ~6750 new parcels because live Snohomish ArcGIS has more parcels for SITUSZIP=98020 than the seed captured — side effect worth knowing). Then `POST /api/coverage/refresh-counts?confirm=true&zip_code={zip}` updated bucket counts.
+
+Result: 98020 absentee 0 → 100 (capped). 98053 0 → 2. 98074 1 → 2. The low 98053/98074 numbers verified via SQL: the `owner_state` column had ~25-45 distinct non-WA-looking codes including obvious junk like `'00','EA','T7','WE','WS','A','AO','AP'` (KCTP_STATE field truncations / mis-encodings) that `_VALID_US_STATES` correctly rejects. After the junk filter, 98053/98074 have maybe 100-150 real OOS owners but most get swept into higher-priority buckets (trust=100, llc=89, tenure=100 at cap) which run before absentee in the cascade, leaving ~2. Not a bug — that's the bucket cascade working correctly given the actual demographics (Redmond/Sammamish are local-owner-occupied tech-worker zips).
+
+**D. Tax foreclosure leads showing no street address (commit `5e23b37`)**
+
+98074 had 3 tax_foreclosure leads with empty `address` field; dossier rendered as "owner_name + parcel_number" with no street. Diagnosed via direct query against KC's live ArcGIS: **all 3 PINs returned zero features** — they're stale phantom parcels (in our `parcels_v3` from old seed but no longer in KC's live source, typically retired/subdivided/merged). The reingest-property-details endpoint queries by ZIP and these specific PINs aren't returned anymore. One of the 3 (pin 1593001210) is also contaminated — lat 47.50 lng -121.78 is North Bend / Snoqualmie Valley, not Sammamish.
+
+Per Jeremy's pick of option (1): filter addressless leads from the briefing assembler. Added at `briefings.py:304` right after `parcels_v3` fetch: `parcels = [p for p in parcels_all if (p.get('address') or '').strip()]`. Covers every downstream bucket (call_now, build_now, hold, watch) in one place. Underlying `parcels_v3` rows preserved (in case source data ever returns, or other endpoints legitimately need them). Soft-log emits a drop count for observability.
+
+Other three options remain available as future work: (2) reverse-geocode lat/lng → address via Google Maps; (3) show with explicit "(parcel — no street address)" label; (4) admin endpoint to delete stale phantom parcels from `parcels_v3` based on missing-in-source check. (4) is the cleaner long-term cleanup; today's filter is the pragmatic band-aid.
+
+**F. Map key legend "Build now" → "In pipeline" (commit `4d08e1d`)**
+
+Per manifesto's standing rule about "Building" being jargon. One-line label change in `MapPanel.jsx`. Internal category key (`build_now`) unchanged — only the human-facing legend text.
+
+**Lessons from today**
+
+- The poisoned-retry pattern keeps recurring. Today it was geometry backfill (stuck PINs at top of queue) AND the prop_type filter (rejecting everything with truthy non-R/K values). Both fixed surgically. Worth a separate audit pass: are there other places where "we tried and got nothing" is conflated with "we haven't tried"?
+- ZIP onboarding has more side effects than the surface API suggests. Reingest-property-details adds new parcels from the live ArcGIS that the original seed didn't include. Geometry backfill needs per-market wiring. Property-detail backfill happens via a different endpoint than name-backfill. The orchestrator covers the happy path but the recovery paths (re-ingest, re-canonicalize, re-match) each have their own gotchas.
+- The matcher's prop_type filter is doing legitimate work for KC (filters out commercial / exempt / vacant) but is over-rejecting on Snohomish. Market-aware defaults are now wired into `_load_owners_db`. This pattern will likely apply to any future county-onboarding work.
+- Scoped reset > global reset. The global `/rematch-reset` blocks the curl for ~10 min while clearing 16K+ signals across all KC. The new `/rematch-reset-scoped` clears just the affected slice (e.g., 191 Snohomish probate signals in seconds). Reusable for future targeted re-runs.
+
+**New endpoints added today**
+
+- `POST /api/harvest/rematch-reset-scoped?source_type=X&signal_type=Y&confirm=true` — scoped variant of global rematch-reset. Touches only signals matching `(source_type, signal_type)`. Idempotent. Resets `matched_at` to NULL and `match_count` to 0.
+
+**New schema migration applied today**
+
+- `schema/024_geocode_skipped.sql` — adds `geocode_skipped BOOLEAN NOT NULL DEFAULT FALSE` to `parcels_v3` plus a partial index for the backfill query path.
+
+**Net measurable impact**
+
+```
+                      Before        After
+98020 map dots          0             1602
+98020 absentee bucket   0             100  (capped)
+98020 probate bucket    19            24
+98053 map bbox          17×19 mi      10×8 mi
+98053 absentee bucket   0             2
+98074 map cleanup       19×18 mi      10×8 mi
+98074 absentee bucket   1             2
+98290 probate bucket    0             12   ← the big one
+Letter templates        broken        substituted
+Obit dossier framing    wrong         correct
+Tax_foreclosure (addressless)  shown  filtered
+Map legend "Build now"  jargon        "In pipeline"
+```
 
 ### 2026-05-20 (afternoon) — Frontend auth fix + runtime config refactor
 
@@ -665,6 +765,8 @@ The rematch endpoint deletes all matches platform-wide, resets matched_at=NULL o
 - OR have rematch reset matched_at first AND THEN regenerate match-by-match, so existing matches stay live until each signal's new matches commit
 
 Until then: rematch should only be triggered during low-traffic windows, with a clear comms plan if it'll be more than 2-3 min.
+
+**Partial mitigation 2026-05-21:** Added `POST /api/harvest/rematch-reset-scoped?source_type=X&signal_type=Y&confirm=true` for targeted re-runs that don't disturb other signal classes. Used today to re-process the 191 Snohomish probate signals after the prop_type fix without touching KC. Doesn't solve the underlying "rematch is sync + destructive" problem for the global case, but removes the need to use the global endpoint for many real-world scoped fixes.
 
 ### 11. Pre-existing background-task contention on Supabase HTTP/2 stream pool
 
