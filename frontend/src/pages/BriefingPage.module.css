@@ -66,9 +66,13 @@
     grid-column: 1 / -1;
     border-bottom: 1px solid var(--border);
     background: var(--bg-card);
-    /* Tab bar sits above the map's Leaflet panes and the
-       MapExplorePanel overlay. */
-    z-index: 10;
+    /* Must sit above ParcelDossierV2, which uses z-index 1000 for
+       its absolute-positioned overlay. Without this, picking a lead
+       on mobile covers the tab bar with the dossier and the agent
+       has no way to return to the leads list. The dossier still
+       sits above the map (1000 > anything in MapPanel) — only the
+       tab bar pokes through. */
+    z-index: 1500;
   }
 
   .mobileTabButton {
