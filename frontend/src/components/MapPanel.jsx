@@ -137,6 +137,12 @@ export default function MapPanel({ mapData, playbook, selectedPin, onPickPin }) 
     const map = L.map(containerRef.current, {
       zoomControl: true,
       attributionControl: true,
+      // Canvas renderer: dots paint via <canvas> instead of one SVG
+      // element per marker. On 98052 (~15K parcels, hundreds of action
+      // dots) SVG rendering on a phone GPU stutters badly — canvas
+      // is roughly 10x faster on the same hardware. Desktop sees a
+      // small improvement too, no downside.
+      preferCanvas: true,
     });
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {

@@ -1,0 +1,111 @@
+/* ────────────────────────────────────────────────────────────────
+   BriefingPage layout
+   ────────────────────────────────────────────────────────────────
+   Desktop (>=768px): two-column grid, aside (420px) | main (1fr).
+     Same layout as before — this is the agent's daily workspace.
+
+   Mobile (<768px): single column. A tab bar at the top lets the
+     agent switch between the leads list and the map. The dossier
+     stays an absolute overlay over the map (no behavior change to
+     ParcelDossierV2 — it already declares maxWidth: 100vw and uses
+     100dvh, so it fills the screen on a phone).
+
+   On mobile, picking a lead in the leads list auto-switches the
+   active tab to 'map' so the dossier overlay becomes visible. Tab
+   state lives in the parent component and is exposed to this CSS
+   via [data-active-tab] on the container.
+
+   Inside-component subtree styles (LeadRow, BriefingHeader, etc.)
+   are intentionally NOT modified by this stylesheet. They display
+   correctly inside the responsive container as-is; restyling them
+   is a separate slice. This file only governs the top-level frame.
+   ──────────────────────────────────────────────────────────────── */
+
+.container {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  grid-template-rows: 1fr;
+  height: calc(100vh - 56px);
+  overflow: hidden;
+}
+
+.aside {
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* min-width:0 prevents flex children from stretching the column
+     past 420px when they contain long unbroken strings. */
+  min-width: 0;
+}
+
+.main {
+  position: relative;
+  background: var(--bg);
+  /* Same reasoning as .aside — the map and dossier don't push the
+     column wider than 1fr. */
+  min-width: 0;
+}
+
+/* Hidden on desktop. The tab bar is mobile-only. */
+.mobileTabBar {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .container {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .mobileTabBar {
+    display: flex;
+    /* Spans both grid tracks. Without grid-column the bar would
+       sit in track 1 only (the bar isn't quite the full screen). */
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card);
+    /* Tab bar sits above the map's Leaflet panes and the
+       MapExplorePanel overlay. */
+    z-index: 10;
+  }
+
+  .mobileTabButton {
+    flex: 1;
+    padding: 12px 8px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s, border-bottom-color 0.15s;
+    /* Suppress the gray flash iOS adds to tappable elements. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobileTabButtonActive {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+
+  /* Show only the active tab's content. The non-active panel is
+     dropped from the layout entirely so its scroll position resets
+     when the agent returns to it (rather than carrying state from
+     an off-screen scroll). */
+  .container[data-active-tab="leads"] .main {
+    display: none;
+  }
+
+  .container[data-active-tab="map"] .aside {
+    display: none;
+  }
+
+  /* No border on mobile — the aside fills the screen when active. */
+  .aside {
+    border-right: none;
+  }
+}

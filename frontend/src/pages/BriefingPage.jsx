@@ -16,6 +16,12 @@ import ActionList from '../components/briefing/ActionList.jsx';
 import LeadRow from '../components/briefing/LeadRow.jsx';
 import PipelineList from '../components/briefing/PipelineList.jsx';
 import MapExplorePanel from '../components/briefing/MapExplorePanel.jsx';
+import styles from './BriefingPage.module.css';
+
+// Width threshold for mobile-vs-desktop layout switch. Mirrors the
+// max-width in BriefingPage.module.css (must stay in sync — keep the
+// constant and the media query at the same number).
+const MOBILE_BREAKPOINT_PX = 767;
 
 const FILTER_OPTIONS = [
   { key: 'all',        label: 'All',        matches: () => true },
@@ -120,6 +126,12 @@ function BriefingBody() {
   // of which bucket they'd otherwise sit in.
   const [leadStatuses, setLeadStatuses] = useState({});
 
+  // Mobile-only: which panel is visible (leads list or map). Ignored
+  // on desktop where both panels show side-by-side. Picking a lead
+  // on mobile auto-switches to 'map' so the dossier overlay becomes
+  // visible immediately — see handlePickLead below.
+  const [activeTab, setActiveTab] = useState('leads');
+
   // Load briefing + map on ZIP change.
   // The previous version also called coverageApi.stats(zip) just for
   // city/state — that endpoint paginates parcels and investigations
@@ -199,7 +211,25 @@ function BriefingBody() {
       .catch((e) => console.error('Failed to load dossier:', e));
   }, [selectedPin]);
 
-  const handlePickLead = (pin) => setSelectedPin(pin);
+  const handlePickLead = (pin) => {
+    setSelectedPin(pin);
+    // On mobile (narrow widths only), the aside and main are separate
+    // tabs. Picking a lead from the list while looking at the leads
+    // tab would leave the dossier hidden under the map tab — the
+    // agent would have to manually switch. Auto-switch to 'map' so
+    // the dossier overlay is visible right after picking.
+    //
+    // Uses matchMedia rather than window.innerWidth so the check
+    // matches the CSS media query byte-for-byte. Guarded for SSR
+    // safety even though this app is client-only.
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches
+    ) {
+      setActiveTab('map');
+    }
+  };
 
   // Sync the ?pin= query param into selectedPin. Runs on initial
   // load (so links from My Leads auto-open the dossier) AND when
@@ -388,20 +418,39 @@ function BriefingBody() {
   }
 
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: '420px 1fr',
-      height: 'calc(100vh - 56px)',
-      overflow: 'hidden',
-    }}>
+    <div
+      className={styles.container}
+      data-active-tab={activeTab}
+    >
+      {/* Mobile-only tab bar. Hidden on desktop via CSS Module
+          @media. Lets the agent switch between the leads list and
+          the map at narrow widths where both panels can't fit
+          side-by-side. The "Lead" suffix on the Map tab appears
+          when a pin is selected, so the agent knows the dossier
+          overlay is sitting on the map tab waiting for them. */}
+      <div className={styles.mobileTabBar} role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'leads'}
+          className={`${styles.mobileTabButton} ${activeTab === 'leads' ? styles.mobileTabButtonActive : ''}`}
+          onClick={() => setActiveTab('leads')}
+        >
+          Leads
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'map'}
+          className={`${styles.mobileTabButton} ${activeTab === 'map' ? styles.mobileTabButtonActive : ''}`}
+          onClick={() => setActiveTab('map')}
+        >
+          {selectedPin ? 'Map · Lead' : 'Map'}
+        </button>
+      </div>
+
       {/* ── Left panel: action-first briefing ── */}
-      <aside style={{
-        background: 'var(--bg-card)',
-        borderRight: '1px solid var(--border)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}>
+      <aside className={styles.aside}>
         {profile?.role === 'operator' && (
           <div style={{
             padding: '8px 16px',
@@ -510,7 +559,7 @@ function BriefingBody() {
       </aside>
 
       {/* ── Right: map + exploration controls + dossier ── */}
-      <main style={{ position: 'relative', background: 'var(--bg)' }}>
+      <main className={styles.main}>
         {!mapData && (
           <div style={{
             position: 'absolute',
