@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Logo from './Logo.jsx';
+import styles from './SiteHeader.module.css';
 
 // Build-time feature flag mirroring AuthGate. When auth isn't
 // required, the header renders 'demo nav' (Briefing button only)
@@ -18,11 +20,25 @@ const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED === 'true';
 // header renders authenticated-mode (Briefing / Territories /
 // agent name / Sign out).
 //
+// Mobile (<768px): the right-hand desktop nav collapses to a hamburger
+// toggle. Tapping it opens a dropdown sheet below the header with the
+// same nav items. The sheet auto-closes on route change. The desktop
+// layout is unchanged at >=768px.
+//
 // Header keeps a fixed height (56px) and a dark background — matches
 // the brand reference. White-space chrome below the header is the
 // page's responsibility.
 export default function SiteHeader({ agent, onSignOut, mode = 'auto' }) {
   const location = useLocation();
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Close the mobile sheet whenever the route changes. Without this,
+  // tapping a nav link from inside the sheet would navigate but leave
+  // the sheet open over the new page.
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
+
   // Mode resolution:
   //   explicit override   — caller passed mode='public' or 'authenticated'
   //   agent present       — render authenticated
@@ -44,47 +60,93 @@ export default function SiteHeader({ agent, onSignOut, mode = 'auto' }) {
   };
 
   return (
-    <header style={{
-      position: 'sticky',
-      top: 0,
-      zIndex: 100,
-      height: 56,
-      padding: '0 32px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      background: 'var(--bg-dark)',
-      borderBottom: '1px solid rgba(245, 240, 235, 0.06)',
-      fontFamily: 'var(--font-sans)',
-    }}>
-      {/* Logo links to the agent's home (territories list) when
-          signed in, or marketing root when not. */}
-      <Link
-        to={resolvedMode === 'authenticated' ? '/territories' : '/'}
-        style={{ textDecoration: 'none' }}
-        aria-label="SellerSignal home"
-      >
-        <Logo tone="light" size="default" />
-      </Link>
+    <>
+      <header className={styles.header}>
+        {/* Logo links to the agent's home (territories list) when
+            signed in, or marketing root when not. */}
+        <Link
+          to={resolvedMode === 'authenticated' ? '/territories' : '/'}
+          style={{ textDecoration: 'none' }}
+          aria-label="SellerSignal home"
+        >
+          <Logo tone="light" size="default" />
+        </Link>
 
-      <nav style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}>
+        {/* Desktop nav — hidden at <768px via the CSS module. */}
+        <nav className={styles.desktopNav}>
+          {resolvedMode === 'authenticated' ? (
+            <AuthenticatedNav
+              agent={agent}
+              isActive={isActive}
+              onSignOut={onSignOut}
+            />
+          ) : resolvedMode === 'demo' ? (
+            <DemoNav isActive={isActive} />
+          ) : (
+            <PublicNav isActive={isActive} />
+          )}
+        </nav>
+
+        {/* Mobile toggle — hidden at >=768px via the CSS module. */}
+        <button
+          type="button"
+          className={styles.mobileToggle}
+          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={menuOpen}
+          aria-controls="site-header-mobile-sheet"
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          {menuOpen ? <CloseIcon /> : <HamburgerIcon />}
+        </button>
+      </header>
+
+      {/* Mobile sheet — anchored to viewport, rendered outside the
+          header element so the header's overflow / stacking doesn't
+          interfere. Visibility is controlled by the data-open
+          attribute the CSS reads. */}
+      <div
+        id="site-header-mobile-sheet"
+        className={styles.mobileSheet}
+        data-open={menuOpen ? 'true' : 'false'}
+        role="menu"
+      >
         {resolvedMode === 'authenticated' ? (
-          <AuthenticatedNav
+          <AuthenticatedMobileMenu
             agent={agent}
             isActive={isActive}
-            onSignOut={onSignOut}
+            onSignOut={() => {
+              setMenuOpen(false);
+              if (onSignOut) onSignOut();
+            }}
           />
         ) : resolvedMode === 'demo' ? (
-          <DemoNav isActive={isActive} />
+          <DemoMobileMenu isActive={isActive} />
         ) : (
-          <PublicNav isActive={isActive} />
+          <PublicMobileMenu isActive={isActive} />
         )}
-      </nav>
-    </header>
+      </div>
+    </>
+  );
+}
+
+
+// ── Icons ────────────────────────────────────────────────────────
+// Inline SVGs so we don't pull in an icon library for two shapes.
+// currentColor lets the icon inherit the toggle's text color.
+
+function HamburgerIcon() {
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14" fill="none" aria-hidden="true">
+      <path d="M1 1h18M1 7h18M1 13h18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 2l12 12M14 2L2 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
   );
 }
 
@@ -97,6 +159,27 @@ function PublicNav({ isActive }) {
         Sign in
       </Link>
       <Link to="/signup" style={navBtnStyle('primary', false)}>
+        Request access
+      </Link>
+    </>
+  );
+}
+
+function PublicMobileMenu({ isActive }) {
+  return (
+    <>
+      <Link
+        to="/login"
+        className={`${styles.mobileSheetItem} ${isActive('/login') ? styles.mobileSheetItemActive : ''}`}
+        role="menuitem"
+      >
+        Sign in
+      </Link>
+      <Link
+        to="/signup"
+        className={styles.mobileSheetItem}
+        role="menuitem"
+      >
         Request access
       </Link>
     </>
@@ -127,6 +210,21 @@ function DemoNav({ isActive }) {
       }}>
         Demo
       </span>
+    </>
+  );
+}
+
+function DemoMobileMenu({ isActive }) {
+  return (
+    <>
+      <Link
+        to="/territories"
+        className={`${styles.mobileSheetItem} ${isActive('/territories') ? styles.mobileSheetItemActive : ''}`}
+        role="menuitem"
+      >
+        Briefing
+      </Link>
+      <div className={styles.mobileSheetIdentity}>Demo</div>
     </>
   );
 }
@@ -169,11 +267,52 @@ function AuthenticatedNav({ agent, isActive, onSignOut }) {
   );
 }
 
+function AuthenticatedMobileMenu({ agent, isActive, onSignOut }) {
+  const displayName = agent?.full_name || agent?.email || 'Account';
+  return (
+    <>
+      <Link
+        to="/territories"
+        className={`${styles.mobileSheetItem} ${isActive('/territories') ? styles.mobileSheetItemActive : ''}`}
+        role="menuitem"
+      >
+        Briefing
+      </Link>
+      <Link
+        to="/my-leads"
+        className={`${styles.mobileSheetItem} ${isActive('/my-leads') ? styles.mobileSheetItemActive : ''}`}
+        role="menuitem"
+      >
+        My Leads
+      </Link>
+      <Link
+        to="/profile"
+        className={`${styles.mobileSheetItem} ${isActive('/profile') ? styles.mobileSheetItemActive : ''}`}
+        role="menuitem"
+      >
+        Profile
+      </Link>
+      <div className={styles.mobileSheetIdentity}>{displayName}</div>
+      <button
+        type="button"
+        className={styles.mobileSheetSignOut}
+        onClick={onSignOut}
+        role="menuitem"
+      >
+        Sign out
+      </button>
+    </>
+  );
+}
 
-// ── Shared button style ─────────────────────────────────────────
+
+// ── Shared button style (DESKTOP NAV ONLY) ──────────────────────
 // Two variants matching the legacy reference: ghost (transparent,
 // thin border) and primary (gold). Active state on ghost adds gold
 // border + gold text.
+//
+// The mobile sheet uses its own classes from the CSS module —
+// these inline styles are only consulted for the desktop nav row.
 function navBtnStyle(variant, active) {
   const base = {
     padding: '8px 18px',
@@ -207,3 +346,4 @@ function navBtnStyle(variant, active) {
       : 'rgba(245, 240, 235, 0.7)',
   };
 }
+

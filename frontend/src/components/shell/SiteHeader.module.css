@@ -1,0 +1,151 @@
+/* ────────────────────────────────────────────────────────────────
+   SiteHeader layout
+   ────────────────────────────────────────────────────────────────
+   Desktop (>=768px): logo left, nav buttons + agent name + Sign
+     out right. Unchanged from the inline-styled version that
+     shipped before.
+
+   Mobile (<768px): logo left, hamburger right. Tapping the
+     hamburger opens a dropdown sheet under the header containing
+     all nav items. The sheet auto-closes on navigation (route
+     change) and when the toggle is tapped again.
+
+   Mobile-only visibility is driven by display: none / flex inside
+   the @media query so React renders the same JSX in both modes.
+   The mobile sheet is hidden via [data-open="false"] when closed.
+   ──────────────────────────────────────────────────────────────── */
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: 56px;
+  padding: 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-dark);
+  border-bottom: 1px solid rgba(245, 240, 235, 0.06);
+  font-family: var(--font-sans);
+}
+
+.desktopNav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Hidden on desktop; flexed on mobile via @media below. */
+.mobileToggle {
+  display: none;
+}
+
+/* Hidden on desktop; absolute-positioned dropdown on mobile. */
+.mobileSheet {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .header {
+    /* Tighter padding — 32px on a 393px iPhone eats too much. */
+    padding: 0 16px;
+  }
+
+  /* Hide the inline desktop nav. The mobile toggle + sheet take over. */
+  .desktopNav {
+    display: none;
+  }
+
+  .mobileToggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: transparent;
+    border: 1px solid rgba(245, 240, 235, 0.18);
+    border-radius: 6px;
+    cursor: pointer;
+    color: rgba(245, 240, 235, 0.7);
+    -webkit-tap-highlight-color: transparent;
+    /* Reset default button padding so the SVG centers cleanly. */
+    padding: 0;
+  }
+
+  .mobileToggle:active {
+    background: rgba(245, 240, 235, 0.08);
+  }
+
+  .mobileSheet {
+    display: flex;
+    flex-direction: column;
+    /* Positioned relative to <body>, not .header, so the sheet
+       isn't clipped by the header's overflow. Header has its own
+       z-index: 100, sheet sits just below at 99 — close enough
+       that the agent perceives them as one element. */
+    position: fixed;
+    top: 56px;
+    left: 0;
+    right: 0;
+    background: var(--bg-dark);
+    border-bottom: 1px solid rgba(245, 240, 235, 0.12);
+    padding: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    z-index: 99;
+  }
+
+  .mobileSheet[data-open="false"] {
+    display: none;
+  }
+
+  .mobileSheetItem {
+    padding: 14px 16px;
+    color: rgba(245, 240, 235, 0.85);
+    font-size: 15px;
+    font-weight: 500;
+    text-decoration: none;
+    border-radius: 6px;
+    -webkit-tap-highlight-color: transparent;
+    display: flex;
+    align-items: center;
+  }
+
+  .mobileSheetItem:active {
+    background: rgba(245, 240, 235, 0.08);
+  }
+
+  .mobileSheetItemActive {
+    color: var(--accent);
+    background: rgba(139, 105, 20, 0.12);
+  }
+
+  /* Identity strip: small text showing which agent is signed in,
+     visually separated from the nav by a thin rule. Not a tap
+     target. */
+  .mobileSheetIdentity {
+    padding: 12px 16px 4px;
+    color: rgba(245, 240, 235, 0.5);
+    font-size: 12px;
+    border-top: 1px solid rgba(245, 240, 235, 0.08);
+    margin-top: 4px;
+  }
+
+  .mobileSheetSignOut {
+    margin: 4px 8px 8px;
+    padding: 12px 16px;
+    border: 1px solid rgba(245, 240, 235, 0.18);
+    border-radius: 6px;
+    color: rgba(245, 240, 235, 0.7);
+    background: transparent;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--font-sans);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobileSheetSignOut:active {
+    background: rgba(245, 240, 235, 0.08);
+  }
+}

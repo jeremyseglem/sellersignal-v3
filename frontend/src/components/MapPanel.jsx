@@ -177,6 +177,31 @@ export default function MapPanel({ mapData, playbook, selectedPin, onPickPin }) 
     };
   }, []);
 
+  // Mobile fix: when the container's dimensions change for any reason
+  // — orientation flip, browser window resize, OR a parent's display
+  // toggling from none to block (which is what happens when the agent
+  // taps the mobile 'Map' tab from the 'Leads' tab) — Leaflet doesn't
+  // auto-track it. Without invalidateSize() the map keeps rendering
+  // at the dimensions it measured at init time. On mobile, init
+  // happens while the map's parent has display:none, so the map
+  // measures as 0x0 and stays half-rendered after the tab switch.
+  //
+  // ResizeObserver covers all three resize causes with one listener.
+  // requestAnimationFrame schedules invalidateSize for after the
+  // browser has finished layout — calling it inside the observer
+  // callback directly catches an in-between state and re-fires.
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(() => {
+      if (!mapRef.current) return;
+      requestAnimationFrame(() => {
+        if (mapRef.current) mapRef.current.invalidateSize();
+      });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   // Render parcels in three layers (background → holds → picks).
   // Painting order matters because Leaflet draws later markers on
   // top — picks must be added LAST so they sit visually above the
