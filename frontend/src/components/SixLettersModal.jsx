@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { generateSixLetters } from '../lib/sixLetters.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { letters as lettersApi, safeErrorMessage } from '../api/client.js';
+import styles from './SixLettersModal.module.css';
 
 /**
  * SixLettersModal — renders the 6-letter sequence for a parcel in a
@@ -181,30 +182,11 @@ export default function SixLettersModal({
   return (
     <div
       onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(44, 36, 24, 0.55)',
-        zIndex: 2000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 'var(--space-lg)',
-      }}
+      className={styles.overlay}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
-          background: 'var(--bg-card)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: 'var(--shadow-lg)',
-          maxWidth: 820,
-          width: '100%',
-          maxHeight: '90vh',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
+        className={styles.card}
       >
         {/* Header */}
         <div style={{
@@ -259,14 +241,7 @@ export default function SixLettersModal({
         </div>
 
         {/* Tab navigator */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(6, 1fr)',
-          gap: 8,
-          padding: 'var(--space-md) var(--space-lg)',
-          background: 'var(--bg)',
-          borderBottom: '1px solid var(--border)',
-        }}>
+        <div className={styles.tabStrip}>
           {letters.map((L, i) => {
             const status = statusByIndex[L.num];
             const statusLabel = status ? (

@@ -1,0 +1,99 @@
+/* ────────────────────────────────────────────────────────────────
+   SixLettersModal layout
+   ────────────────────────────────────────────────────────────────
+   Desktop (>=768px): unchanged from the inline-styled version.
+     Outer overlay fills viewport, centered card 820px max,
+     90vh tall, header / tab strip / scrollable body / footer.
+
+   Mobile (<768px):
+     - Outer padding tightened (24px → 8px) — 48px of horizontal
+       eaten on a 393px iPhone was too much.
+     - Card pins to the TOP of the viewport rather than vertically
+       centering. iOS Safari measures `vh` against the URL-bar-
+       hidden viewport, so a 90vh-centered card overflows the
+       visible area both above and below when the URL bar shows.
+       Pinning to top + using 100dvh (dynamic viewport height)
+       guarantees the header (with the close button) is always
+       reachable.
+     - Tab strip becomes a horizontal scroll row instead of a
+       6-column grid. Tabs keep their per-letter card shape; you
+       swipe to reach later letters. Active tab still snaps to
+       view.
+     - Footer wrap layout cleans up so the three send buttons
+       don't compete with the balance line.
+   ──────────────────────────────────────────────────────────────── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(44, 36, 24, 0.55);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+}
+
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  max-width: 820px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tabStrip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 767px) {
+  .overlay {
+    /* Card pins to the top — match the flex alignment to that. */
+    align-items: flex-start;
+    padding: 8px;
+  }
+
+  .card {
+    /* dvh = dynamic viewport height. Tracks the visible area as
+       the iOS URL bar shows/hides. With align-items: flex-start
+       above, the card sits at the top of the visible viewport
+       and stays under the system status bar instead of being
+       centered against an inaccurate measurement. */
+    max-height: 100dvh;
+    /* Slight rounding loss but keeps the card touching the screen
+       edges so the agent doesn't perceive wasted space. */
+    border-radius: 8px;
+  }
+
+  .tabStrip {
+    /* Horizontal scroll preserves the 6-letter mental model. Each
+       tab is min-width 110px so it can fit the date + letter name
+       without per-word wrapping (the desktop grid was wrapping
+       every word onto its own line on mobile).
+       overflow-x: auto with -webkit-overflow-scrolling: touch
+       gives iOS momentum scroll. */
+    display: flex;
+    grid-template-columns: none;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    /* Tab strip shouldn't be the tallest thing on screen. */
+    padding: 8px 8px;
+    scroll-snap-type: x proximity;
+  }
+
+  .tabStrip > button {
+    /* Each tab keeps its own width on mobile. */
+    flex: 0 0 auto;
+    min-width: 110px;
+    scroll-snap-align: start;
+  }
+}
