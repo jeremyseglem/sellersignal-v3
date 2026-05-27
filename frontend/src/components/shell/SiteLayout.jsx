@@ -27,7 +27,13 @@ export default function SiteLayout({
 }) {
   return (
     <div style={{
-      minHeight: '100vh',
+      // 100dvh tracks the visible viewport on iOS Safari (the URL
+      // bar's show/hide changes effective viewport height). 100vh on
+      // iOS measures against the URL-bar-hidden viewport, which
+      // makes the layout taller than what's actually visible and
+      // pushes the sticky header above the visible area when the
+      // URL bar is showing.
+      minHeight: '100dvh',
       background: 'var(--bg)',
       display: 'flex',
       flexDirection: 'column',

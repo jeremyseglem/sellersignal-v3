@@ -57,21 +57,25 @@
 
 @media (max-width: 767px) {
   .overlay {
-    /* Card pins to the top — match the flex alignment to that. */
-    align-items: flex-start;
-    padding: 8px;
+    /* Full bleed on mobile — no dim margin around the card.
+       The card pinned to top + full width / height matches the
+       iOS native sheet pattern (Settings, Mail, etc.). */
+    align-items: stretch;
+    padding: 0;
   }
 
   .card {
     /* dvh = dynamic viewport height. Tracks the visible area as
-       the iOS URL bar shows/hides. With align-items: flex-start
-       above, the card sits at the top of the visible viewport
-       and stays under the system status bar instead of being
-       centered against an inaccurate measurement. */
+       the iOS URL bar shows/hides. With align-items: stretch above,
+       the card fills the entire visible viewport so the agent
+       can use full screen real estate for the letter body. */
     max-height: 100dvh;
-    /* Slight rounding loss but keeps the card touching the screen
-       edges so the agent doesn't perceive wasted space. */
-    border-radius: 8px;
+    /* No rounded corners — card edges meet screen edges. */
+    border-radius: 0;
+    /* Pin the card to the visible viewport's full height so the
+       footer (with Send buttons) is anchored at the bottom and
+       the header (with close X) at the top. */
+    height: 100dvh;
   }
 
   .tabStrip {

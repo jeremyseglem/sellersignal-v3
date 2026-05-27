@@ -25,7 +25,11 @@
   display: grid;
   grid-template-columns: 420px 1fr;
   grid-template-rows: 1fr;
-  height: calc(100vh - 56px);
+  /* 100dvh tracks the visible viewport on iOS Safari. With 100vh
+     the container was sized against the URL-bar-hidden viewport,
+     making the layout taller than visible and pushing the sticky
+     header off the top when the URL bar showed. */
+  height: calc(100dvh - 56px);
   overflow: hidden;
 }
 

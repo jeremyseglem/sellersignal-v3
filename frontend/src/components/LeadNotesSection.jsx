@@ -296,7 +296,12 @@ const textareaStyle = {
   width: '100%',
   padding: 8,
   fontFamily: 'var(--font-serif)',
-  fontSize: 13,
+  // iOS Safari auto-zooms when an input is focused with font-size
+  // below 16px. The zoom scales the page wider than the viewport,
+  // which made the dossier visually overflow off the right edge
+  // when the agent tapped this textarea. 16px is the smallest
+  // font-size iOS leaves alone.
+  fontSize: 16,
   lineHeight: 1.5,
   color: 'var(--text)',
   background: 'var(--bg-card)',
