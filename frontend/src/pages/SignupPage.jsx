@@ -99,9 +99,8 @@ export default function SignupPage() {
           lineHeight: 1.6,
           marginBottom: 'var(--space-xl)',
         }}>
-          One agent per ZIP. Create your account, pick an available
-          territory, and check out at $299/month with a 3-month
-          commitment. Cancel anytime from your profile.
+          One Agent Per ZIP. Hundreds of leads exclusively yours.
+          $299/month, 3-month commitment.
         </p>
 
         {!authLoading && !isConfigured && (
