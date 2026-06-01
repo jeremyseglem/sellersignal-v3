@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { territory, safeErrorMessage } from '../api/client.js';
+import { territory, billing, safeErrorMessage } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import TerritoryMap from '../components/territories/TerritoryMap.jsx';
@@ -43,17 +43,32 @@ export default function TerritoriesPage() {
     setClaiming(true);
     setClaimError(null);
     try {
-      await territory.claim(claimModal.zip_code);
-      await refreshProfile();
-      const fresh = await territory.status();
-      setData(fresh);
-      setClaimModal(null);
-      navigate(`/zip/${claimModal.zip_code}`);
+      // Stripe Checkout path: backend creates a Checkout Session and
+      // returns its URL. We redirect the whole window to Stripe; agent
+      // completes payment there and Stripe redirects back to our
+      // success_path (/zip/{zip}?welcome=1) once done. The territory
+      // itself is provisioned by the subscription.created webhook, not
+      // by this client call — so by the time the agent lands on the
+      // briefing page their assigned_zip is already set.
+      //
+      // The bypass-claim endpoint (/agent/claim-zip) is no longer
+      // called from here. It still works for beta agents who already
+      // hold territories, and for admin/operator workflows, but it's
+      // off the agent-facing critical path.
+      const { checkout_url } = await billing.createCheckout(claimModal.zip_code);
+      if (!checkout_url) {
+        throw new Error('No checkout URL returned from server');
+      }
+      // Full-page redirect — Stripe Checkout is a hosted page on
+      // stripe.com, not an embedded element. window.location.href
+      // preserves history so the agent can hit back to cancel.
+      window.location.href = checkout_url;
     } catch (e) {
-      setClaimError(safeErrorMessage(e, 'Claim failed'));
-    } finally {
+      setClaimError(safeErrorMessage(e, 'Could not start checkout'));
       setClaiming(false);
     }
+    // Don't setClaiming(false) on success — we're redirecting away
+    // and the modal will unmount when the page navigates.
   }
 
   return (

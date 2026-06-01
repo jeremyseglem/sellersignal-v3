@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { getAccessToken } from '../lib/supabase.js';
+import { billing, safeErrorMessage } from '../api/client.js';
 
 // ProfilePage — agent-editable profile form. Fields drive both the
 // authenticated header (full_name) and Session 4 letter automation
@@ -157,6 +158,8 @@ export default function ProfilePage() {
         </Section>
 
         <VoiceSection profile={profile} />
+
+        <BillingSection profile={profile} />
 
         <div style={{
           display: 'flex',
@@ -357,6 +360,109 @@ function VoiceSection({ profile }) {
           </span>
         )}
       </div>
+    </section>
+  );
+}
+
+
+// ── Billing section ─────────────────────────────────────────────
+// Surfaces the Stripe Customer Portal link for paid agents. Only
+// renders when the agent has a Stripe customer on file — beta agents
+// (bypass-claimed, never paid) and operators (no territory of their
+// own) have no portal to manage and don't see this section at all.
+//
+// The portal handles card updates, invoice history, and cancellation.
+// Cancellation from the portal fires customer.subscription.deleted
+// which our webhook catches to release the ZIP immediately.
+function BillingSection({ profile }) {
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Operators and beta agents — no portal access. Render nothing
+  // rather than a disabled button to keep the page free of UI for
+  // features the user can't use.
+  if (!profile?.stripe_customer_id) {
+    return null;
+  }
+
+  async function openPortal() {
+    setOpening(true);
+    setError(null);
+    try {
+      const { portal_url } = await billing.portalLink('/profile');
+      if (!portal_url) {
+        throw new Error('No portal URL returned');
+      }
+      // Full-page navigation — same pattern as Checkout. Stripe's
+      // portal lives on stripe.com and ends with a return_url back
+      // to /profile.
+      window.location.href = portal_url;
+    } catch (e) {
+      setError(safeErrorMessage(e, 'Could not open billing portal'));
+      setOpening(false);
+    }
+  }
+
+  return (
+    <section style={{
+      marginBottom: 'var(--space-xl)',
+      paddingBottom: 'var(--space-xl)',
+      borderBottom: '1px solid var(--border)',
+    }}>
+      <h2 style={{
+        fontFamily: 'var(--font-display)',
+        fontSize: 20,
+        fontWeight: 600,
+        color: 'var(--text)',
+        marginBottom: 'var(--space-sm)',
+      }}>
+        Subscription
+      </h2>
+      <p style={{
+        fontFamily: 'var(--font-serif)',
+        fontSize: 14,
+        color: 'var(--text-secondary)',
+        marginBottom: 'var(--space-md)',
+        fontStyle: 'italic',
+      }}>
+        Manage your payment method, view invoices, or cancel your
+        territory subscription. Cancellation releases your ZIP
+        immediately.
+      </p>
+
+      {error && (
+        <div style={{
+          marginBottom: 'var(--space-md)',
+          padding: '12px 14px',
+          background: 'var(--call-now-bg)',
+          color: 'var(--call-now)',
+          borderRadius: 'var(--radius-sm)',
+          fontSize: 13,
+          fontFamily: 'var(--font-sans)',
+        }}>
+          {error}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={openPortal}
+        disabled={opening}
+        style={{
+          padding: '10px 20px',
+          fontSize: 13,
+          fontWeight: 600,
+          fontFamily: 'var(--font-sans)',
+          color: 'var(--text)',
+          background: 'transparent',
+          border: '1px solid var(--border-strong, var(--border))',
+          borderRadius: 'var(--radius-md)',
+          cursor: opening ? 'not-allowed' : 'pointer',
+          opacity: opening ? 0.6 : 1,
+        }}
+      >
+        {opening ? 'Opening…' : 'Manage subscription →'}
+      </button>
     </section>
   );
 }

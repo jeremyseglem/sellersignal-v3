@@ -422,6 +422,45 @@ export const territory = {
 };
 
 
+// ── Billing / Stripe subscriptions ────────────────────────────────
+// Territory subscriptions are $299/month with a 90-day commitment
+// (3 monthly charges, then auto-cancel unless the agent renews).
+// Renewal opens 30 days before commitment end and extends cancel_at
+// by another 90 days.
+//
+// The bypass-claim path at /agent/claim-zip still exists for beta
+// agents and admin use — but the agent-facing flow now goes through
+// Stripe Checkout via createCheckout below.
+
+export const billing = {
+  /**
+   * Create a Stripe Checkout Session for a territory subscription.
+   * Returns { checkout_url } — frontend should redirect window.location
+   * to it. Throws if ZIP isn't live, agent already has a territory, or
+   * ZIP is already claimed.
+   */
+  createCheckout: (zip_code, opts = {}) => authedRequest('/billing/create-checkout', {
+    method: 'POST',
+    body: JSON.stringify({
+      zip_code,
+      success_path: opts.success_path,
+      cancel_path: opts.cancel_path,
+    }),
+  }),
+
+  /**
+   * Open the Stripe Customer Portal for subscription management
+   * (update card, view invoices, cancel). Returns { portal_url }.
+   * Throws 404 if the agent has no Stripe customer on file (beta agents
+   * and operators don't — only paid agents who completed checkout).
+   */
+  portalLink: (return_path) => authedRequest('/billing/portal-link', {
+    method: 'POST',
+    body: JSON.stringify({ return_path }),
+  }),
+};
+
+
 // ── Letters / Lob integration ────────────────────────────────────
 // Direct-mail letter sending via Lob, plus print-to-PDF and balance
 // management. Pricing in cents:
