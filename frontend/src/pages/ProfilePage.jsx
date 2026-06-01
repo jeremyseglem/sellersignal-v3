@@ -142,9 +142,9 @@ export default function ProfilePage() {
 
       <form onSubmit={handleSave}>
         <Section title="Identity">
-          <Field label="Full name"      value={form.full_name}      onChange={change('full_name')}      placeholder="Jeremy Seglem" />
-          <Field label="Phone"          value={form.phone}          onChange={change('phone')}          placeholder="(406) 555-1234" />
-          <Field label="Brokerage"      value={form.brokerage}      onChange={change('brokerage')}      placeholder="The Agency · Bozeman" />
+          <Field label="Full name"      value={form.full_name}      onChange={change('full_name')}      placeholder="Alex Morgan" />
+          <Field label="Phone"          value={form.phone}          onChange={change('phone')}          placeholder="(206) 555-0142" />
+          <Field label="Brokerage"      value={form.brokerage}      onChange={change('brokerage')}      placeholder="Compass · Bellevue" />
           <Row>
             <Field label="License number" value={form.license_number} onChange={change('license_number')} placeholder="123456789" />
             <Field label="License state"  value={form.license_state}  onChange={change('license_state')}  placeholder="WA" maxLength={4} />
