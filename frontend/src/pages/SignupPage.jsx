@@ -12,17 +12,18 @@ import { useAuth } from '../lib/AuthContext.jsx';
 //
 // "Confirm email" is DISABLED in the Supabase Auth dashboard, so
 // signUp returns a session immediately. The user lands on
-// /territories signed in — empty until an admin assigns them a ZIP.
+// /territories signed in — empty until they claim a ZIP via the
+// Stripe Checkout flow (POST /api/billing/create-checkout).
 //
 // Account creation is permissive (anyone with an email can sign up)
-// because beta is invite-only at the ZIP-assignment layer rather
-// than at the account-creation layer. Creating an account does not
-// give anyone access to data.
+// because territory access is gated by payment at the claim step, not
+// at the account-creation layer. Creating an account does not give
+// anyone access to data.
 //
 // Once Supabase Auth inserts the new auth.users row, the database
 // trigger create_agent_profile_on_signup creates the matching
-// agent_profiles_v3 row (same path as the previous magic-link flow,
-// so nothing schema-side needs to change).
+// agent_profiles_v3 row. The signup trigger also auto-promotes Jeremy
+// and Brian's emails to role='operator' (migration 016).
 export default function SignupPage() {
   const { isConfigured, loading: authLoading } = useAuth();
   const navigate = useNavigate();
@@ -89,7 +90,7 @@ export default function SignupPage() {
           marginBottom: 'var(--space-md)',
           letterSpacing: '-0.01em',
         }}>
-          Request access
+          Claim your territory
         </h1>
         <p style={{
           fontFamily: 'var(--font-serif)',
@@ -98,9 +99,9 @@ export default function SignupPage() {
           lineHeight: 1.6,
           marginBottom: 'var(--space-xl)',
         }}>
-          Beta is invite-only with one agent per ZIP. Create your
-          account below — a member of the team will assign your
-          territory.
+          One agent per ZIP. Create your account, pick an available
+          territory, and check out at $299/month with a 3-month
+          commitment. Cancel anytime from your profile.
         </p>
 
         {!authLoading && !isConfigured && (

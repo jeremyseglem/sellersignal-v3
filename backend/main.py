@@ -97,6 +97,15 @@ async def lifespan(app: FastAPI):
     from backend.tasks.snohomish_daily_autofill import snohomish_daily_autofill_loop
     snohomish_daily_autofill_task = asyncio.create_task(snohomish_daily_autofill_loop())
 
+    # Renewal notifier — daily tick. Finds active subscriptions whose
+    # 90-day commitment (cancel_at) is approaching at T-30, T-7, T-1 days
+    # and emails the agent via Resend. Idempotent per (territory, window)
+    # via the renewal_notified_*_at columns on agent_territories_v3.
+    # No-op if RESEND_API_KEY isn't set; loop still runs so env updates
+    # take effect without a redeploy. See backend/tasks/renewal_notifier.py.
+    from backend.tasks.renewal_notifier import renewal_notifier_loop
+    renewal_notifier_task = asyncio.create_task(renewal_notifier_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
@@ -107,6 +116,7 @@ async def lifespan(app: FastAPI):
     snohomish_tenure_autofill_task.cancel()
     canonicalize_autofill_task.cancel()
     snohomish_daily_autofill_task.cancel()
+    renewal_notifier_task.cancel()
     try:
         await autofill_task
     except asyncio.CancelledError:

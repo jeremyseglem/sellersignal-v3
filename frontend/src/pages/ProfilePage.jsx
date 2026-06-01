@@ -366,21 +366,53 @@ function VoiceSection({ profile }) {
 
 
 // ── Billing section ─────────────────────────────────────────────
-// Surfaces the Stripe Customer Portal link for paid agents. Only
-// renders when the agent has a Stripe customer on file — beta agents
-// (bypass-claimed, never paid) and operators (no territory of their
-// own) have no portal to manage and don't see this section at all.
+// Surfaces subscription state + actions for paid agents. Only renders
+// when the agent has a Stripe customer on file — beta agents (no
+// stripe_customer_id) and operators see no Subscription section.
 //
-// The portal handles card updates, invoice history, and cancellation.
-// Cancellation from the portal fires customer.subscription.deleted
-// which our webhook catches to release the ZIP immediately.
+// Shows:
+//   • Next billing date (from Stripe current_period_end)
+//   • Commitment end date (cancel_at)
+//   • "Renew for another 3 months" button — visible only when within
+//     30 days of commitment end, per backend's eligibility check
+//   • "Manage subscription →" link to Stripe Customer Portal
+//
+// Renewal opens at T-30 and stays open until T-0. Outside that window
+// the Renew button is hidden (not just disabled — surfacing a button
+// the agent can't use today is just noise). The next-billing line is
+// always visible so the agent knows the subscription is healthy.
 function BillingSection({ profile }) {
   const [opening, setOpening] = useState(false);
+  const [renewing, setRenewing] = useState(false);
   const [error, setError] = useState(null);
+  const [status, setStatus] = useState(null);  // backend subscription-status payload
+  const [statusLoading, setStatusLoading] = useState(true);
+
+  // Fetch subscription status on mount. Beta agents (no stripe_customer_id)
+  // never reach this fetch — the early return below short-circuits before
+  // the effect runs. For paid agents the status drives the renew button.
+  useEffect(() => {
+    if (!profile?.stripe_customer_id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await billing.subscriptionStatus();
+        if (!cancelled) setStatus(s);
+      } catch (e) {
+        if (!cancelled) {
+          // Non-fatal — we can still show the Manage Subscription button
+          // even without status. The Renew button just stays hidden.
+          console.warn('subscription status fetch failed:', e);
+        }
+      } finally {
+        if (!cancelled) setStatusLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [profile?.stripe_customer_id]);
 
   // Operators and beta agents — no portal access. Render nothing
-  // rather than a disabled button to keep the page free of UI for
-  // features the user can't use.
+  // rather than a disabled section.
   if (!profile?.stripe_customer_id) {
     return null;
   }
@@ -390,18 +422,42 @@ function BillingSection({ profile }) {
     setError(null);
     try {
       const { portal_url } = await billing.portalLink('/profile');
-      if (!portal_url) {
-        throw new Error('No portal URL returned');
-      }
-      // Full-page navigation — same pattern as Checkout. Stripe's
-      // portal lives on stripe.com and ends with a return_url back
-      // to /profile.
+      if (!portal_url) throw new Error('No portal URL returned');
       window.location.href = portal_url;
     } catch (e) {
       setError(safeErrorMessage(e, 'Could not open billing portal'));
       setOpening(false);
     }
   }
+
+  async function handleRenew() {
+    setRenewing(true);
+    setError(null);
+    try {
+      const result = await billing.renew();
+      if (!result?.renewed) throw new Error('Renewal did not complete');
+      // Refresh the status to reflect the new cancel_at.
+      const fresh = await billing.subscriptionStatus();
+      setStatus(fresh);
+    } catch (e) {
+      setError(safeErrorMessage(e, 'Could not renew subscription'));
+    } finally {
+      setRenewing(false);
+    }
+  }
+
+  // Format unix timestamps as friendly dates.
+  function formatTs(unix) {
+    if (!unix) return null;
+    return new Date(unix * 1000).toLocaleDateString(undefined, {
+      year: 'numeric', month: 'long', day: 'numeric',
+    });
+  }
+
+  const nextBillingDate = formatTs(status?.current_period_end);
+  const commitmentEndDate = formatTs(status?.cancel_at);
+  const showRenew = status?.eligible_for_renewal === true;
+  const daysLeft = status?.days_until_cancel;
 
   return (
     <section style={{
@@ -418,17 +474,44 @@ function BillingSection({ profile }) {
       }}>
         Subscription
       </h2>
-      <p style={{
-        fontFamily: 'var(--font-serif)',
-        fontSize: 14,
-        color: 'var(--text-secondary)',
-        marginBottom: 'var(--space-md)',
-        fontStyle: 'italic',
-      }}>
-        Manage your payment method, view invoices, or cancel your
-        territory subscription. Cancellation releases your ZIP
-        immediately.
-      </p>
+
+      {/* Status summary — always shown when we have data */}
+      {!statusLoading && status?.has_subscription && (
+        <div style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 14,
+          color: 'var(--text-secondary)',
+          marginBottom: 'var(--space-md)',
+          lineHeight: 1.7,
+        }}>
+          <div>
+            <span style={{ color: 'var(--text-tertiary)' }}>Territory:</span>{' '}
+            <span style={{ color: 'var(--text)' }}>{status.zip_code}</span>
+          </div>
+          {nextBillingDate && (
+            <div>
+              <span style={{ color: 'var(--text-tertiary)' }}>Next billing:</span>{' '}
+              <span style={{ color: 'var(--text)' }}>{nextBillingDate}</span>
+            </div>
+          )}
+          {commitmentEndDate && (
+            <div>
+              <span style={{ color: 'var(--text-tertiary)' }}>Commitment ends:</span>{' '}
+              <span style={{ color: 'var(--text)' }}>{commitmentEndDate}</span>
+              {typeof daysLeft === 'number' && daysLeft >= 0 && (
+                <span style={{
+                  color: showRenew ? 'var(--accent)' : 'var(--text-tertiary)',
+                  fontStyle: 'italic',
+                  marginLeft: 8,
+                  fontSize: 13,
+                }}>
+                  ({daysLeft} {daysLeft === 1 ? 'day' : 'days'} left)
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div style={{
@@ -443,6 +526,59 @@ function BillingSection({ profile }) {
           {error}
         </div>
       )}
+
+      {/* Renewal CTA — visible only inside the 30-day window */}
+      {showRenew && (
+        <div style={{
+          padding: 'var(--space-md)',
+          background: 'var(--accent-tint, rgba(140, 109, 58, 0.08))',
+          borderRadius: 'var(--radius-md)',
+          marginBottom: 'var(--space-md)',
+        }}>
+          <p style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 14,
+            color: 'var(--text)',
+            margin: '0 0 var(--space-sm) 0',
+            lineHeight: 1.5,
+          }}>
+            Your commitment ends in {daysLeft} {daysLeft === 1 ? 'day' : 'days'}.
+            Renew now to extend your exclusive access to {status.zip_code} by
+            another 3 months. You&rsquo;ll continue to be billed monthly &mdash;
+            no upfront charge for the extension.
+          </p>
+          <button
+            type="button"
+            onClick={handleRenew}
+            disabled={renewing}
+            style={{
+              padding: '10px 20px',
+              fontSize: 13,
+              fontWeight: 600,
+              fontFamily: 'var(--font-sans)',
+              color: 'var(--text-inverse)',
+              background: renewing ? 'var(--text-tertiary)' : 'var(--accent)',
+              border: 'none',
+              borderRadius: 'var(--radius-md)',
+              cursor: renewing ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {renewing ? 'Renewing…' : `Renew ${status.zip_code} for 3 more months`}
+          </button>
+        </div>
+      )}
+
+      <p style={{
+        fontFamily: 'var(--font-serif)',
+        fontSize: 13,
+        color: 'var(--text-tertiary)',
+        marginBottom: 'var(--space-md)',
+        fontStyle: 'italic',
+      }}>
+        Manage your payment method, view invoices, or cancel your
+        territory subscription. Cancellation releases your ZIP
+        immediately.
+      </p>
 
       <button
         type="button"

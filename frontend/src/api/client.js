@@ -458,6 +458,25 @@ export const billing = {
     method: 'POST',
     body: JSON.stringify({ return_path }),
   }),
+
+  /**
+   * Returns the agent's current subscription state. Used by ProfilePage
+   * to show next-billing-date and decide whether to surface the Renew
+   * button (only visible when within 30 days of cancel_at).
+   * Response: { has_subscription, zip_code, status, current_period_end,
+   *             cancel_at, days_until_cancel, eligible_for_renewal }
+   */
+  subscriptionStatus: () => authedRequest('/billing/subscription-status'),
+
+  /**
+   * Extend the agent's commitment by another 90 days. Backend enforces
+   * the 30-day eligibility window. Returns { renewed, zip_code,
+   * new_cancel_at }.
+   */
+  renew: () => authedRequest('/billing/renew', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }),
 };
 
 

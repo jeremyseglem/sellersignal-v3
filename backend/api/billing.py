@@ -45,6 +45,7 @@ the new flow in the next slice, /claim-zip will become legacy/admin-only.
 from __future__ import annotations
 
 import os
+import time
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -311,6 +312,204 @@ async def portal_link(
         raise HTTPException(502, f"Stripe error: {e.user_message or str(e)}")
 
     return {"portal_url": url}
+
+
+@router.get("/subscription-status")
+async def subscription_status(authorization: Optional[str] = Header(None)):
+    """
+    Returns the agent's current subscription state. Used by the frontend
+    to render next-billing-date and conditionally show the Renew button
+    (visible only when within the 30-day renewal window).
+
+    Response shape:
+      {
+        has_subscription: bool,
+        zip_code: string | null,
+        status: string | null,             # 'active' | 'past_due' | etc.
+        current_period_end: int | null,    # unix ts of next charge
+        cancel_at: int | null,             # unix ts of commitment end
+        days_until_cancel: int | null,
+        eligible_for_renewal: bool,        # true when cancel_at <= 30d away
+      }
+
+    Operators and beta agents return has_subscription=false.
+    """
+    user = _user_from_authorization(authorization)
+    profile = _load_profile(user.id)
+
+    customer_id = profile.get("stripe_customer_id")
+    if not customer_id or profile.get("role") == "operator":
+        return {
+            "has_subscription": False,
+            "zip_code": profile.get("assigned_zip"),
+            "status": None,
+            "current_period_end": None,
+            "cancel_at": None,
+            "days_until_cancel": None,
+            "eligible_for_renewal": False,
+        }
+
+    # Find the active territory + subscription id from our DB. We could
+    # query Stripe by customer, but the DB row is the source of truth for
+    # which subscription is currently provisioning the agent's ZIP.
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Database unavailable")
+
+    res = (
+        supa.table("agent_territories_v3")
+            .select("zip_code, stripe_subscription_id")
+            .eq("agent_id", user.id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+    )
+    if not res.data or not res.data[0].get("stripe_subscription_id"):
+        return {
+            "has_subscription": False,
+            "zip_code": profile.get("assigned_zip"),
+            "status": None,
+            "current_period_end": None,
+            "cancel_at": None,
+            "days_until_cancel": None,
+            "eligible_for_renewal": False,
+        }
+
+    territory = res.data[0]
+    sub_id = territory["stripe_subscription_id"]
+
+    try:
+        # Configure SDK lazily (mirrors stripe_service pattern) and pull
+        # the subscription. current_period_end and cancel_at are unix
+        # timestamps on the Stripe object.
+        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+        sub = stripe.Subscription.retrieve(sub_id)
+    except KeyError:
+        raise HTTPException(503, "Billing not configured")
+    except stripe.error.StripeError as e:
+        log.exception("Stripe error fetching sub %s", sub_id)
+        raise HTTPException(502, f"Stripe error: {e.user_message or str(e)}")
+
+    cancel_at = sub.cancel_at
+    current_period_end = (
+        sub["items"]["data"][0]["current_period_end"]
+        if sub["items"]["data"] else None
+    )
+
+    now_ts = int(time.time())
+    days_until_cancel = (
+        (cancel_at - now_ts) // 86400 if cancel_at else None
+    )
+    eligible = (days_until_cancel is not None and 0 <= days_until_cancel <= 30)
+
+    return {
+        "has_subscription": True,
+        "zip_code": territory["zip_code"],
+        "status": sub.status,
+        "current_period_end": current_period_end,
+        "cancel_at": cancel_at,
+        "days_until_cancel": days_until_cancel,
+        "eligible_for_renewal": eligible,
+    }
+
+
+@router.post("/renew")
+async def renew(authorization: Optional[str] = Header(None)):
+    """
+    Extend the agent's active subscription commitment by another 90 days.
+    Only callable when the subscription's cancel_at is within the renewal
+    window (<= 30 days away). Outside that window, returns 400 — agents
+    can't stack renewals indefinitely in advance.
+
+    After successful extension, resets all three renewal_notified_* columns
+    on the territory row so the next cycle's reminder emails can fire.
+    """
+    user = _user_from_authorization(authorization)
+    profile = _load_profile(user.id)
+
+    if profile.get("role") == "operator":
+        raise HTTPException(400, "Operators do not have territory subscriptions to renew.")
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Database unavailable")
+
+    res = (
+        supa.table("agent_territories_v3")
+            .select("id, zip_code, stripe_subscription_id")
+            .eq("agent_id", user.id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+    )
+    if not res.data or not res.data[0].get("stripe_subscription_id"):
+        raise HTTPException(404, "No active subscription to renew.")
+
+    territory = res.data[0]
+    sub_id = territory["stripe_subscription_id"]
+
+    # Window check — only renew when cancel_at is <= 30 days away.
+    try:
+        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+        sub = stripe.Subscription.retrieve(sub_id)
+    except stripe.error.StripeError as e:
+        log.exception("Stripe error fetching sub %s for renewal", sub_id)
+        raise HTTPException(502, f"Stripe error: {e.user_message or str(e)}")
+
+    cancel_at = sub.cancel_at
+    if not cancel_at:
+        raise HTTPException(
+            400,
+            "Subscription has no commitment end date; cannot renew.",
+        )
+
+    days_until = (cancel_at - int(time.time())) // 86400
+    if days_until > 30:
+        raise HTTPException(
+            400,
+            f"Renewal opens 30 days before your commitment ends. "
+            f"You can renew in {days_until - 30} days.",
+        )
+    if days_until < 0:
+        raise HTTPException(
+            400,
+            "Your subscription has already ended. Claim a fresh territory instead.",
+        )
+
+    # Extend the commitment by 90 days via Stripe.
+    try:
+        updated_sub = stripe_service.extend_subscription_commitment(sub_id)
+    except stripe.error.StripeError as e:
+        log.exception("Stripe error extending sub %s", sub_id)
+        raise HTTPException(502, f"Stripe error: {e.user_message or str(e)}")
+
+    # Reset notification columns so the next cycle's reminders can fire.
+    try:
+        supa.table("agent_territories_v3").update({
+            "renewal_notified_30d_at": None,
+            "renewal_notified_7d_at":  None,
+            "renewal_notified_1d_at":  None,
+        }).eq("id", territory["id"]).execute()
+    except Exception:
+        # Non-fatal — the Stripe side is the source of truth for cancel_at.
+        # Worst case the next cycle's reminders don't fire and we catch
+        # it manually. Logged for visibility.
+        log.exception(
+            "[renew] Stripe extension succeeded for sub %s but failed "
+            "to reset notification columns",
+            sub_id,
+        )
+
+    log.info(
+        "[renew] Extended sub %s for user %s (zip %s) — new cancel_at=%s",
+        sub_id, user.id, territory["zip_code"], updated_sub.cancel_at,
+    )
+
+    return {
+        "renewed": True,
+        "zip_code": territory["zip_code"],
+        "new_cancel_at": updated_sub.cancel_at,
+    }
 
 
 # ── Webhook handlers ─────────────────────────────────────────────────
