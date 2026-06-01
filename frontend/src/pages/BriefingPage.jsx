@@ -80,24 +80,108 @@ function BriefingBody() {
   const { zip } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { profile } = useAuth();
+  const { profile, refreshProfile } = useAuth();
+
+  // Stripe Checkout returns the agent here with ?welcome=1 right after
+  // payment completes. Provisioning is async — the customer.subscription.
+  // created webhook fires shortly after the redirect, sets the agent's
+  // assigned_zip, and inserts the territory row. The local profile in
+  // useAuth was loaded BEFORE checkout, so it's stale on arrival.
+  //
+  // While provisioning is in flight, we show a 'Provisioning your
+  // territory…' screen and poll refreshProfile every 1.5s until the
+  // assigned_zip lands. After 30s with no match we give up and show
+  // an actionable error.
+  const [provisioning, setProvisioning] = useState(false);
+  const [provisioningError, setProvisioningError] = useState(null);
 
   // ── Territory gate ────────────────────────────────────────────
   // Non-operator agents may only view their assigned_zip. Anyone
   // else gets redirected — to their assigned ZIP if they have one,
   // or to /territories to claim. Operators bypass entirely.
+  //
+  // ENTERING WITH ?welcome=1 is the post-Checkout case — don't bounce
+  // away while the webhook is still landing the assigned_zip.
   useEffect(() => {
     if (!profile) return;  // wait for profile to load
     if (profile.role === 'operator') return;
+
+    const isWelcomeLanding = searchParams.get('welcome') === '1';
+
     if (profile.assigned_zip && profile.assigned_zip !== zip) {
+      // Edge case: agent has a different territory than what they're
+      // viewing. Send them home. Doesn't fire on the welcome path
+      // because assigned_zip would equal zip after provisioning.
       navigate(`/zip/${profile.assigned_zip}`, { replace: true });
       return;
     }
+
     if (!profile.assigned_zip) {
+      if (isWelcomeLanding) {
+        // Post-Checkout race — start polling rather than bouncing.
+        // The poll effect below handles the rest.
+        setProvisioning(true);
+        return;
+      }
       navigate('/territories', { replace: true });
       return;
     }
-  }, [profile, zip, navigate]);
+
+    // assigned_zip matches zip — we're good. Clear any provisioning
+    // state and drop the welcome param so a refresh doesn't re-enter
+    // the polling path.
+    if (provisioning) {
+      setProvisioning(false);
+    }
+    if (isWelcomeLanding) {
+      // Remove ?welcome=1 from the URL without adding a history entry.
+      const next = new URLSearchParams(searchParams);
+      next.delete('welcome');
+      setSearchParams(next, { replace: true });
+    }
+  }, [profile, zip, navigate, searchParams, setSearchParams, provisioning]);
+
+  // Poll the profile while provisioning is true. Every 1.5s we call
+  // refreshProfile() which re-fetches /api/profile. As soon as the
+  // webhook has set assigned_zip on the row, the next poll picks it
+  // up and the territory-gate effect above clears the provisioning
+  // state.
+  useEffect(() => {
+    if (!provisioning) return;
+
+    let cancelled = false;
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 30_000;
+    const POLL_MS = 1500;
+
+    async function tick() {
+      if (cancelled) return;
+      if (Date.now() - startedAt > TIMEOUT_MS) {
+        setProvisioning(false);
+        setProvisioningError(
+          'Your payment was accepted but the territory hasn\u2019t finished '
+          + 'provisioning. Refresh the page in a few seconds, or contact '
+          + 'support if it still doesn\u2019t appear.'
+        );
+        return;
+      }
+      try {
+        await refreshProfile();
+      } catch {
+        // Ignore single-poll failures; next tick retries.
+      }
+      if (cancelled) return;
+      setTimeout(tick, POLL_MS);
+    }
+
+    // First poll fires immediately — webhook is often done by the time
+    // the redirect lands, so we don't need to wait for the first tick.
+    tick();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [provisioning, refreshProfile]);
 
   const [briefing, setBriefing] = useState(null);
   const [mapData, setMapData]   = useState(null);
@@ -400,6 +484,89 @@ function BriefingBody() {
    ?? stats?.parcel_count
    ?? mapData?.parcels?.length
    ?? 0;
+
+  // Post-Checkout provisioning screen. Renders for the 1-5 seconds
+  // between Stripe redirecting the agent here and the
+  // subscription.created webhook setting their assigned_zip in the
+  // database. The polling effect above ticks refreshProfile() until
+  // the profile updates, then this branch disappears.
+  //
+  // Takes precedence over the error branch so a transient 403 from
+  // the briefing endpoint during the race doesn't surface as the
+  // misleading "{zip} isn't available" message.
+  if (provisioning) {
+    return (
+      <div style={{
+        padding: 'var(--space-xl)',
+        maxWidth: 520,
+        margin: '0 auto',
+        textAlign: 'center',
+        paddingTop: '20vh',
+      }}>
+        <div style={{
+          fontFamily: 'var(--font-sans)',
+          fontSize: 11,
+          letterSpacing: '0.14em',
+          textTransform: 'uppercase',
+          color: 'var(--accent)',
+          fontWeight: 600,
+          marginBottom: 'var(--space-md)',
+        }}>
+          Payment received
+        </div>
+        <h2 style={{
+          fontFamily: 'var(--font-display)',
+          fontSize: 28,
+          fontWeight: 600,
+          color: 'var(--text)',
+          marginBottom: 'var(--space-md)',
+        }}>
+          Provisioning your territory&hellip;
+        </h2>
+        <p style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 15,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.6,
+          fontStyle: 'italic',
+        }}>
+          Setting up {zip} for you. This usually takes just a few
+          seconds &mdash; the page will update automatically.
+        </p>
+      </div>
+    );
+  }
+
+  if (provisioningError) {
+    return (
+      <div style={{ padding: 'var(--space-xl)', maxWidth: 720, margin: '0 auto' }}>
+        <h2 style={{ marginTop: 'var(--space-md)', fontFamily: 'var(--font-display)' }}>
+          Provisioning took longer than expected
+        </h2>
+        <p style={{ color: 'var(--text-secondary)', marginTop: 'var(--space-sm)' }}>
+          {provisioningError}
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          style={{
+            marginTop: 'var(--space-md)',
+            padding: '10px 20px',
+            fontSize: 13,
+            fontWeight: 600,
+            fontFamily: 'var(--font-sans)',
+            color: 'var(--text-inverse)',
+            background: 'var(--accent)',
+            border: 'none',
+            borderRadius: 'var(--radius-md)',
+            cursor: 'pointer',
+          }}
+        >
+          Refresh
+        </button>
+      </div>
+    );
+  }
 
   if (error) {
     return (
