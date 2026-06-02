@@ -175,7 +175,6 @@ def render_letter_html(
     Returns a complete <html>...</html> document. The result fits on
     a single 8.5x11 page; if content overflows, the print provider
     will auto-paginate and bill extra postage at the per-sheet rate.
-    We size content to fit one sheet.
 
     Args:
       no_recipient_block:
@@ -191,10 +190,27 @@ def render_letter_html(
       no_recipient_block=True — the print provider needs them
       separately as structured data to do their own overlay, and the
       caller (backend/api/letters.py) reads them from the same kwargs.
-    """
-    logo_uri = _load_logo_data_uri(logo_path)
-    signature_uri = _fetch_signature_data_uri(agent_signature_url)
 
+    Rendering note: this function targets xhtml2pdf (see
+    backend/services/letter_pdf_renderer.py). xhtml2pdf has limited
+    CSS selector support and adds aggressive default vertical spacing
+    when you use class-scoped paragraph rules. We render the letter
+    as a flat tree of element-selected `<p>` and `<div>` nodes with
+    element-level CSS rules — no .page wrapper, no .body / .header /
+    .signature-block containers. Margins via @page rule rather than
+    div padding so xhtml2pdf doesn't double-count.
+
+    Logo rendering: we previously embedded the agency SVG logo as a
+    data URI. xhtml2pdf's SVG backend renders SVGs poorly. The logo
+    is now omitted — to bring it back, pre-render to PNG and embed
+    that. Tracked as a follow-up.
+    """
+    body_html = _format_body_paragraphs(body)
+
+    # Build the recipient block as a `<p>` element. Used only when the
+    # caller wants the address embedded in the page (preview + PDF
+    # download paths). Stannp's mail-merge path passes no_recipient_block=
+    # True and skips this entirely.
     if no_recipient_block:
         recipient_block_html = ""
     else:
@@ -207,41 +223,20 @@ def render_letter_html(
             recipient_zip,
         )
         recipient_block_html = (
-            f'<div class="recipient-block">{recipient_lines}</div>'
+            f'<p style="margin-top:0; margin-bottom:18pt;">{recipient_lines}</p>'
         )
 
-    body_html = _format_body_paragraphs(body)
-
-    # Logo rendering — small block at top-right. We use width:1in to
-    # leave the address window area clear. If logo is missing, the
-    # space stays empty (no broken-image icon).
-    logo_html = (
-        f'<img src="{logo_uri}" alt="" style="width:1in;height:1in;'
-        f'display:block;" />'
-        if logo_uri else ""
+    # Signature line — italic Georgia per the brand. xhtml2pdf doesn't
+    # do raster signature images well either (they render but at low
+    # fidelity); the italic-name fallback prints cleanly.
+    signature_html = (
+        f'<p style="margin-top:14pt; margin-bottom:0; '
+        f'font-style:italic; font-size:14pt;">'
+        f'{escape(agent_full_name)}</p>'
     )
-
-    # Signature rendering — show the image if we have one, otherwise
-    # show the typed name in a script-like italic at the signature
-    # line. (No double-rendering — the italic name IS the signature
-    # in the fallback path, and the typed name is in the salutation
-    # of the letter body.)
-    if signature_uri:
-        signature_html = (
-            f'<img src="{signature_uri}" alt="" '
-            f'style="height:0.5in;display:block;margin-bottom:0.05in;" />'
-            f'<div>{escape(agent_full_name)}</div>'
-        )
-    else:
-        signature_html = (
-            f'<div style="font-style:italic;font-size:16pt;'
-            f'font-family:Georgia,serif;">{escape(agent_full_name)}</div>'
-        )
 
     # Contact line under signature. Phone + email separated by a middle
     # dot. Phone is required at the API layer; email is best-effort.
-    # If both are missing for any reason, the contact line is omitted
-    # entirely (rather than rendering as a sad floating dot).
     contact_parts = []
     if agent_phone:
         contact_parts.append(escape(agent_phone))
@@ -250,85 +245,30 @@ def render_letter_html(
     contact_html = ""
     if contact_parts:
         contact_html = (
-            f'<div style="margin-top:0.08in;font-size:10pt;color:#555;">'
-            f'{" &middot; ".join(contact_parts)}'
-            f'</div>'
+            f'<p style="margin-top:6pt; margin-bottom:0; '
+            f'font-size:10pt; color:#555;">'
+            f'{" &middot; ".join(contact_parts)}</p>'
         )
 
-    # The page wrapper owns layout. Top padding of 2.5in keeps body
-    # content clear of Stannp's address overlay zone (which lives in
-    # the top ~2in of the page for #10 windowed envelopes). All other
-    # spacing is in points rather than inches because xhtml2pdf
-    # interprets inch values more generously than browsers, which is
-    # what pushed our first test letter to two pages.
     today = datetime.now(timezone.utc).strftime("%B %-d, %Y")
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  @page {{
-    size: 8.5in 11in;
-    margin: 0;
-  }}
-  html, body {{
-    margin: 0;
-    padding: 0;
-    font-family: Georgia, 'Times New Roman', serif;
-    font-size: 11pt;
-    color: #1a1a1a;
-    line-height: 14pt;
-  }}
-  .page {{
-    width: 8.5in;
-    padding: 2.5in 0.85in 0.5in 0.85in;
-    box-sizing: border-box;
-  }}
-  .header {{
-    margin-bottom: 12pt;
-  }}
-  .header img {{
-    width: 0.9in;
-    height: 0.9in;
-    display: block;
-    margin-bottom: 6pt;
-  }}
-  .header .date {{
-    font-size: 10.5pt;
-    color: #555;
-  }}
-  .recipient-block {{
-    margin: 0 0 18pt 0;
-    font-size: 11pt;
-    line-height: 13pt;
-  }}
-  .body p {{
-    margin: 0 0 8pt 0;
-    text-align: left;
-  }}
-  .signature-block {{
-    margin-top: 14pt;
-  }}
-</style>
-</head>
-<body>
-<div class="page">
-  <div class="header">
-    {logo_html}
-    <div class="date">{today}</div>
-  </div>
 
-  <div class="recipient-block-wrap">
-    {recipient_block_html}
-  </div>
-
-  <div class="body">
-    {body_html}
-    <div class="signature-block">
-      {signature_html}
-      {contact_html}
-    </div>
-  </div>
-</div>
-</body>
-</html>"""
+    # Flat, minimal HTML. No wrappers. Element-level CSS. Whitespace
+    # between tags collapsed so xhtml2pdf doesn't interpret it as
+    # text nodes.
+    return (
+        '<!DOCTYPE html>'
+        '<html><head><meta charset="utf-8"><style>'
+        '@page { size: 8.5in 11in; margin: 2.5in 0.85in 0.5in 0.85in; }'
+        'body { font-family: Georgia, "Times New Roman", serif; font-size: 11pt; color: #1a1a1a; }'
+        'p { margin: 0 0 8pt 0; line-height: 14pt; }'
+        '.date { font-size: 10.5pt; color: #555; margin-bottom: 14pt; }'
+        '.closing { margin-top: 14pt; margin-bottom: 0; }'
+        '</style></head><body>'
+        f'<p class="date">{today}</p>'
+        f'{recipient_block_html}'
+        f'{body_html}'
+        f'<p class="closing">Warmly,</p>'
+        f'{signature_html}'
+        f'{contact_html}'
+        '</body></html>'
+    )
