@@ -4,28 +4,29 @@ backend/services/letter_pdf_renderer.py — HTML → PDF conversion for Stannp.
 Stannp's /letters/create endpoint takes a PDF file and does the address
 mail-merge themselves (overlays the recipient address onto a clear zone
 near the top-left of the page). We render our existing letter HTML to
-a PDF using WeasyPrint, which handles inline CSS reliably and produces
-print-quality output.
+a PDF using xhtml2pdf (pure-Python, built on reportlab) and post the
+bytes to Stannp.
 
-Why WeasyPrint over alternatives:
-  - reportlab (already installed): great for drawing from scratch, but
-    can't render arbitrary HTML+CSS. Would require rewriting the entire
-    letter_renderer module.
-  - xhtml2pdf (pure Python): handles basic HTML but struggles with our
-    positioned signature block + inline SVG logo.
-  - WeasyPrint: handles modern CSS2.1 + most CSS3 cleanly, produces
-    print-grade PDFs. System deps (Cairo + Pango) installed via
-    nixpacks.toml.
+History: this module previously used WeasyPrint, which produces
+better-fidelity output but requires Cairo/Pango/GLib system libraries
+at import time. On Railway/Nixpacks the apt-installed libs sit at
+/usr/lib/x86_64-linux-gnu/ while the Nix-managed Python looks for
+shared objects in /nix/store/, so WeasyPrint's ctypes loader couldn't
+find them despite a correct apt list. Rather than fight Nixpacks lib
+paths we switched to xhtml2pdf, which has no native deps.
+
+xhtml2pdf CSS support is more limited than WeasyPrint's — no flexbox,
+no CSS grid, weaker SVG handling. Our letter_renderer outputs simple
+inline-styled HTML with positioned text + raster/SVG images and falls
+within xhtml2pdf's supported subset.
 
 Stannp page constraints (from https://stannp.com/us/design-specs):
   - US Letter (8.5" x 11")
   - Top-left address clear zone for the windowed envelope. We must NOT
     place content there — Stannp's mail-merge overlay puts the recipient
-    address in that area at print time.
-  - Bottom OMR/IMB clear zone for tracking barcode.
-
-The HTML passed in should already exclude the recipient address block
-(letter_renderer.render_letter_html with no_recipient_block=True).
+    address in that area at print time. The renderer's existing top
+    margin (which positions the body well below the address area)
+    keeps content out of that zone for us.
 """
 
 from __future__ import annotations
@@ -36,33 +37,9 @@ from io import BytesIO
 logger = logging.getLogger(__name__)
 
 
-# Page CSS injected into every render. WeasyPrint's @page rule controls
-# physical page size and margins. US Letter with margins that leave the
-# Stannp clear zones empty.
-#
-# Stannp's design spec for US-LETTER (standard window envelope):
-#   - Address clear zone: roughly top-left, starts ~1" from top, ~0.75"
-#     from left, 4" wide x 1" tall.
-#   - We use a 1.25" top margin and 0.75" left/right margins to keep
-#     content out of that zone. Body content starts well below the
-#     address position.
-#   - Bottom margin 0.75" to clear the OMR barcode area.
-_PAGE_CSS = """
-@page {
-    size: 8.5in 11in;
-    margin: 1.25in 0.75in 0.75in 0.75in;
-}
-@page :first {
-    /* On the first page, push content down further so it never
-       collides with the Stannp address overlay zone. */
-    margin-top: 2.25in;
-}
-"""
-
-
 def render_html_to_pdf(html: str) -> bytes:
     """
-    Convert an HTML string to PDF bytes using WeasyPrint.
+    Convert an HTML string to PDF bytes using xhtml2pdf.
 
     Args:
         html: A complete HTML document (must include <html>, <body>).
@@ -75,42 +52,46 @@ def render_html_to_pdf(html: str) -> bytes:
         endpoint.
 
     Raises:
-        RuntimeError: if WeasyPrint isn't importable (missing system libs).
-        Exception: re-raises WeasyPrint render errors with context.
+        RuntimeError: if xhtml2pdf reports a render error.
 
-    WeasyPrint is imported lazily so that app startup doesn't fail if
-    the system Cairo/Pango libs are temporarily missing — we only need
-    PDF rendering when MAIL_PROVIDER=stannp and an agent actually sends.
+    xhtml2pdf is imported lazily to keep app startup cheap and to surface
+    any install issues only when sending — so a missing dep doesn't break
+    health checks or other endpoints.
     """
     try:
-        from weasyprint import HTML, CSS
+        from xhtml2pdf import pisa
     except ImportError as e:
         raise RuntimeError(
-            "WeasyPrint failed to import — Cairo/Pango system libs may "
-            "be missing. Check nixpacks.toml in the repo root. "
-            f"Original error: {e}"
-        ) from e
-    except OSError as e:
-        # WeasyPrint raises OSError when its native dependencies can't
-        # be loaded at import time. This typically means the Railway
-        # build didn't install the apt packages in nixpacks.toml.
-        raise RuntimeError(
-            "WeasyPrint native libraries failed to load. Verify the "
-            "Nixpacks build installed libpango, libcairo2, "
-            "libgdk-pixbuf-2.0-0, and libharfbuzz0b. "
-            f"Original error: {e}"
+            "xhtml2pdf failed to import. Confirm 'xhtml2pdf' is in "
+            f"requirements.txt and the deploy succeeded. Original error: {e}"
         ) from e
 
-    page_css = CSS(string=_PAGE_CSS)
-    doc = HTML(string=html)
     buf = BytesIO()
-    doc.write_pdf(buf, stylesheets=[page_css])
+    # CreatePDF returns a status object; .err is the count of errors
+    # encountered during parsing/rendering. Any non-zero count is fatal
+    # because we can't be sure the resulting PDF is mailable.
+    try:
+        status = pisa.CreatePDF(
+            src=html,
+            dest=buf,
+            encoding="utf-8",
+        )
+    except Exception as e:
+        raise RuntimeError(f"xhtml2pdf CreatePDF raised: {type(e).__name__}: {e}") from e
+
+    if status.err:
+        # pisa's err count is the number of issues, not the messages
+        # themselves — log will tell us more in production
+        raise RuntimeError(
+            f"xhtml2pdf reported {status.err} render error(s). Check HTML "
+            f"input for unsupported CSS or malformed structure."
+        )
+
     pdf_bytes = buf.getvalue()
-
     if not pdf_bytes:
-        raise RuntimeError("WeasyPrint produced an empty PDF — check input HTML")
+        raise RuntimeError("xhtml2pdf produced an empty PDF — check input HTML")
 
-    logger.info("Rendered letter PDF: %d bytes", len(pdf_bytes))
+    logger.info("Rendered letter PDF (xhtml2pdf): %d bytes", len(pdf_bytes))
     return pdf_bytes
 
 

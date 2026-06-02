@@ -23,11 +23,15 @@ python-dotenv==1.0.1
 
 # PDF rendering
 reportlab==4.2.5
-weasyprint==62.3
-# WeasyPrint converts our letter HTML to print-ready PDFs for Stannp's
-# mail-merge endpoint. Needs Cairo + Pango system libs at runtime —
-# wired via nixpacks.toml at the repo root. Used by
+xhtml2pdf==0.2.16
+# xhtml2pdf converts our letter HTML to print-ready PDFs for Stannp's
+# mail-merge endpoint. Pure Python (built on reportlab) — no Cairo/Pango
+# system libs needed, no Nixpacks lib-path drama. CSS support is more
+# limited than WeasyPrint's but sufficient for our letter renderer
+# (inline styles only, no flexbox/grid). Used by
 # backend/services/letter_pdf_renderer.py.
+# Switched from weasyprint==62.3 on 2026-06-01 after Nixpacks couldn't
+# locate libpango/libglib in the Python ctypes search path.
 
 # Anthropic (narrative generation only, NOT decision-making)
 anthropic==0.42.0
