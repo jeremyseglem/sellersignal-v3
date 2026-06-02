@@ -78,12 +78,27 @@ async def generate_scripts_endpoint(
       - 502 if all 6 generations fail
     """
     user = _user_from_authorization(authorization)
+    return run_generation_for_user(user.id)
+
+
+def run_generation_for_user(user_id: str) -> dict:
+    """Core generation logic, shared between the JWT-authenticated
+    /api/agent/generate-scripts endpoint and the admin-key-authenticated
+    /api/admin/regenerate-agent-scripts endpoint.
+
+    Reads voice_sample/stance/bio for the given user_id, runs the 6
+    archetype LLM calls in parallel, stores the results back to the
+    profile, returns the same response shape as the original endpoint.
+
+    Caller is responsible for authentication. This function trusts
+    the user_id it's given.
+    """
     supa = get_supabase_client()
 
     # Read profile inputs
     res = (supa.table('agent_profiles_v3')
            .select('voice_sample, stance, bio')
-           .eq('id', user.id)
+           .eq('id', user_id)
            .limit(1)
            .execute())
     rows = res.data or []
@@ -167,7 +182,7 @@ async def generate_scripts_endpoint(
 
         upd = (supa.table('agent_profiles_v3')
                .update(update_payload)
-               .eq('id', user.id)
+               .eq('id', user_id)
                .execute())
         if not upd.data:
             raise HTTPException(500, 'Failed to write generated scripts to profile.')

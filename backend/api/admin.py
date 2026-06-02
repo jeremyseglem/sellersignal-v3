@@ -2819,3 +2819,57 @@ async def lob_diag(mode: str = "test"):
         )
     finally:
         client.close()
+
+
+# ─── Brand voice regeneration (admin-fire variant) ───────────────────
+# The user-facing /api/agent/generate-scripts requires the agent's
+# Supabase JWT. This admin variant takes the agent's email and uses
+# the operator's X-Admin-Key. Used for ops scenarios where the
+# generation prompt changes (e.g. fixing time-stale language) and
+# operators need to fire regeneration on behalf of agents without
+# requiring them to click the regenerate button themselves.
+
+@router.post("/regenerate-agent-scripts")
+async def regenerate_agent_scripts(
+    email: str,
+    _admin: None = Depends(require_admin),
+):
+    """
+    Admin-fire regeneration of the brand voice script package for the
+    agent with the given email.
+
+    Same effect as the agent clicking "Regenerate" in Profile → Brand
+    Voice: overwrites agent_profiles_v3.generated_scripts for that
+    agent. The 6 archetype scripts are regenerated in parallel using
+    the current SYSTEM_PROMPT + banned-phrase rules. Older content is
+    replaced wholesale; nothing is preserved.
+
+    Args:
+      email — required query param. Must match an existing row in
+              agent_profiles_v3.email.
+
+    Returns the same response shape as /api/agent/generate-scripts.
+    """
+    supa = get_supabase_client()
+
+    # Resolve email → user_id via agent_profiles_v3 (which has its
+    # own email column synced from auth.users).
+    res = (supa.table('agent_profiles_v3')
+           .select('id, email')
+           .eq('email', email)
+           .limit(1)
+           .execute())
+    rows = res.data or []
+    if not rows:
+        raise HTTPException(
+            404,
+            f"No agent_profiles_v3 row with email={email!r}.",
+        )
+    user_id = rows[0]['id']
+
+    # Defer import so the admin module doesn't fail to load if the
+    # agent_voice module has an issue. Same pattern other admin
+    # endpoints use for optional integrations.
+    from backend.api.agent_voice import run_generation_for_user
+
+    return run_generation_for_user(user_id)
