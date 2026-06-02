@@ -106,6 +106,13 @@ async def lifespan(app: FastAPI):
     from backend.tasks.renewal_notifier import renewal_notifier_loop
     renewal_notifier_task = asyncio.create_task(renewal_notifier_loop())
 
+    # Letter scheduler — sweeps every 6 hours for scheduled letters past
+    # their stannp_send_date and submits to Stannp. Replaces what Lob's
+    # send_date parameter used to do for sequenced sends; Stannp has no
+    # native scheduling. See backend/tasks/letter_scheduler.py.
+    from backend.tasks import letter_scheduler
+    letter_scheduler.start()
+
     yield
 
     # Shutdown: cancel background tasks cleanly
@@ -117,6 +124,8 @@ async def lifespan(app: FastAPI):
     canonicalize_autofill_task.cancel()
     snohomish_daily_autofill_task.cancel()
     renewal_notifier_task.cancel()
+    # letter_scheduler manages its own task internally — pause for clean shutdown
+    letter_scheduler.pause()
     try:
         await autofill_task
     except asyncio.CancelledError:

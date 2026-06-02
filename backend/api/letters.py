@@ -1,31 +1,34 @@
 """
-backend/api/letters.py — letter sending + Lob integration endpoints.
+backend/api/letters.py — letter sending + Stannp integration endpoints.
 
-  POST /api/letters/preview                 render HTML for client preview (free)
-  POST /api/letters/send                    send one letter via Lob ($2.99)
-  POST /api/letters/start-sequence          schedule all 6 via Lob ($14.99)
-  POST /api/letters/cancel-sequence/{id}    cancel + proportional refund
-  GET  /api/letters/balance                 agent credit balance
-  POST /api/letters/topup                   STUBBED until commit 5
-  GET  /api/letters/by-parcel/{pin}         all letters + sequences for a parcel
-  POST /api/letters/render-pdf/{pin}        free HTML for browser-side PDF save
-  POST /api/letters/lob-webhook             Lob status updates (no user auth)
+  POST /api/letters/preview                  render HTML for client preview (free)
+  POST /api/letters/send                     send one letter via Stannp ($1.99)
+  POST /api/letters/start-sequence           schedule all 6 via Stannp ($9.99)
+  POST /api/letters/cancel-sequence/{id}     cancel + proportional refund
+  GET  /api/letters/balance                  agent credit balance
+  POST /api/letters/topup                    STUBBED until commit 5
+  GET  /api/letters/by-parcel/{pin}          all letters + sequences for a parcel
+  POST /api/letters/render-pdf/{pin}         free HTML for browser-side PDF save
+  POST /api/letters/stannp-webhook           Stannp status updates (no user auth)
 
 Pricing (cents):
-    single letter: 299        ($2.99)
-    full sequence: 1499       ($14.99, saves $3 vs 6 individual sends)
+    single letter: 199        ($1.99)
+    full sequence: 999        ($9.99, saves $1.95 vs 6 individual sends)
     print-to-PDF:  0          (free)
 
-Sequence schedule from start date:
-    letter 1 (Day 1)   → immediate (no send_date)
-    letter 2 (Day 30)  → start + 30 days
-    letter 3 (Day 60)  → start + 60
-    letter 4 (Day 90)  → start + 90
-    letter 5 (Day 135) → start + 135
-    letter 6 (Day 180) → start + 180
+Sequence schedule from start date (unchanged from the Lob behavior — only
+the print provider changed):
+    letter 1 (Day 1)   → immediate (sent now via Stannp API)
+    letter 2 (Day 30)  → start + 30 days  ┐
+    letter 3 (Day 60)  → start + 60       │ Stannp has no native send_date,
+    letter 4 (Day 90)  → start + 90       │ so these are stored as
+    letter 5 (Day 135) → start + 135      │ status='scheduled' rows and
+    letter 6 (Day 180) → start + 180      ┘ the letter_scheduler background
+                                            task picks them up on their due
+                                            date and calls Stannp.
 
 Cancel-sequence refund is proportional:
-    refund_cents = round(cancelled_unmailed_count / 6 * 1499)
+    refund_cents = round(cancelled_unmailed_count / 6 * 999)
 """
 
 import hashlib
@@ -42,13 +45,14 @@ from pydantic import BaseModel, Field
 
 from backend.api.auth import user_from_authorization
 from backend.api.db import get_supabase_client
-from backend.services.lob_client import (
-    LobClient,
-    LobError,
-    LobAddressError,
-    LobConfigError,
-    LobNotFoundError,
+from backend.services.stannp_client import (
+    get_client as get_stannp_client,
+    StannpError,
+    StannpAddressError,
+    StannpConfigError,
+    StannpAuthError,
 )
+from backend.services.letter_pdf_renderer import render_html_to_pdf
 from backend.services.letter_content import generate_six_letters
 from backend.services.letter_renderer import render_letter_html
 
@@ -61,18 +65,25 @@ router = APIRouter()
 # ── Constants ───────────────────────────────────────────────────────
 
 
-SINGLE_LETTER_COST_CENTS = 299
-SEQUENCE_COST_CENTS = 1499
+SINGLE_LETTER_COST_CENTS = 199
+SEQUENCE_COST_CENTS = 999
 
-# Day offsets from start for letters 1–6 in the sequence
+# Day offsets from start for letters 1–6 in the sequence. Unchanged from
+# the Lob era — these are product-level decisions, not provider-specific.
 SEQUENCE_DAY_OFFSETS = [0, 30, 60, 90, 135, 180]
 
-# Lob webhook event type → our status field mapping. Events not in this
-# map are accepted but ignored (e.g. letter.rendered_pdf, letter.created).
+# Stannp webhook event type → our status field mapping. Events not in this
+# map are accepted but ignored. Stannp's events are documented at
+# https://www.stannp.com/us/direct-mail-api/webhooks — names mirror their
+# print/dispatch lifecycle rather than Lob's USPS-flavored events.
 WEBHOOK_STATUS_MAP = {
-    "letter.processed_for_delivery": "processed_for_delivery",
-    "letter.mailed":                 "mailed",
-    "letter.in_transit":             "in_transit",
+    "letter.created":     "created",
+    "letter.printed":     "processed_for_delivery",
+    "letter.dispatched":  "mailed",
+    "letter.delivered":   "delivered",
+    "letter.cancelled":   "cancelled",
+    "letter.failed":      "failed",
+    "letter.returned":    "returned_to_sender",
     "letter.in_local_area":          "in_local_area",
     "letter.delivered":              "delivered",
     "letter.re-routed":              "re-routed",
@@ -173,76 +184,46 @@ def _load_harvester_matches(supa, pin: str) -> list[dict[str, Any]]:
     return (resp.data if resp else None) or []
 
 
-def _build_lob_addresses(
-    profile: dict[str, Any],
-    parcel: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Construct the (from, to) address dicts in the shape Lob expects.
-    The `from` address goes on the envelope (and lives on agent profile).
-    The `to` address is the property owner at the parcel address."""
-    from_addr = {
-        "name": (
-            (profile.get("return_address_name") or "").strip()
-            or (profile.get("full_name") or "").strip()
-            or "SellerSignal Agent"
-        ),
-        "address_line1": (profile.get("return_address_line1") or "").strip(),
-        "address_line2": (profile.get("return_address_line2") or "").strip() or None,
-        "address_city":  (profile.get("return_address_city")  or "").strip(),
-        "address_state": (profile.get("return_address_state") or "").strip().upper(),
-        "address_zip":   (profile.get("return_address_zip")   or "").strip(),
-        "address_country": "US",
-    }
+def _build_stannp_recipient(parcel: dict[str, Any]) -> dict[str, Any]:
+    """
+    Construct the Stannp recipient dict from a parcel row. Stannp's
+    /letters/create endpoint takes flat recipient[*] form fields and
+    handles the mail-merge overlay onto the windowed envelope clear
+    zone itself.
 
-    # Recipient: owner name + property address. We mail to the property
-    # itself (not the owner's mailing address) — for probate, that's the
-    # estate property; for absentee, it's where we want the letter to
-    # land. If the property has a different owner mailing address we'd
-    # use that, but parcels_v3 doesn't carry it consistently yet.
-    to_addr = {
-        "name": (parcel.get("owner_name") or "Property Owner").strip(),
-        "address_line1": (parcel.get("address") or "").strip(),
-        "address_line2": None,
-        "address_city":  (parcel.get("city") or "").strip(),
-        "address_state": (parcel.get("state") or "WA").strip().upper(),
-        "address_zip":   (parcel.get("zip_code") or "").strip(),
-        "address_country": "US",
-    }
+    Stannp accepts firstname/lastname OR company. We don't try to split
+    owner_name — we put the whole owner string into 'lastname' which
+    renders cleanly on the address line whether the owner is an
+    individual ("BRYANT JOSEPH"), a couple ("BRYANT JOSEPH & MARY"),
+    or a trust ("BRYANT FAMILY TRUST"). Future enhancement: detect
+    owner_type and route trust/LLC names to recipient[company] for
+    better formatting.
 
-    if not to_addr["address_line1"]:
+    Return address on the envelope (the agent's address) lives at the
+    Stannp account level (set in their dashboard) — Stannp's per-letter
+    API doesn't take it. The agent's return address still appears in
+    the letter body's signature block, so the recipient knows where to
+    write back even if the envelope flap is Stannp-generic.
+    """
+    owner_name = (parcel.get("owner_name") or "Property Owner").strip()
+    line1 = (parcel.get("address") or "").strip()
+    if not line1:
         raise HTTPException(
             400,
             f"Parcel {parcel.get('pin')} has no address — cannot send a letter "
             f"to a parcel without a street address.",
         )
 
-    return from_addr, to_addr
-
-
-def _verify_or_passthrough(
-    client: LobClient,
-    addr: dict[str, Any],
-) -> dict[str, Any]:
-    """Verify address via Lob. In test mode, accept 'undeliverable' (test
-    mode doesn't hit real USPS data) and pass through the raw address.
-    In live mode, propagate the error so the caller sees the 422."""
-    try:
-        return client.verify_address(
-            line1=addr["address_line1"],
-            line2=addr.get("address_line2"),
-            city=addr["address_city"],
-            state=addr["address_state"],
-            zip_code=addr["address_zip"],
-            name=addr.get("name"),
-        )
-    except LobAddressError as e:
-        if client.mode == "test" and e.lob_code == "undeliverable":
-            logger.info(
-                "Test-mode address bypass for %s (Lob test doesn't verify real addresses)",
-                addr.get("address_line1"),
-            )
-            return {**addr}
-        raise
+    return {
+        "lastname": owner_name,
+        "address1": line1,
+        "city":     (parcel.get("city")  or "").strip(),
+        # Stannp ignores 'state' (their US schema derives it from ZIP) but
+        # we carry it on this dict for the preview renderer.
+        "state":    (parcel.get("state") or "WA").strip().upper(),
+        "zipcode":  (parcel.get("zip_code") or "").strip(),
+        "country":  "US",
+    }
 
 
 def _charge_balance(supa, user_id: str, cents: int) -> int:
@@ -316,21 +297,38 @@ def _generate_letters_for_parcel(
 def _render_html_for_letter(
     letter: dict[str, Any],
     profile: dict[str, Any],
-    to_addr: dict[str, Any],
+    recipient: dict[str, Any],
+    *,
+    no_recipient_block: bool = False,
 ) -> str:
-    """Wrap a letter body in the full Lob-ready HTML."""
+    """
+    Wrap a letter body in the full letter HTML.
+
+    Args:
+      no_recipient_block:
+        When True, omits the recipient address block — used for the
+        Stannp send path, where Stannp performs its own mail-merge
+        overlay at print time. When False (default), embeds the address
+        in the document — used for the in-app preview, browser PDF
+        download, and any code path that needs a stand-alone letter.
+
+    The recipient dict here is the Stannp recipient shape
+    (lastname/address1/city/zipcode), not Lob's. We translate to the
+    renderer's expected param names below.
+    """
     return render_letter_html(
         body=letter["body"],
-        recipient_name=to_addr.get("name"),
-        recipient_line1=to_addr["address_line1"],
-        recipient_line2=to_addr.get("address_line2"),
-        recipient_city=to_addr["address_city"],
-        recipient_state=to_addr["address_state"],
-        recipient_zip=to_addr["address_zip"],
+        recipient_name=recipient.get("lastname") or "Property Owner",
+        recipient_line1=recipient.get("address1") or "",
+        recipient_line2=recipient.get("address2"),
+        recipient_city=recipient.get("city") or "",
+        recipient_state=recipient.get("state") or "WA",
+        recipient_zip=recipient.get("zipcode") or "",
         agent_full_name=(profile.get("full_name") or "Your Agent"),
         agent_phone=profile.get("phone"),
         agent_email=profile.get("email"),
         agent_signature_url=profile.get("signature_url"),
+        no_recipient_block=no_recipient_block,
     )
 
 
@@ -356,8 +354,8 @@ async def preview_letter(
     letters = _generate_letters_for_parcel(parcel, matches)
     letter = letters[body.letter_index - 1]
 
-    _from_addr, to_addr = _build_lob_addresses(profile, parcel)
-    html = _render_html_for_letter(letter, profile, to_addr)
+    _from_addr, to_addr = None, _build_stannp_recipient(parcel)
+    html = _render_html_for_letter(letter, profile, to_addr, no_recipient_block=False)
 
     return {
         "html": html,
@@ -379,13 +377,18 @@ async def send_letter(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Send one letter via Lob. Deducts $2.99 from balance, creates the
-    letter via Lob API in the configured mode (test or live), records
-    a letters_sent_v3 row.
+    Send one letter via Stannp. Deducts $1.99 from balance, renders the
+    letter HTML, converts to PDF, submits to Stannp's /letters/create
+    endpoint, records a letters_sent_v3 row.
 
-    Idempotency: each request generates a uuid4 idempotency key so
-    accidental double-clicks within seconds dedupe at the Lob layer.
-    Frontend should also debounce the send button.
+    Stannp performs address verification at send time (post_unverified=
+    false). If the recipient address can't be validated, Stannp returns
+    an error which we surface as a 422 and refund.
+
+    Idempotency: each request generates a uuid4 idempotency key that we
+    embed as a Stannp tag. Stannp doesn't natively dedupe, but the tag
+    lets us reconcile if a double-click somehow lands two letters.
+    Frontend should debounce the send button.
     """
     user = user_from_authorization(authorization)
     supa = _supa()
@@ -398,105 +401,114 @@ async def send_letter(
     letters = _generate_letters_for_parcel(parcel, matches)
     letter = letters[body.letter_index - 1]
 
-    from_raw, to_raw = _build_lob_addresses(profile, parcel)
+    recipient = _build_stannp_recipient(parcel)
 
     cost = SINGLE_LETTER_COST_CENTS
     _charge_balance(supa, user.id, cost)
 
     # Wrap the rest in try/except — if anything fails after charging, we
-    # refund and re-raise. Lob duplication is prevented by idempotency
-    # key, but if our DB write fails after Lob succeeds we surface a
-    # clear error and the agent isn't double-charged.
+    # refund and re-raise. Stannp uniqueness is enforced via our
+    # idempotency tag; if our DB write fails after Stannp succeeds we
+    # surface a clear error and the operator can reconcile.
     try:
-        client = LobClient()
+        # Render HTML without the recipient address block — Stannp's
+        # mail-merge overlay places the address in the windowed envelope
+        # clear zone at print time. Convert to PDF for upload.
+        html = _render_html_for_letter(
+            letter, profile, recipient, no_recipient_block=True,
+        )
         try:
-            from_verified = _verify_or_passthrough(client, from_raw)
-            to_verified = _verify_or_passthrough(client, to_raw)
-        except LobAddressError as e:
+            pdf_bytes = render_html_to_pdf(html)
+        except RuntimeError as e:
+            _refund_balance(supa, user.id, cost)
+            logger.error("PDF render failed for pin %s: %s", body.pin, e)
             raise HTTPException(
-                422,
-                f"Address validation failed: {e} (lob_code={e.lob_code})",
+                500,
+                f"Failed to render letter PDF: {e}",
             )
 
-        html = _render_html_for_letter(letter, profile, to_verified)
+        client = get_stannp_client()
+        idem_key = f"ss-single-{uuid.uuid4().hex[:12]}"
 
-        idem_key = f"ss-single-{uuid.uuid4()}"
-        lob_letter = client.create_letter(
-            from_address=from_verified,
-            to_address=to_verified,
-            html_body=html,
-            description=f"SellerSignal letter {letter['num']}/6 to {body.pin}",
-            metadata={
-                "agent_id": str(user.id),
-                "pin": str(body.pin),
-                "zip_code": str(parcel.get("zip_code") or ""),
-                "letter_index": str(body.letter_index),
-                "sequence_id": "",
-            },
-            color=True,
-            idempotency_key=idem_key,
-        )
-        client.close()
+        try:
+            stannp_letter = client.create_letter(
+                pdf_bytes=pdf_bytes,
+                recipient=recipient,
+                first_class=True,
+                tags=f"single,pin-{body.pin},zip-{parcel.get('zip_code') or ''}",
+                idempotency_key=idem_key,
+                post_unverified=False,
+            )
+        except StannpAddressError as e:
+            _refund_balance(supa, user.id, cost)
+            raise HTTPException(
+                422,
+                f"Address validation failed: {e}",
+            )
 
-        # Persist the row. Lob has already accepted — even if this insert
-        # fails, the letter is on the wire. We log loudly so reconciliation
-        # is possible from Lob's dashboard.
+        # Persist the row. Stannp has already accepted — even if this
+        # insert fails, the letter is on the wire. Log loudly so
+        # reconciliation is possible from Stannp's dashboard.
         row = {
             "agent_id": user.id,
             "pin": body.pin,
             "zip_code": parcel.get("zip_code") or "",
             "sequence_id": None,
             "letter_index": body.letter_index,
-            "method": "lob_mail",
-            "lob_letter_id": lob_letter.get("id"),
-            "lob_send_date": lob_letter.get("send_date"),
-            "lob_expected_delivery": lob_letter.get("expected_delivery_date"),
-            "lob_mode": client.mode,
-            "lob_tracking_url": lob_letter.get("url"),
+            "method": "stannp_mail",
+            "provider": "stannp",
+            "stannp_letter_id": str(stannp_letter.get("id")),
+            "stannp_mode": client.mode,
+            "stannp_tracking_url": stannp_letter.get("pdf"),  # PDF preview URL from Stannp
             "status": "created",
             "cost_cents": cost,
             "rendered_html": html,
-            "recipient_name":  to_verified.get("name"),
-            "recipient_line1": to_verified.get("address_line1"),
-            "recipient_line2": to_verified.get("address_line2"),
-            "recipient_city":  to_verified.get("address_city"),
-            "recipient_state": to_verified.get("address_state"),
-            "recipient_zip":   to_verified.get("address_zip"),
+            "recipient_name":  recipient.get("lastname"),
+            "recipient_line1": recipient.get("address1"),
+            "recipient_line2": recipient.get("address2"),
+            "recipient_city":  recipient.get("city"),
+            "recipient_state": recipient.get("state"),
+            "recipient_zip":   recipient.get("zipcode"),
         }
         insert = supa.table("letters_sent_v3").insert(row).execute()
         if not insert or not insert.data:
             logger.error(
-                "Lob letter %s sent but DB insert failed — manual reconciliation needed",
-                lob_letter.get("id"),
+                "Stannp letter %s sent but DB insert failed — manual reconciliation needed",
+                stannp_letter.get("id"),
             )
-            # Don't refund — the letter went out. Surface to operator.
             raise HTTPException(
                 500,
-                f"Letter sent via Lob (id={lob_letter.get('id')}) but failed to log. "
+                f"Letter sent via Stannp (id={stannp_letter.get('id')}) but failed to log. "
                 f"Contact support to reconcile."
             )
 
         return {
             "ok": True,
             "letter_row_id": insert.data[0]["id"],
-            "lob_letter_id": lob_letter.get("id"),
-            "lob_mode": client.mode,
+            "stannp_letter_id": stannp_letter.get("id"),
+            "stannp_mode": client.mode,
             "status": "created",
-            "expected_delivery_date": lob_letter.get("expected_delivery_date"),
             "cost_cents": cost,
             "new_balance_cents": int(profile.get("letter_credit_cents", 0)) - cost,
         }
 
     except HTTPException:
-        # Address validation or DB-after-Lob: don't refund (letter sent
-        # or charge was legitimately consumed). Re-raise.
+        # Already-handled error (e.g. PDF render fail with refund, address
+        # fail with refund, or DB-after-Stannp). Re-raise as-is.
         raise
-    except (LobConfigError, LobError) as e:
-        # Lob failed cleanly — letter not sent. Refund and surface.
+    except (StannpConfigError, StannpAuthError) as e:
+        # Configuration problem — Stannp didn't get the request. Refund.
         _refund_balance(supa, user.id, cost)
-        logger.warning("Lob send failed for agent %s pin %s: %s",
-                       user.id, body.pin, e)
-        raise HTTPException(502, f"Lob error: {type(e).__name__}: {e}")
+        logger.error("Stannp config/auth error for agent %s: %s", user.id, e)
+        raise HTTPException(502, f"Stannp configuration error: {e}")
+    except StannpError as e:
+        # Stannp failed cleanly — letter not sent. Refund and surface.
+        _refund_balance(supa, user.id, cost)
+        logger.warning(
+            "Stannp send failed for agent %s pin %s: %s",
+            user.id, body.pin, e,
+        )
+        raise HTTPException(502, f"Stannp error: {e}")
     except Exception as e:
         # Unknown failure — refund and surface as 500.
         _refund_balance(supa, user.id, cost)
@@ -513,13 +525,21 @@ async def start_sequence(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Schedule all 6 letters via Lob's send_date. Letter 1 sends
-    immediately, 2-6 are scheduled at +30/60/90/135/180 days. Creates
-    one letter_sequences_v3 row and 6 letters_sent_v3 rows.
+    Schedule all 6 letters. Letter 1 sends immediately via Stannp. Letters
+    2-6 are stored as status='scheduled' rows with stannp_send_date set to
+    +30/60/90/135/180 days from now. The letter_scheduler background task
+    sweeps daily, finds rows past their stannp_send_date, and submits each
+    to Stannp.
 
-    If any Lob create fails mid-sequence, we cancel the ones already
-    created and refund the full sequence cost. Atomic-ish at the
-    business level.
+    Storing rendered_html at sequence creation locks the letter content at
+    the moment the agent paid, even if the underlying parcel/probate data
+    changes over the 6-month sequence window. The scheduler reads the
+    snapshot and converts to PDF at send time.
+
+    Atomicity: if letter 1's Stannp send fails, we roll the sequence back
+    (set status='failed') and refund the full $9.99. If the DB insert for
+    a scheduled row fails after letter 1 sent, we still surface the error
+    — operator reconciles the orphaned letter.
     """
     user = user_from_authorization(authorization)
     supa = _supa()
@@ -530,25 +550,15 @@ async def start_sequence(
     parcel = _load_parcel(supa, body.pin)
     matches = _load_harvester_matches(supa, body.pin)
     letters = _generate_letters_for_parcel(parcel, matches)
-    from_raw, to_raw = _build_lob_addresses(profile, parcel)
+    recipient = _build_stannp_recipient(parcel)
 
     cost = SEQUENCE_COST_CENTS
     _charge_balance(supa, user.id, cost)
 
     sequence_row = None
-    created_lob_ids: list[str] = []
+    letter_1_stannp_id: Optional[str] = None
 
     try:
-        client = LobClient()
-        try:
-            from_verified = _verify_or_passthrough(client, from_raw)
-            to_verified = _verify_or_passthrough(client, to_raw)
-        except LobAddressError as e:
-            raise HTTPException(
-                422,
-                f"Address validation failed: {e} (lob_code={e.lob_code})",
-            )
-
         # Create the sequence parent row first so child rows have a FK.
         seq_insert = supa.table("letter_sequences_v3").insert({
             "agent_id": user.id,
@@ -563,105 +573,143 @@ async def start_sequence(
         sequence_id = sequence_row["id"]
 
         now = datetime.now(timezone.utc)
-        per_letter_cost = cost // 6  # 249 cents = ~$2.49
+        per_letter_cost = cost // 6  # 166 cents = ~$1.66
+
+        client = get_stannp_client()
+        stannp_mode = client.mode
 
         for idx, letter in enumerate(letters, start=1):
             day_offset = SEQUENCE_DAY_OFFSETS[idx - 1]
-            send_date = None
-            if day_offset > 0:
-                # Lob expects ISO date string for future scheduled sends.
-                # Immediate sends (letter 1) leave send_date unset.
-                send_date = (now + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            send_date = now + timedelta(days=day_offset)
 
-            html = _render_html_for_letter(letter, profile, to_verified)
-            idem = f"ss-seq-{sequence_id}-{idx}"
-
-            lob_letter = client.create_letter(
-                from_address=from_verified,
-                to_address=to_verified,
-                html_body=html,
-                description=f"SellerSignal sequence {sequence_id} letter {idx}/6 to {body.pin}",
-                metadata={
-                    "agent_id": str(user.id),
-                    "pin": str(body.pin),
-                    "zip_code": str(parcel.get("zip_code") or ""),
-                    "letter_index": str(idx),
-                    "sequence_id": str(sequence_id),
-                },
-                color=True,
-                send_date=send_date,
-                idempotency_key=idem,
+            # Render and snapshot HTML at sequence creation time. This
+            # locks the content — agent paid for *this* letter, not
+            # whatever the generator would produce in 6 months.
+            html = _render_html_for_letter(
+                letter, profile, recipient, no_recipient_block=True,
             )
-            created_lob_ids.append(lob_letter.get("id"))
 
-            row = {
+            base_row = {
                 "agent_id": user.id,
                 "pin": body.pin,
                 "zip_code": parcel.get("zip_code") or "",
                 "sequence_id": sequence_id,
                 "letter_index": idx,
-                "method": "lob_mail",
-                "lob_letter_id": lob_letter.get("id"),
-                "lob_send_date": lob_letter.get("send_date"),
-                "lob_expected_delivery": lob_letter.get("expected_delivery_date"),
-                "lob_mode": client.mode,
-                "lob_tracking_url": lob_letter.get("url"),
-                "status": "created",
+                "method": "stannp_mail",
+                "provider": "stannp",
+                "stannp_mode": stannp_mode,
+                "stannp_send_date": send_date.isoformat(),
                 "cost_cents": per_letter_cost,
                 "rendered_html": html,
-                "recipient_name":  to_verified.get("name"),
-                "recipient_line1": to_verified.get("address_line1"),
-                "recipient_line2": to_verified.get("address_line2"),
-                "recipient_city":  to_verified.get("address_city"),
-                "recipient_state": to_verified.get("address_state"),
-                "recipient_zip":   to_verified.get("address_zip"),
+                "recipient_name":  recipient.get("lastname"),
+                "recipient_line1": recipient.get("address1"),
+                "recipient_line2": recipient.get("address2"),
+                "recipient_city":  recipient.get("city"),
+                "recipient_state": recipient.get("state"),
+                "recipient_zip":   recipient.get("zipcode"),
             }
-            supa.table("letters_sent_v3").insert(row).execute()
 
-        client.close()
+            if day_offset == 0:
+                # Letter 1 — send immediately.
+                try:
+                    pdf_bytes = render_html_to_pdf(html)
+                except RuntimeError as e:
+                    raise HTTPException(500, f"PDF render failed: {e}")
+
+                try:
+                    stannp_letter = client.create_letter(
+                        pdf_bytes=pdf_bytes,
+                        recipient=recipient,
+                        first_class=True,
+                        tags=f"seq-{sequence_id},letter-1,pin-{body.pin}",
+                        idempotency_key=f"ss-seq-{sequence_id}-1",
+                        post_unverified=False,
+                    )
+                except StannpAddressError as e:
+                    raise HTTPException(422, f"Address validation failed: {e}")
+
+                letter_1_stannp_id = str(stannp_letter.get("id"))
+                base_row.update({
+                    "stannp_letter_id": letter_1_stannp_id,
+                    "stannp_tracking_url": stannp_letter.get("pdf"),
+                    "status": "created",
+                })
+            else:
+                # Letters 2-6 — scheduled. Background task will send.
+                base_row["status"] = "scheduled"
+
+            supa.table("letters_sent_v3").insert(base_row).execute()
 
         return {
             "ok": True,
             "sequence_id": sequence_id,
             "letters_scheduled": 6,
             "first_letter_immediate": True,
+            "first_letter_stannp_id": letter_1_stannp_id,
             "cost_cents": cost,
-            "lob_mode": client.mode,
+            "stannp_mode": stannp_mode,
         }
 
     except HTTPException:
-        # Re-raise — partial state has been logged; let admin handle.
-        raise
-    except (LobConfigError, LobError) as e:
-        # Best-effort cleanup: cancel any letters we managed to create.
-        logger.error("Sequence creation failed after %d letters; rolling back: %s",
-                     len(created_lob_ids), e)
-        try:
-            cleanup = LobClient()
-            for lid in created_lob_ids:
-                try:
-                    cleanup.cancel_letter(lid)
-                except Exception:
-                    pass  # Best-effort; if cancel window passed, letter will mail
-            cleanup.close()
-        except Exception:
-            pass
-
-        # Mark the sequence as failed if we managed to create it.
+        # Surface the original error. If letter 1 already sent and we hit
+        # an HTTPException later, the agent will have one rogue letter
+        # but the sequence is marked failed for reconciliation.
         if sequence_row:
             try:
                 supa.table("letter_sequences_v3").update({
                     "status": "failed",
-                    "cancel_reason": f"Lob error: {type(e).__name__}",
+                    "cancel_reason": "HTTPException during sequence start",
                 }).eq("id", sequence_row["id"]).execute()
             except Exception:
                 pass
-
+        # If letter 1 hadn't sent yet, refund. If it had, the agent
+        # got partial value; refund 5/6 = 833 cents.
+        if letter_1_stannp_id:
+            _refund_balance(supa, user.id, cost - per_letter_cost)
+        else:
+            _refund_balance(supa, user.id, cost)
+        raise
+    except (StannpConfigError, StannpAuthError) as e:
+        # Stannp didn't even get the request. Full refund.
+        if sequence_row:
+            try:
+                supa.table("letter_sequences_v3").update({
+                    "status": "failed",
+                    "cancel_reason": f"Stannp config: {type(e).__name__}",
+                }).eq("id", sequence_row["id"]).execute()
+            except Exception:
+                pass
         _refund_balance(supa, user.id, cost)
-        raise HTTPException(502, f"Sequence creation failed: {type(e).__name__}: {e}")
+        logger.error("Sequence config error for agent %s: %s", user.id, e)
+        raise HTTPException(502, f"Stannp configuration error: {e}")
+    except StannpError as e:
+        # Cancel letter 1 if it went through, mark sequence failed, refund.
+        if letter_1_stannp_id:
+            try:
+                client.cancel_letter(int(letter_1_stannp_id))
+            except Exception:
+                pass  # Best effort
+        if sequence_row:
+            try:
+                supa.table("letter_sequences_v3").update({
+                    "status": "failed",
+                    "cancel_reason": f"Stannp error: {type(e).__name__}",
+                }).eq("id", sequence_row["id"]).execute()
+            except Exception:
+                pass
+        _refund_balance(supa, user.id, cost)
+        raise HTTPException(502, f"Sequence creation failed: {e}")
 
     except Exception as e:
         logger.exception("Unexpected error starting sequence")
+        if sequence_row:
+            try:
+                supa.table("letter_sequences_v3").update({
+                    "status": "failed",
+                    "cancel_reason": f"Unexpected: {type(e).__name__}",
+                }).eq("id", sequence_row["id"]).execute()
+            except Exception:
+                pass
         _refund_balance(supa, user.id, cost)
         raise HTTPException(500, f"Sequence start failed: {type(e).__name__}: {e}")
 
@@ -714,29 +762,44 @@ async def cancel_sequence(
     cancelled_count = 0
     skipped_count = 0
     try:
-        client = LobClient()
+        client = get_stannp_client()
         for child in children_rows:
-            if child.get("status") in TERMINAL:
+            status = child.get("status")
+            if status in TERMINAL:
                 skipped_count += 1
                 continue
-            lob_id = child.get("lob_letter_id")
-            if not lob_id:
-                skipped_count += 1
-                continue
-            try:
-                client.cancel_letter(lob_id)
+
+            # Two cancel paths depending on whether the letter has been
+            # submitted to Stannp yet.
+            if status == "scheduled":
+                # Hasn't been submitted to Stannp yet — just mark the row
+                # cancelled and the scheduler will skip it. No Stannp call.
                 supa.table("letters_sent_v3").update({
                     "status": "cancelled",
                     "cancelled_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", child["id"]).execute()
                 cancelled_count += 1
-            except LobNotFoundError:
-                # Past cancellation window — Lob already processed it.
+                continue
+
+            # Already submitted to Stannp — try to cancel via API.
+            stannp_id = child.get("stannp_letter_id")
+            if not stannp_id:
                 skipped_count += 1
+                continue
+            try:
+                ok = client.cancel_letter(int(stannp_id))
+                if ok:
+                    supa.table("letters_sent_v3").update({
+                        "status": "cancelled",
+                        "cancelled_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", child["id"]).execute()
+                    cancelled_count += 1
+                else:
+                    # Past Stannp's cancel window — letter is being printed.
+                    skipped_count += 1
             except Exception as e:
-                logger.warning("Failed to cancel Lob letter %s: %s", lob_id, e)
+                logger.warning("Failed to cancel Stannp letter %s: %s", stannp_id, e)
                 skipped_count += 1
-        client.close()
     except Exception as e:
         logger.exception("Sequence cancel failed mid-way")
         raise HTTPException(502, f"Cancel failed: {e}")
@@ -812,8 +875,9 @@ async def letters_by_parcel(
     letters = (
         supa.table("letters_sent_v3")
         .select(
-            "id,letter_index,method,status,cost_cents,"
-            "lob_letter_id,lob_mode,lob_send_date,lob_expected_delivery,"
+            "id,letter_index,method,status,cost_cents,provider,"
+            "stannp_letter_id,stannp_mode,stannp_send_date,"
+            "stannp_expected_delivery,stannp_tracking_url,"
             "created_at,mailed_at,delivered_at,sequence_id"
         )
         .eq("agent_id", user.id)
@@ -861,8 +925,8 @@ async def render_pdf(
     letters = _generate_letters_for_parcel(parcel, matches)
     letter = letters[body.letter_index - 1]
 
-    _from_addr, to_addr = _build_lob_addresses(profile, parcel)
-    html = _render_html_for_letter(letter, profile, to_addr)
+    _from_addr, to_addr = None, _build_stannp_recipient(parcel)
+    html = _render_html_for_letter(letter, profile, to_addr, no_recipient_block=False)
 
     # Log the PDF render so dossier history is complete.
     supa.table("letters_sent_v3").insert({
@@ -872,72 +936,67 @@ async def render_pdf(
         "sequence_id": None,
         "letter_index": body.letter_index,
         "method": "pdf_download",
+        "provider": None,  # No remote provider — agent prints + mails themselves
         "status": "pdf_rendered",
         "cost_cents": 0,
         "rendered_html": html,
-        "recipient_name":  to_addr.get("name"),
-        "recipient_line1": to_addr.get("address_line1"),
-        "recipient_line2": to_addr.get("address_line2"),
-        "recipient_city":  to_addr.get("address_city"),
-        "recipient_state": to_addr.get("address_state"),
-        "recipient_zip":   to_addr.get("address_zip"),
+        "recipient_name":  to_addr.get("lastname"),
+        "recipient_line1": to_addr.get("address1"),
+        "recipient_line2": to_addr.get("address2"),
+        "recipient_city":  to_addr.get("city"),
+        "recipient_state": to_addr.get("state"),
+        "recipient_zip":   to_addr.get("zipcode"),
     }).execute()
 
     return {"html": html, "letter_index": body.letter_index}
 
 
-# ── 9. Lob webhook ──────────────────────────────────────────────────
+# ── 9. Stannp webhook ───────────────────────────────────────────────
 
 
-@router.post("/lob-webhook")
-async def lob_webhook(request: Request):
+@router.post("/stannp-webhook")
+async def stannp_webhook(request: Request):
     """
-    Receive status updates from Lob. Configured in the Lob dashboard:
-        URL:    https://sellersignal.co/api/letters/lob-webhook
+    Receive status updates from Stannp. Configured in the Stannp dashboard:
+        URL:    https://sellersignal.co/api/letters/stannp-webhook
         Events: letter.* (subscribe to all letter events)
-        Secret: copy to Railway as LOB_WEBHOOK_SECRET
+        Secret: copy to Railway as STANNP_WEBHOOK_SECRET
 
-    Verification: Lob sends `lob-signature` and `lob-signature-timestamp`
-    headers. We compute HMAC-SHA256 of `<timestamp>.<raw_body>` keyed
-    by LOB_WEBHOOK_SECRET and compare in constant time. If the secret
-    isn't set in env we accept all webhooks (with a warning) so initial
-    test-mode integration isn't blocked — switch to strict once the
-    secret is configured.
+    Verification: Stannp signs webhook bodies with HMAC-SHA256 keyed by
+    the webhook secret. The signature appears in the `x-stannp-signature`
+    header. We compute HMAC-SHA256 of the raw body and compare in
+    constant time. If the secret isn't set in env we accept all webhooks
+    (with a warning) so initial test-mode integration isn't blocked.
 
-    Replay protection: reject events with a timestamp more than 5
-    minutes old (Lob's recommended window).
+    Documented at https://www.stannp.com/us/direct-mail-api/webhooks —
+    we'll tighten this once that page's exact signature scheme is
+    confirmed against a real test event.
     """
     raw_body = await request.body()
 
-    secret = os.environ.get("LOB_WEBHOOK_SECRET", "").strip()
-    sig_header = request.headers.get("lob-signature", "")
-    ts_header = request.headers.get("lob-signature-timestamp", "")
+    secret = os.environ.get("STANNP_WEBHOOK_SECRET", "").strip()
+    sig_header = (
+        request.headers.get("x-stannp-signature")
+        or request.headers.get("stannp-signature")
+        or ""
+    )
 
     if secret:
-        if not sig_header or not ts_header:
-            logger.warning("Webhook missing signature headers")
-            raise HTTPException(401, "Missing signature headers")
+        if not sig_header:
+            logger.warning("Stannp webhook missing signature header")
+            raise HTTPException(401, "Missing signature header")
 
-        # Replay window: reject events more than 5 minutes old.
-        try:
-            ts_int = int(ts_header)
-        except ValueError:
-            raise HTTPException(401, "Bad timestamp")
-        if abs(time.time() - ts_int) > 300:
-            raise HTTPException(401, "Timestamp out of replay window")
-
-        # HMAC-SHA256 verify
         expected = hmac.new(
             secret.encode("utf-8"),
-            f"{ts_header}.{raw_body.decode('utf-8')}".encode("utf-8"),
+            raw_body,
             hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(expected, sig_header):
-            logger.warning("Webhook signature mismatch")
+            logger.warning("Stannp webhook signature mismatch")
             raise HTTPException(401, "Bad signature")
     else:
         logger.warning(
-            "LOB_WEBHOOK_SECRET not set — accepting webhook without verification. "
+            "STANNP_WEBHOOK_SECRET not set — accepting webhook without verification. "
             "Set the env var to enable signature checks."
         )
 
@@ -948,16 +1007,21 @@ async def lob_webhook(request: Request):
     except Exception:
         raise HTTPException(400, "Invalid JSON body")
 
-    event_type = event.get("event_type") or event.get("type") or ""
-    payload = event.get("body") or event.get("data") or {}
-    lob_letter_id = payload.get("id")
+    # Stannp event shape (tentative — confirm against a real test event):
+    #   {"event": "letter.dispatched", "data": {"id": 12345, ...}}
+    event_type = event.get("event") or event.get("event_type") or ""
+    payload = event.get("data") or event.get("body") or {}
+    stannp_letter_id = payload.get("id")
 
-    if not lob_letter_id:
+    if stannp_letter_id is None:
         return {"ok": True, "ignored": True, "reason": "no letter id"}
 
     new_status = WEBHOOK_STATUS_MAP.get(event_type)
     if not new_status:
-        logger.debug("Ignoring webhook event %s for letter %s", event_type, lob_letter_id)
+        logger.debug(
+            "Ignoring Stannp webhook event %s for letter %s",
+            event_type, stannp_letter_id,
+        )
         return {"ok": True, "ignored": True, "event_type": event_type}
 
     supa = _supa()
@@ -974,14 +1038,15 @@ async def lob_webhook(request: Request):
         update["cancelled_at"] = now_iso
     elif new_status == "failed":
         update["failed_at"] = now_iso
-        update["fail_reason"] = payload.get("failure_reason") or "Lob failed"
+        update["fail_reason"] = payload.get("failure_reason") or "Stannp failed"
 
-    # Look up the letter by lob_letter_id. RLS bypassed since this
-    # uses the service-role client.
+    # Look up the letter by stannp_letter_id. Service-role client so RLS
+    # is bypassed. The id from Stannp's webhook is an integer; we store
+    # it as a string in the DB, so cast for the equality match.
     result = (
         supa.table("letters_sent_v3")
         .update(update)
-        .eq("lob_letter_id", lob_letter_id)
+        .eq("stannp_letter_id", str(stannp_letter_id))
         .execute()
     )
 
@@ -989,7 +1054,72 @@ async def lob_webhook(request: Request):
     return {
         "ok": True,
         "event_type": event_type,
-        "lob_letter_id": lob_letter_id,
+        "stannp_letter_id": stannp_letter_id,
         "new_status": new_status,
         "rows_updated": len(updated),
     }
+
+
+# ── 10. Letter scheduler admin (status, pause, resume) ─────────────
+
+
+def _require_admin(authorization: Optional[str], x_admin_key: Optional[str]) -> None:
+    """
+    Admin-only gate for the scheduler controls. Accepts either an
+    operator-role bearer token (same agents who bypass billing) or
+    the X-Admin-Key header used elsewhere in the codebase.
+    """
+    admin_env = (os.environ.get("ADMIN_KEY") or "").strip()
+    if x_admin_key and admin_env and x_admin_key == admin_env:
+        return
+    # Fall back to operator-role user auth
+    try:
+        user = user_from_authorization(authorization)
+    except HTTPException:
+        raise HTTPException(401, "Admin auth required")
+    supa = _supa()
+    profile = (
+        supa.table("agent_profiles_v3")
+        .select("role")
+        .eq("id", user.id)
+        .maybe_single()
+        .execute()
+    )
+    role = (profile.data or {}).get("role") if profile else None
+    if role != "operator":
+        raise HTTPException(403, "Operator role required")
+
+
+@router.get("/scheduler/status")
+async def scheduler_status(
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Observability for the letter scheduler background task."""
+    _require_admin(authorization, x_admin_key)
+    from backend.tasks import letter_scheduler
+    return letter_scheduler.get_state()
+
+
+@router.post("/scheduler/pause")
+async def scheduler_pause(
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Pause the scheduler — scheduled letters stop firing until resumed."""
+    _require_admin(authorization, x_admin_key)
+    from backend.tasks import letter_scheduler
+    letter_scheduler.pause()
+    return {"ok": True, "enabled": False}
+
+
+@router.post("/scheduler/resume")
+async def scheduler_resume(
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Resume the scheduler."""
+    _require_admin(authorization, x_admin_key)
+    from backend.tasks import letter_scheduler
+    letter_scheduler.resume()
+    return {"ok": True, "enabled": True}

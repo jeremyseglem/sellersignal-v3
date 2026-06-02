@@ -110,8 +110,8 @@ export default function SixLettersModal({
     [sequences]
   );
 
-  const SINGLE_COST_CENTS = 299;
-  const SEQUENCE_COST_CENTS = 1499;
+  const SINGLE_COST_CENTS = 199;
+  const SEQUENCE_COST_CENTS = 999;
 
   const canSendSingle = balanceCents != null && balanceCents >= SINGLE_COST_CENTS && !activeSequence;
   const canStartSeq = balanceCents != null && balanceCents >= SEQUENCE_COST_CENTS && !activeSequence;
@@ -454,7 +454,7 @@ export default function SixLettersModal({
             >
               Send Letter {activeIdx + 1}
               <span style={{ marginLeft: 6, color: 'var(--text-tertiary)', fontWeight: 400 }}>
-                $2.99
+                $1.99
               </span>
             </button>
 
@@ -484,7 +484,7 @@ export default function SixLettersModal({
             >
               Start Full Sequence
               <span style={{ marginLeft: 6, opacity: 0.85, fontWeight: 400 }}>
-                $14.99
+                $9.99
               </span>
             </button>
           </div>
@@ -525,12 +525,12 @@ export default function SixLettersModal({
               )}
               {confirmAction.type === 'single' && (
                 <>Send Letter {activeIdx + 1} to <strong>{parcel.owner_name || 'the property owner'}</strong> at <strong>{parcel.address}</strong>.
-                  &nbsp;Deducts <strong>$2.99</strong> from your balance.</>
+                  &nbsp;Deducts <strong>$1.99</strong> from your balance.</>
               )}
               {confirmAction.type === 'sequence' && (
                 <>Start the full 6-letter sequence to <strong>{parcel.owner_name || 'the property owner'}</strong>.
                   &nbsp;Letter 1 sends immediately; letters 2-6 schedule at days 30, 60, 90, 135, 180.
-                  &nbsp;Deducts <strong>$14.99</strong> from your balance.</>
+                  &nbsp;Deducts <strong>$9.99</strong> from your balance.</>
               )}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-sm)' }}>
