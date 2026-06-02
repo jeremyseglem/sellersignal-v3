@@ -23,6 +23,11 @@ python-dotenv==1.0.1
 
 # PDF rendering
 reportlab==4.2.5
+weasyprint==62.3
+# WeasyPrint converts our letter HTML to print-ready PDFs for Stannp's
+# mail-merge endpoint. Needs Cairo + Pango system libs at runtime —
+# wired via nixpacks.toml at the repo root. Used by
+# backend/services/letter_pdf_renderer.py.
 
 # Anthropic (narrative generation only, NOT decision-making)
 anthropic==0.42.0

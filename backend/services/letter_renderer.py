@@ -163,30 +163,52 @@ def render_letter_html(
     agent_email: Optional[str] = None,
     agent_signature_url: Optional[str] = None,
     logo_path: Optional[Path] = None,
+    no_recipient_block: bool = False,
 ) -> str:
     """
-    Render the full letter HTML string for Lob.
+    Render the full letter HTML string.
 
     All keyword-only for clarity at the call site — there are six
     required address fields and getting the order wrong would silently
     mis-mail a letter.
 
-    Returns a complete <html>...</html> document. Lob renders this as
-    a single 8.5x11 page; if content overflows, Lob auto-paginates and
-    bills extra postage at the per-sheet rate. We size content to fit
-    one sheet for now.
+    Returns a complete <html>...</html> document. The result fits on
+    a single 8.5x11 page; if content overflows, the print provider
+    will auto-paginate and bill extra postage at the per-sheet rate.
+    We size content to fit one sheet.
+
+    Args:
+      no_recipient_block:
+        When True, the recipient address block is omitted. This is the
+        mode used for Stannp's /letters/create endpoint, where Stannp
+        performs its own mail-merge and overlays the recipient address
+        onto the page's clear zone at print time. The salutation
+        ("Dear Mr. Smith") stays in the body — only the postal address
+        block above the body is skipped. Default False preserves the
+        original Lob behavior where we embed the address ourselves.
+
+      All recipient_* parameters are still required even when
+      no_recipient_block=True — the print provider needs them
+      separately as structured data to do their own overlay, and the
+      caller (backend/api/letters.py) reads them from the same kwargs.
     """
     logo_uri = _load_logo_data_uri(logo_path)
     signature_uri = _fetch_signature_data_uri(agent_signature_url)
 
-    recipient_block = _format_recipient_block(
-        recipient_name,
-        recipient_line1,
-        recipient_line2,
-        recipient_city,
-        recipient_state,
-        recipient_zip,
-    )
+    if no_recipient_block:
+        recipient_block_html = ""
+    else:
+        recipient_lines = _format_recipient_block(
+            recipient_name,
+            recipient_line1,
+            recipient_line2,
+            recipient_city,
+            recipient_state,
+            recipient_zip,
+        )
+        recipient_block_html = (
+            f'<div class="recipient-block">{recipient_lines}</div>'
+        )
 
     body_html = _format_body_paragraphs(body)
 
@@ -298,8 +320,8 @@ def render_letter_html(
     <div class="date">{today}</div>
   </div>
 
-  <div class="recipient-block">
-    {recipient_block}
+  <div class="recipient-block-wrap">
+    {recipient_block_html}
   </div>
 
   <div class="body">

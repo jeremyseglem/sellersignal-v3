@@ -1,0 +1,20 @@
+# Railway uses Nixpacks to build the container. WeasyPrint (used in
+# backend/services/letter_pdf_renderer.py to convert HTML letters to
+# print-ready PDFs for Stannp) needs Cairo + Pango + a few support
+# libraries available at runtime. Without these the WeasyPrint import
+# fails at app startup with an OSError.
+#
+# Versions stay loose — Nixpacks resolves whichever Pango/Cairo is in
+# the current Nixpkgs channel. WeasyPrint is forward-compatible.
+
+[phases.setup]
+aptPkgs = [
+    "libpango-1.0-0",
+    "libpangoft2-1.0-0",
+    "libcairo2",
+    "libcairo-gobject2",
+    "libgdk-pixbuf-2.0-0",
+    "libharfbuzz0b",
+    "shared-mime-info",
+    "fonts-dejavu-core",
+]
