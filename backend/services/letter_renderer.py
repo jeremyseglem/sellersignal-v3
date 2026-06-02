@@ -255,12 +255,12 @@ def render_letter_html(
             f'</div>'
         )
 
-    # The HTML uses normal document flow (not absolute positioning) so
-    # the layout is tight on screen / PDF and still folds correctly for
-    # Lob's #10 double-window envelope. The recipient block lands ~1.75"
-    # from the top of the unfolded page — when the letter is tri-folded
-    # (bottom third up, top third down) for a #10 envelope, that's the
-    # spot where the lower-left envelope window sits.
+    # The page wrapper owns layout. Top padding of 2.5in keeps body
+    # content clear of Stannp's address overlay zone (which lives in
+    # the top ~2in of the page for #10 windowed envelopes). All other
+    # spacing is in points rather than inches because xhtml2pdf
+    # interprets inch values more generously than browsers, which is
+    # what pushed our first test letter to two pages.
     today = datetime.now(timezone.utc).strftime("%B %-d, %Y")
     return f"""<!DOCTYPE html>
 <html>
@@ -277,39 +277,37 @@ def render_letter_html(
     font-family: Georgia, 'Times New Roman', serif;
     font-size: 11pt;
     color: #1a1a1a;
-    line-height: 1.5;
+    line-height: 14pt;
   }}
   .page {{
     width: 8.5in;
-    min-height: 11in;
-    padding: 0.6in 0.85in 0.6in 0.85in;
+    padding: 2.5in 0.85in 0.5in 0.85in;
     box-sizing: border-box;
   }}
   .header {{
-    margin-bottom: 0.25in;
+    margin-bottom: 12pt;
   }}
   .header img {{
     width: 0.9in;
     height: 0.9in;
     display: block;
-    margin-bottom: 0.1in;
+    margin-bottom: 6pt;
   }}
   .header .date {{
     font-size: 10.5pt;
     color: #555;
   }}
   .recipient-block {{
-    margin: 0.2in 0 0.35in 0;
+    margin: 0 0 18pt 0;
     font-size: 11pt;
-    line-height: 1.35;
+    line-height: 13pt;
   }}
   .body p {{
-    margin: 0 0 0.14in 0;
+    margin: 0 0 8pt 0;
     text-align: left;
   }}
   .signature-block {{
-    margin-top: 0.2in;
-    min-height: 0.6in;
+    margin-top: 14pt;
   }}
 </style>
 </head>

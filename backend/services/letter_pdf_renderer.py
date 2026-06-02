@@ -54,6 +54,12 @@ def render_html_to_pdf(html: str) -> bytes:
     Raises:
         RuntimeError: if xhtml2pdf reports a render error.
 
+    Note: layout (page size, margins, Stannp clear-zone padding) is owned
+    by letter_renderer.py's inline CSS rather than this module — earlier
+    versions injected an additional @page stylesheet here which competed
+    with the renderer's .page padding and pushed content onto a second
+    sheet. Single source of truth in the renderer is simpler.
+
     xhtml2pdf is imported lazily to keep app startup cheap and to surface
     any install issues only when sending — so a missing dep doesn't break
     health checks or other endpoints.
@@ -67,9 +73,6 @@ def render_html_to_pdf(html: str) -> bytes:
         ) from e
 
     buf = BytesIO()
-    # CreatePDF returns a status object; .err is the count of errors
-    # encountered during parsing/rendering. Any non-zero count is fatal
-    # because we can't be sure the resulting PDF is mailable.
     try:
         status = pisa.CreatePDF(
             src=html,
@@ -80,8 +83,6 @@ def render_html_to_pdf(html: str) -> bytes:
         raise RuntimeError(f"xhtml2pdf CreatePDF raised: {type(e).__name__}: {e}") from e
 
     if status.err:
-        # pisa's err count is the number of issues, not the messages
-        # themselves — log will tell us more in production
         raise RuntimeError(
             f"xhtml2pdf reported {status.err} render error(s). Check HTML "
             f"input for unsupported CSS or malformed structure."
