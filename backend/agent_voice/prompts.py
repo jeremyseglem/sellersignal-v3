@@ -62,6 +62,20 @@ BANNED PHRASES — these are dead giveaways of LLM house style. Any of these app
 - "respects your timeline" / "respects your process" (corporate)
 - Adjective stacking for warmth: "genuine," "heartfelt," "sincere," "thoughtful" used as filler
 
+TIME LANGUAGE — letters MUST read correctly whenever they are mailed:
+
+The letters generated here are stored in the agent's profile and reused across many future sends. A given letter may be mailed weeks, months, or even more than a year after it was generated. Anchoring a letter to a specific year or season makes it go stale the moment the calendar moves.
+
+Rules:
+- NEVER name a specific calendar year. No "2024", "2025", "2026", no "in 2027", no "by year-end 2025". A letter that says "If 2024 becomes the year you move forward" will read as broken when it arrives in 2026.
+- NEVER recommend a season as "the time to sell" or imply one season is better than another. No "spring market", "list in spring", "before winter", "fall is slower", "as we head into year-end", "late winter and early spring often achieve premium results". The letter may arrive in any season.
+- NEVER use absolute calendar positioning: "year-end", "the new year", "first quarter", "going into Q4", "early next year". These all imply a fixed point on the calendar the agent can't predict.
+- DO use relative time anchors: "last month", "six months ago", "a year ago", "two months on", "three months in", "right now", "today's market", "in the past 90 days", "over the past year", "twelve months ago". These read correctly regardless of when the letter is read.
+- "this year" is allowed because it always means "the current year as read" — no anchor to a specific calendar position.
+- Market commentary should be condition-based, not season-based: "inventory remains tight", "buyer demand is strong", "qualified buyers are still active" — not "now that we're in spring buying season".
+
+Acceptance test: imagine this letter mailed in January, in April, in July, in October, and again next year. Does every time reference still make sense? If not, rewrite until it does.
+
 Other rules:
 - Sound like the agent, not like a copywriter.
 - Avoid salesy language.
@@ -335,6 +349,27 @@ _BANNED_REGEXES: list[str] = [
     r"\bI imagine you've made\b",
     r"\brespects your timeline\b",
     r"\brespects your process\b",
+
+    # ─── Time-stale references (added 2026-06-02) ──────────────────
+    # Letters are stored in agent_profiles_v3.generated_scripts and
+    # reused across many future sends — sometimes months or years
+    # after generation. Any time anchor tied to a specific year or
+    # season will go stale before the letter is mailed. These
+    # patterns force regeneration if the model produces calendar-
+    # specific language. See the TIME LANGUAGE rules in SYSTEM_PROMPT.
+    r"\b20[2-9][0-9]\b",                                              # any year 2020-2099
+    r"\b(spring|summer|fall|autumn|winter)\s+(market|window|season|buying|selling|listing)\b",
+    r"\b(list|sell|move forward|achieve premium)\s+in\s+(spring|summer|fall|autumn|winter)\b",
+    r"\bwait until (spring|summer|fall|autumn|winter)\b",
+    r"\bbefore (spring|summer|fall|winter|the new year|year[- ]?end)\b",
+    r"\b(late winter|early spring|late spring|early summer|late summer|early fall|late fall|early winter)\b",
+    r"\byear[- ]?end\b",
+    r"\b(into|before|by) the new year\b",
+    r"\b(first|second|third|fourth)\s+quarter\b",
+    r"\bgoing into Q[1-4]\b",
+    r"\bearly next year\b",
+    r"\bas we (head|approach|move|enter)\s+into\b",                   # "as we head into the latter part of the year"
+    r"\bthe latter part of the year\b",
 ]
 
 
