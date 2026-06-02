@@ -267,7 +267,6 @@ def render_letter_html(
         f'<p class="date">{today}</p>'
         f'{recipient_block_html}'
         f'{body_html}'
-        f'<p class="closing">Warmly,</p>'
         f'{signature_html}'
         f'{contact_html}'
         '</body></html>'
