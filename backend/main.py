@@ -106,6 +106,15 @@ async def lifespan(app: FastAPI):
     from backend.tasks.renewal_notifier import renewal_notifier_loop
     renewal_notifier_task = asyncio.create_task(renewal_notifier_loop())
 
+    # Letter digest — hourly tick that fires at 7am America/Denver for
+    # each agent with letter activity in the prior 24h. Sends a single
+    # email summary listing letters delivered / mailed / returned /
+    # failed yesterday. Idempotent per agent per day via
+    # agent_profiles_v3.letter_digest_last_sent_at (migration 030).
+    # No-op if RESEND_API_KEY isn't set. See backend/tasks/letter_digest.py.
+    from backend.tasks.letter_digest import letter_digest_loop
+    letter_digest_task = asyncio.create_task(letter_digest_loop())
+
     # Letter scheduler — sweeps every 6 hours for scheduled letters past
     # their stannp_send_date and submits to Stannp. Replaces what Lob's
     # send_date parameter used to do for sequenced sends; Stannp has no
@@ -124,6 +133,7 @@ async def lifespan(app: FastAPI):
     canonicalize_autofill_task.cancel()
     snohomish_daily_autofill_task.cancel()
     renewal_notifier_task.cancel()
+    letter_digest_task.cancel()
     # letter_scheduler manages its own task internally — pause for clean shutdown
     letter_scheduler.pause()
     try:
