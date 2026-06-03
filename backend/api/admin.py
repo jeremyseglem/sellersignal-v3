@@ -3162,3 +3162,172 @@ async def launch_readiness(
         'checks':         checks,
         'next_actions':   next_actions,
     }
+
+
+# ─── Backfill mailed-interaction rows ─────────────────────────────
+# As of commit 3819e41 (2026-06-02), send_letter and start_sequence
+# automatically write a 'mailed' interaction row to lead_interactions_v3
+# so the parcel appears in My Leads. That fix only affects letters
+# sent AFTER the commit landed. Existing letters from before that
+# point have no mailed interaction, so their parcels don't auto-
+# appear in My Leads.
+#
+# This endpoint walks letters_sent_v3 for every (agent, pin) pair
+# that has letters but no matching mailed interaction, and inserts
+# one. One interaction per (agent, pin) regardless of how many
+# letters — that mirrors the live wiring (sequence start writes
+# one row, individual sends write one each but the sequence-start
+# already covered it). Use the earliest letter's created_at as the
+# interaction timestamp.
+#
+# Idempotent: re-running does nothing new because the NOT-EXISTS
+# filter excludes pairs that have already been backfilled.
+
+@router.post("/backfill-letter-interactions")
+async def backfill_letter_interactions(
+    dry_run: bool = True,
+    _admin: None = Depends(require_admin),
+):
+    """
+    Backfill 'mailed' interactions for pre-existing letters_sent_v3
+    rows that don't have one yet.
+
+    Args:
+      dry_run — when True (default), reports what WOULD be inserted
+                without writing anything. Flip to False to actually
+                insert.
+
+    Returns:
+      {
+        "dry_run": bool,
+        "letters_total": N,
+        "letters_distinct_pairs": N,        # distinct (agent, pin) in letters
+        "interactions_existing": N,         # already-backfilled pairs
+        "interactions_to_insert": N,        # what this run will do
+        "inserted": N,                      # 0 on dry_run
+        "sample_pairs": [first 10 pairs that will be inserted, for sanity check]
+      }
+    """
+    supa = get_supabase_client()
+
+    # Pull all letters — paginated since the table can be large.
+    # We only need (agent_id, pin, zip_code, created_at) so this stays
+    # cheap. Supabase REST has a 1000-row default cap; loop until done.
+    letters = []
+    offset = 0
+    PAGE = 1000
+    while True:
+        chunk = (supa.table('letters_sent_v3')
+                 .select('agent_id, pin, zip_code, created_at')
+                 .range(offset, offset + PAGE - 1)
+                 .execute()).data or []
+        letters.extend(chunk)
+        if len(chunk) < PAGE:
+            break
+        offset += PAGE
+        if offset > 100_000:
+            # Defensive cap. Today's letter volume is in the dozens;
+            # if this ever fires the task needs a rewrite anyway.
+            raise HTTPException(500, "Letter table larger than expected; backfill needs a rewrite for paging.")
+
+    # Group by (agent_id, pin) and remember the earliest created_at + the zip.
+    pair_first_seen: dict[tuple[str, str], dict] = {}
+    for L in letters:
+        key = (L['agent_id'], L['pin'])
+        existing = pair_first_seen.get(key)
+        if existing is None or (L.get('created_at') or '') < (existing.get('created_at') or ''):
+            pair_first_seen[key] = {
+                'agent_id':   L['agent_id'],
+                'pin':        L['pin'],
+                'zip_code':   L['zip_code'],
+                'created_at': L.get('created_at'),
+            }
+
+    # Fetch existing 'mailed' interactions (just the (agent, pin) pairs).
+    interactions = []
+    offset = 0
+    while True:
+        chunk = (supa.table('lead_interactions_v3')
+                 .select('agent_id, pin')
+                 .eq('event_type', 'mailed')
+                 .range(offset, offset + PAGE - 1)
+                 .execute()).data or []
+        interactions.extend(chunk)
+        if len(chunk) < PAGE:
+            break
+        offset += PAGE
+        if offset > 100_000:
+            raise HTTPException(500, "Interactions table larger than expected; backfill needs a rewrite for paging.")
+
+    existing_pairs = {(I['agent_id'], I['pin']) for I in interactions}
+
+    # Compute the diff — pairs in letters but not in mailed interactions.
+    pairs_to_insert = [
+        info for key, info in pair_first_seen.items()
+        if key not in existing_pairs
+    ]
+
+    sample = [
+        {
+            'agent_id_prefix': p['agent_id'][:8] + '…',
+            'pin':             p['pin'],
+            'zip_code':        p['zip_code'],
+            'created_at':      p['created_at'],
+        }
+        for p in pairs_to_insert[:10]
+    ]
+
+    # Dry-run path: report and stop.
+    if dry_run:
+        return {
+            'dry_run':                  True,
+            'letters_total':            len(letters),
+            'letters_distinct_pairs':   len(pair_first_seen),
+            'interactions_existing':    len(existing_pairs),
+            'interactions_to_insert':   len(pairs_to_insert),
+            'inserted':                 0,
+            'sample_pairs':             sample,
+            'note': 'Re-run with ?dry_run=false to actually insert.',
+        }
+
+    # Live path: insert in batches. Supabase's insert can take a list.
+    inserted = 0
+    BATCH = 100
+    for i in range(0, len(pairs_to_insert), BATCH):
+        batch = pairs_to_insert[i:i + BATCH]
+        rows = [
+            {
+                'agent_id':   p['agent_id'],
+                'pin':        p['pin'],
+                'zip_code':   p['zip_code'],
+                'event_type': 'mailed',
+                'event_data': {
+                    'source':           'backfill_2026_06_02',
+                    'note':             'inserted by /api/admin/backfill-letter-interactions',
+                },
+                'created_at': p['created_at'],
+            }
+            for p in batch
+        ]
+        try:
+            res = supa.table('lead_interactions_v3').insert(rows).execute()
+            inserted += len(res.data or [])
+        except Exception as e:
+            # Don't abort the whole backfill on one bad batch — log
+            # and continue. The caller sees the final inserted count
+            # and can re-run dry to see what remains.
+            raise HTTPException(
+                500,
+                f"Inserted {inserted}/{len(pairs_to_insert)} before failing on batch starting at "
+                f"agent {batch[0]['agent_id'][:8]}…/pin {batch[0]['pin']}: {e}",
+            )
+
+    return {
+        'dry_run':                  False,
+        'letters_total':            len(letters),
+        'letters_distinct_pairs':   len(pair_first_seen),
+        'interactions_existing':    len(existing_pairs),
+        'interactions_to_insert':   len(pairs_to_insert),
+        'inserted':                 inserted,
+        'sample_pairs':             sample,
+    }
