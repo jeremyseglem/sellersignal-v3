@@ -3101,6 +3101,7 @@ async def launch_readiness(
         ('Letters: provider column',          'letters_sent_v3',    'provider',                   '027_letters_provider.sql'),
         ('Letters: rendered_html column',     'letters_sent_v3',    'rendered_html',              '028_letter_scheduled_status.sql'),
         ('Letter digest: timestamp column',   'agent_profiles_v3',  'letter_digest_last_sent_at', '030_letter_digest_timestamp.sql'),
+        ('Letter digest: timezone column',    'agent_profiles_v3',  'digest_timezone',            '031_letter_digest_timezone.sql'),
         ('Stripe: customer_id column',        'agent_profiles_v3',  'stripe_customer_id',         '025_stripe_customer_id.sql'),
         ('Renewal notify: 30d column',        'agent_territories_v3', 'renewal_notified_30d_at',  '026_renewal_notifications.sql'),
     ]
