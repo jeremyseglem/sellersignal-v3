@@ -482,6 +482,34 @@ async def send_letter(
                 f"Contact support to reconcile."
             )
 
+        # Write a denormalized 'mailed' interaction so the parcel appears
+        # in My Leads. The letters_sent_v3 row is the canonical record of
+        # the letter; lead_interactions_v3 is the engagement-log surface
+        # that powers the My Leads pipeline. Best-effort — failure here
+        # must NOT block the response, because the letter is already
+        # mailed and refunding would be wrong. Worst case: the parcel
+        # doesn't auto-appear in My Leads, which is recoverable by the
+        # agent manually marking it working/etc.
+        try:
+            supa.table("lead_interactions_v3").insert({
+                "agent_id":   user.id,
+                "pin":        body.pin,
+                "zip_code":   parcel.get("zip_code") or "",
+                "event_type": "mailed",
+                "event_data": {
+                    "source":           "letter_send",
+                    "stannp_letter_id": str(stannp_letter.get("id")),
+                    "letter_row_id":    insert.data[0]["id"],
+                    "letter_index":     body.letter_index,
+                },
+            }).execute()
+        except Exception as interaction_err:
+            logger.warning(
+                "Letter sent (row %s) but lead_interactions_v3 write failed for "
+                "agent %s pin %s: %s",
+                insert.data[0]["id"], user.id, body.pin, interaction_err,
+            )
+
         return {
             "ok": True,
             "letter_row_id": insert.data[0]["id"],
@@ -639,6 +667,30 @@ async def start_sequence(
                 base_row["status"] = "scheduled"
 
             supa.table("letters_sent_v3").insert(base_row).execute()
+
+        # Write a denormalized 'mailed' interaction so the parcel
+        # appears in My Leads. One write per sequence — represents the
+        # agent's act of initiating outreach, not each individual letter.
+        # Best-effort; see the same pattern in send_letter for rationale.
+        try:
+            supa.table("lead_interactions_v3").insert({
+                "agent_id":   user.id,
+                "pin":        body.pin,
+                "zip_code":   parcel.get("zip_code") or "",
+                "event_type": "mailed",
+                "event_data": {
+                    "source":         "letter_sequence_start",
+                    "sequence_id":    sequence_id,
+                    "first_stannp_id": letter_1_stannp_id,
+                    "total_letters":  6,
+                },
+            }).execute()
+        except Exception as interaction_err:
+            logger.warning(
+                "Sequence %s started but lead_interactions_v3 write failed "
+                "for agent %s pin %s: %s",
+                sequence_id, user.id, body.pin, interaction_err,
+            )
 
         return {
             "ok": True,

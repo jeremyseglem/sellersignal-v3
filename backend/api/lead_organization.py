@@ -36,6 +36,7 @@ Design from schema/019_lead_organization.sql:
     cryptic Postgres errors.
 """
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
@@ -498,6 +499,91 @@ async def my_leads(
                    .execute()).data or []
     parcel_by_pin = {row['pin']: row for row in parcels_res}
 
+    # ── Step 4.5: aggregate letter activity per pin from letters_sent_v3.
+    # Powers the LetterBadge on each lead row + the letter-filter chips
+    # at the top of the page. One round-trip; bucketed in Python so we
+    # only touch the DB once. Status semantics:
+    #
+    #   'scheduled' — queued for future send, no Stannp letter yet
+    #   'created'   — Stannp accepted, not yet printed
+    #   'mailed'    — printed and handed to USPS (any in-transit state)
+    #   'delivered' — USPS confirmed delivery to address
+    #   'returned'  — letter came back (bad address / refused / vacant)
+    #   'failed'    — Stannp couldn't print/mail it
+    #   'cancelled' — agent cancelled before send
+    #
+    # "Sent" for the agent's purpose = anything that physically left
+    # Stannp: created, mailed, delivered. (Delivered IS sent — the sent
+    # count includes delivered to reflect total letters that went out.)
+    letter_rows = (supa.table('letters_sent_v3')
+                   .select('pin, status, status_updated_at, '
+                           'sent_at, delivered_at, stannp_send_date, '
+                           'sequence_id, letter_index')
+                   .eq('agent_id', agent_id)
+                   .in_('pin', active_pins)
+                   .execute()).data or []
+
+    _SENT_STATUSES      = ('created', 'mailed', 'delivered')
+    _DELIVERED_STATUSES = ('delivered',)
+    _SCHEDULED_STATUSES = ('scheduled',)
+    _RETURNED_STATUSES  = ('returned',)
+    _FAILED_STATUSES    = ('failed',)
+
+    # one-week horizon for the "scheduled this week" filter
+    week_horizon = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    now_iso      = datetime.now(timezone.utc).isoformat()
+
+    letter_summary_by_pin: dict[str, dict] = {}
+    for row in letter_rows:
+        pin = row['pin']
+        s   = row.get('status') or ''
+        sum_ = letter_summary_by_pin.setdefault(pin, {
+            'letters_sent_count':      0,
+            'letters_delivered_count': 0,
+            'letters_scheduled_count': 0,
+            'letters_returned_count':  0,
+            'letters_failed_count':    0,
+            'letter_last_status':      None,
+            'letter_last_status_at':   None,
+            'letter_next_scheduled_at': None,
+            'letter_next_scheduled_within_week': False,
+            'sequence_active':         False,
+        })
+
+        if s in _SENT_STATUSES:      sum_['letters_sent_count']      += 1
+        if s in _DELIVERED_STATUSES: sum_['letters_delivered_count'] += 1
+        if s in _SCHEDULED_STATUSES: sum_['letters_scheduled_count'] += 1
+        if s in _RETURNED_STATUSES:  sum_['letters_returned_count']  += 1
+        if s in _FAILED_STATUSES:    sum_['letters_failed_count']    += 1
+
+        # Track the most recent status change. We deliberately exclude
+        # 'scheduled' from the last-status candidates because scheduling
+        # a future letter isn't an "event" in the same sense as one
+        # actually moving through the mail system.
+        if s and s not in _SCHEDULED_STATUSES:
+            ts = row.get('status_updated_at') or row.get('sent_at')
+            if ts and (sum_['letter_last_status_at'] is None
+                       or ts > sum_['letter_last_status_at']):
+                sum_['letter_last_status']    = s
+                sum_['letter_last_status_at'] = ts
+
+        # Track the next scheduled send date for the queued-letters
+        # display. Only consider rows that are still scheduled and have
+        # a future send date.
+        if s in _SCHEDULED_STATUSES:
+            send_at = row.get('stannp_send_date')
+            if send_at and send_at >= now_iso:
+                if (sum_['letter_next_scheduled_at'] is None
+                        or send_at < sum_['letter_next_scheduled_at']):
+                    sum_['letter_next_scheduled_at'] = send_at
+                if send_at <= week_horizon:
+                    sum_['letter_next_scheduled_within_week'] = True
+
+        # Sequence is "active" if there's a non-cancelled,
+        # non-completed sequence with anything still pending.
+        if row.get('sequence_id') and s not in ('cancelled', 'failed', 'returned'):
+            sum_['sequence_active'] = True
+
     # ── Step 5: aggregate per-pin tags, note counts, and last_action.
     tags_by_pin: dict[str, list[str]] = {}
     for row in tag_rows:
@@ -532,11 +618,28 @@ async def my_leads(
             record_last(row['pin'], row['created_at'], 'tagged')
 
     # ── Step 6: assemble lead rows.
+    # Default letter-summary shape used for pins with no letter
+    # activity. Keeping the keys present (rather than absent) makes
+    # the frontend rendering branch-free.
+    _EMPTY_LETTER_SUMMARY = {
+        'letters_sent_count':      0,
+        'letters_delivered_count': 0,
+        'letters_scheduled_count': 0,
+        'letters_returned_count':  0,
+        'letters_failed_count':    0,
+        'letter_last_status':      None,
+        'letter_last_status_at':   None,
+        'letter_next_scheduled_at': None,
+        'letter_next_scheduled_within_week': False,
+        'sequence_active':         False,
+    }
+
     leads = []
     for pin in active_pins:
         parcel = parcel_by_pin.get(pin) or {}
         status_info = status_by_pin.get(pin, {})
         la = last_action.get(pin, (None, None))
+        letter_summary = letter_summary_by_pin.get(pin, _EMPTY_LETTER_SUMMARY)
         leads.append({
             'pin':              pin,
             'zip_code':         parcel.get('zip_code'),
@@ -553,6 +656,8 @@ async def my_leads(
             'notes_count':      note_counts.get(pin, 0),
             'last_action_at':   la[0],
             'last_action_type': la[1],
+            # Letter aggregates — drive the LetterBadge + filter chips.
+            **letter_summary,
         })
 
     # Sort newest-touched first by default. Frontend can re-sort.
@@ -579,8 +684,23 @@ async def my_leads(
         'total':              len(leads),
     }
 
+    # ── Step 8: letter filter counts.
+    # The frontend renders a chip per letter-activity filter, but only
+    # if the filter would match at least one lead. Counting here keeps
+    # the frontend filter chip row honest (no dead chips) and avoids a
+    # second pass over `leads` in the React layer.
+    letter_filter_counts = {
+        'sent':                sum(1 for L in leads if L['letters_sent_count']      > 0),
+        'delivered':           sum(1 for L in leads if L['letters_delivered_count'] > 0),
+        'returned':            sum(1 for L in leads if L['letters_returned_count']  > 0),
+        'failed':              sum(1 for L in leads if L['letters_failed_count']    > 0),
+        'scheduled_this_week': sum(1 for L in leads if L['letter_next_scheduled_within_week']),
+        'sequence_active':     sum(1 for L in leads if L['sequence_active']),
+    }
+
     return {
-        'leads':          leads,
-        'available_tags': available_tags,
-        'totals':         totals,
+        'leads':                leads,
+        'available_tags':       available_tags,
+        'totals':               totals,
+        'letter_filter_counts': letter_filter_counts,
     }

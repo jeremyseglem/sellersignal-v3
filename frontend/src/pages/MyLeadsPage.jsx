@@ -29,6 +29,19 @@ const SECTION_ORDER = [
   { key: 'engaged',            label: 'Engaged',            color: 'var(--text-tertiary)' },
 ];
 
+// Letter-activity filter chips. Order is deliberate: most actionable
+// (returned/failed) first, then high-signal (delivered), then routine
+// (sent/scheduled/active). Counts come from data.letter_filter_counts
+// computed server-side. `tone` drives the chip color when active.
+const LETTER_FILTERS = [
+  { key: 'returned',            label: 'Returned',            tone: 'alert'   },
+  { key: 'failed',              label: 'Failed',              tone: 'alert'   },
+  { key: 'delivered',           label: 'Delivered',           tone: 'success' },
+  { key: 'sent',                label: 'Sent',                tone: 'accent'  },
+  { key: 'scheduled_this_week', label: 'Scheduled this week', tone: 'neutral' },
+  { key: 'sequence_active',     label: 'Sequence active',     tone: 'neutral' },
+];
+
 export default function MyLeadsPage() {
   const { profile, signOut } = useAuth();
   const navigate = useNavigate();
@@ -37,6 +50,12 @@ export default function MyLeadsPage() {
   const [error, setError]       = useState(null);
   const [search, setSearch]     = useState('');
   const [selectedTags, setSelectedTags] = useState([]);
+  // Letter-activity filter chips. Separate state from selectedTags
+  // because letter filters apply to derived fields (letters_sent_count
+  // etc.) rather than user-applied tags. Both filter groups apply
+  // simultaneously — tag union AND letter union must both be satisfied
+  // when both are active.
+  const [selectedLetterFilters, setSelectedLetterFilters] = useState([]);
 
   useEffect(() => {
     myLeads.list()
@@ -50,10 +69,30 @@ export default function MyLeadsPage() {
     ));
   };
 
-  // Apply search + tag filter, then group by status.
+  const handleToggleLetterFilter = (key) => {
+    setSelectedLetterFilters((prev) => (
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    ));
+  };
+
+  // Apply search + tag filter + letter-activity filter, then group by status.
   const grouped = useMemo(() => {
     if (!data?.leads) return null;
     const q = search.trim().toLowerCase();
+
+    // Predicate evaluator for a single letter-filter key against a lead.
+    // Returns true if the lead matches the filter; false otherwise.
+    const matchesLetterFilter = (L, key) => {
+      switch (key) {
+        case 'sent':                return (L.letters_sent_count      || 0) > 0;
+        case 'delivered':           return (L.letters_delivered_count || 0) > 0;
+        case 'returned':            return (L.letters_returned_count  || 0) > 0;
+        case 'failed':              return (L.letters_failed_count    || 0) > 0;
+        case 'scheduled_this_week': return !!L.letter_next_scheduled_within_week;
+        case 'sequence_active':     return !!L.sequence_active;
+        default:                    return false;
+      }
+    };
 
     const filtered = data.leads.filter((L) => {
       // Search: address / owner / pin / any tag
@@ -67,6 +106,13 @@ export default function MyLeadsPage() {
       if (selectedTags.length > 0) {
         const tagSet = new Set(L.tags || []);
         if (!selectedTags.some((t) => tagSet.has(t))) return false;
+      }
+      // Letter-activity filter: union semantics within the group —
+      // match if any selected letter filter matches.
+      if (selectedLetterFilters.length > 0) {
+        if (!selectedLetterFilters.some((k) => matchesLetterFilter(L, k))) {
+          return false;
+        }
       }
       return true;
     });
@@ -84,7 +130,7 @@ export default function MyLeadsPage() {
       else out.engaged.push(L);
     }
     return out;
-  }, [data, search, selectedTags]);
+  }, [data, search, selectedTags, selectedLetterFilters]);
 
   return (
     <SiteLayout agent={profile} onSignOut={signOut} showFooter={false}>
@@ -126,6 +172,43 @@ export default function MyLeadsPage() {
 
         {error && (
           <div style={errorStyle}>{error}</div>
+        )}
+
+        {/* Letter-activity filter chips. Only render chips for filters
+            that would match >0 leads — keeps the row honest and the
+            UI quiet when no letters are in flight yet. */}
+        {data && data.letter_filter_counts && (
+          (() => {
+            const lf = data.letter_filter_counts;
+            const visible = LETTER_FILTERS.filter((f) => (lf[f.key] || 0) > 0);
+            if (visible.length === 0) return null;
+            return (
+              <div style={tagRowStyle}>
+                <span style={tagRowLabelStyle}>Letter activity:</span>
+                {visible.map((f) => {
+                  const active = selectedLetterFilters.includes(f.key);
+                  return (
+                    <button
+                      key={f.key}
+                      onClick={() => handleToggleLetterFilter(f.key)}
+                      style={letterFilterChipStyle(active, f.tone)}
+                    >
+                      {f.label}
+                      <span style={tagCountStyle}>{lf[f.key]}</span>
+                    </button>
+                  );
+                })}
+                {selectedLetterFilters.length > 0 && (
+                  <button
+                    onClick={() => setSelectedLetterFilters([])}
+                    style={clearButtonStyle}
+                  >
+                    Clear letters
+                  </button>
+                )}
+              </div>
+            );
+          })()
         )}
 
         {data && data.available_tags.length > 0 && (
@@ -237,6 +320,7 @@ function LeadRow({ lead, onClick }) {
         )}
       </div>
       <div style={leadRowRightStyle}>
+        <LetterBadge lead={lead} />
         {lead.notes_count > 0 && (
           <div style={leadMetaStyle}>
             {lead.notes_count} note{lead.notes_count === 1 ? '' : 's'}
@@ -246,6 +330,95 @@ function LeadRow({ lead, onClick }) {
         <div style={leadZipStyle}>ZIP {lead.zip_code}</div>
       </div>
     </button>
+  );
+}
+
+
+/**
+ * Compact, priority-ordered single badge summarizing a lead's letter
+ * activity. Priority is "what does the agent need to know first":
+ *
+ *   1. Returned    — bad address; verify before re-sending
+ *   2. Failed      — Stannp couldn't print/mail; system-side problem
+ *   3. Delivered   — USPS confirmed delivery; call window opens
+ *   4. Sent        — physically in transit
+ *   5. Scheduled   — queued for future send (only shown when nothing
+ *                    above applies — once a sequence has activity, the
+ *                    in-flight signal is more useful than "X scheduled")
+ *
+ * Hover surfaces the full count breakdown via the native title tooltip
+ * (no popover dep). Returns null if the lead has no letter activity.
+ */
+function LetterBadge({ lead }) {
+  const sent      = lead.letters_sent_count      || 0;
+  const delivered = lead.letters_delivered_count || 0;
+  const scheduled = lead.letters_scheduled_count || 0;
+  const returned  = lead.letters_returned_count  || 0;
+  const failed    = lead.letters_failed_count    || 0;
+
+  if (sent + delivered + scheduled + returned + failed === 0) {
+    return null;
+  }
+
+  // Build the tooltip text up front so every code path shares it.
+  const tooltipParts = [];
+  if (sent > 0)      tooltipParts.push(`${sent} sent`);
+  if (delivered > 0) tooltipParts.push(`${delivered} delivered`);
+  if (scheduled > 0) tooltipParts.push(`${scheduled} scheduled`);
+  if (returned > 0)  tooltipParts.push(`${returned} returned`);
+  if (failed > 0)    tooltipParts.push(`${failed} failed`);
+  if (lead.letter_next_scheduled_at) {
+    const dt = new Date(lead.letter_next_scheduled_at);
+    tooltipParts.push(`next ${dt.toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}`);
+  }
+  const tooltip = tooltipParts.join(' · ');
+
+  // Choose primary signal by priority order described above.
+  let tone, dot, text;
+  if (returned > 0) {
+    tone = 'alert';
+    dot  = '●';
+    text = returned === 1 ? 'Returned' : `${returned} returned`;
+    if (lead.letter_last_status === 'returned' && lead.letter_last_status_at) {
+      text += ` ${formatRelative(lead.letter_last_status_at)}`;
+    }
+  } else if (failed > 0) {
+    tone = 'alert';
+    dot  = '●';
+    text = failed === 1 ? 'Failed' : `${failed} failed`;
+  } else if (delivered > 0) {
+    tone = 'success';
+    dot  = '●';
+    if (lead.letter_last_status === 'delivered' && lead.letter_last_status_at) {
+      text = `Delivered ${formatRelative(lead.letter_last_status_at)}`;
+    } else {
+      text = delivered === 1 ? 'Delivered' : `${delivered} delivered`;
+    }
+  } else if (sent > 0) {
+    tone = 'accent';
+    dot  = '●';
+    if (lead.letter_last_status_at) {
+      text = `Sent ${formatRelative(lead.letter_last_status_at)}`;
+    } else {
+      text = sent === 1 ? 'Sent' : `${sent} sent`;
+    }
+  } else {
+    // scheduled-only: nothing's gone out yet
+    tone = 'neutral';
+    dot  = '○';
+    if (lead.letter_next_scheduled_at) {
+      const dt = new Date(lead.letter_next_scheduled_at);
+      text = `${scheduled} scheduled · next ${dt.toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}`;
+    } else {
+      text = `${scheduled} scheduled`;
+    }
+  }
+
+  return (
+    <div style={letterBadgeStyle(tone)} title={tooltip}>
+      <span style={letterBadgeDotStyle(tone)}>{dot}</span>
+      <span>{text}</span>
+    </div>
   );
 }
 
@@ -465,3 +638,61 @@ const emptyFilterStyle = {
   fontStyle: 'italic',
   color: 'var(--text-tertiary)',
 };
+
+// ─── Letter activity badge + filter chip styles ─────────────────────
+// Tone→color map. Uses the existing token system so the badges sit
+// comfortably with the rest of the UI:
+//   alert    → red/danger (returned/failed)
+//   success  → green (delivered — recipient has the letter)
+//   accent   → ivory-gold (sent — in transit)
+//   neutral  → muted gray (scheduled / sequence active — passive state)
+const _TONE_COLOR = {
+  alert:   'var(--alert, #B6442C)',
+  success: 'var(--success, #5C7A3B)',
+  accent:  'var(--accent, #8B6914)',
+  neutral: 'var(--text-tertiary)',
+};
+
+const _TONE_BG_ACTIVE = {
+  alert:   'var(--alert, #B6442C)',
+  success: 'var(--success, #5C7A3B)',
+  accent:  'var(--accent, #8B6914)',
+  neutral: 'var(--text-secondary)',
+};
+
+const letterFilterChipStyle = (active, tone) => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '4px 10px',
+  fontSize: 11,
+  fontFamily: 'var(--font-sans)',
+  fontWeight: 500,
+  letterSpacing: '0.02em',
+  borderRadius: 999,
+  border: `1px solid ${active ? _TONE_BG_ACTIVE[tone] : 'var(--border)'}`,
+  background: active ? _TONE_BG_ACTIVE[tone] : 'transparent',
+  color: active ? 'var(--bg-primary, #F5F0EB)' : _TONE_COLOR[tone] || 'var(--text-secondary)',
+  cursor: 'pointer',
+  transition: 'background 120ms, color 120ms, border-color 120ms',
+});
+
+// Per-row badge — quiet, inline, paired with a single colored dot.
+// Lives in the right meta column of LeadRow; sits above notes/timestamp.
+const letterBadgeStyle = (tone) => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  fontFamily: 'var(--font-sans)',
+  fontSize: 10,
+  fontWeight: 500,
+  letterSpacing: '0.01em',
+  color: _TONE_COLOR[tone] || 'var(--text-secondary)',
+  marginBottom: 2,
+});
+
+const letterBadgeDotStyle = (tone) => ({
+  fontSize: 10,
+  lineHeight: 1,
+  color: _TONE_COLOR[tone] || 'var(--text-secondary)',
+});
