@@ -80,7 +80,12 @@ log = logging.getLogger(__name__)
 # Send time, in the agent-display timezone. v1 ignores per-agent
 # preferences and fires for everyone at this hour in this zone.
 SEND_HOUR_LOCAL = int(os.environ.get("LETTER_DIGEST_SEND_HOUR", "7"))
-DISPLAY_TZ      = ZoneInfo("America/Denver")
+
+# Fallback timezone for any agent whose digest_timezone column is
+# missing (pre-migration row) or set to a string ZoneInfo can't parse.
+# Keeps the task functional even if the migration hasn't been applied.
+DEFAULT_TZ_NAME = "America/Denver"
+DEFAULT_TZ      = ZoneInfo(DEFAULT_TZ_NAME)
 
 TICK_INTERVAL_SECS = int(os.environ.get("LETTER_DIGEST_TICK_SECONDS", str(60 * 60)))
 STARTUP_DELAY      = 60   # let other tasks settle first
@@ -106,20 +111,37 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _local_now() -> datetime:
-    return _now_utc().astimezone(DISPLAY_TZ)
+def _agent_tz(agent: dict) -> ZoneInfo:
+    """Resolve the agent's preferred digest timezone, falling back to
+    America/Denver if the column is missing or its value can't be
+    parsed as a valid IANA timezone."""
+    tz_name = (agent.get("digest_timezone") or DEFAULT_TZ_NAME).strip()
+    if not tz_name:
+        return DEFAULT_TZ
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        log.warning(
+            "[letter-digest] agent %s has invalid digest_timezone=%r; falling back to %s",
+            agent.get("id", "?")[:8], tz_name, DEFAULT_TZ_NAME,
+        )
+        return DEFAULT_TZ
 
 
-def _already_sent_today(last_sent_iso: Optional[str]) -> bool:
-    """Was the last digest sent today (in DISPLAY_TZ)?"""
+def _local_now_for(agent: dict) -> datetime:
+    return _now_utc().astimezone(_agent_tz(agent))
+
+
+def _already_sent_today(last_sent_iso: Optional[str], agent_tz: ZoneInfo) -> bool:
+    """Was the last digest sent today in this agent's timezone?"""
     if not last_sent_iso:
         return False
     try:
         last = datetime.fromisoformat(last_sent_iso.replace("Z", "+00:00"))
     except Exception:
         return False
-    last_local = last.astimezone(DISPLAY_TZ)
-    today_local = _local_now()
+    last_local  = last.astimezone(agent_tz)
+    today_local = _now_utc().astimezone(agent_tz)
     return last_local.date() == today_local.date()
 
 
@@ -337,18 +359,26 @@ def _render_email(agent_name: str,
 # ── Per-agent processing ─────────────────────────────────────────────────
 
 def _process_agent(supa, agent: dict, since_iso: str) -> str:
-    """Send one agent's digest if there's activity. Returns a brief
-    log-friendly outcome string."""
-    agent_id  = agent["id"]
+    """Send one agent's digest if there's activity AND it's currently
+    07:00 in the agent's timezone AND we haven't already sent today.
+    Returns a brief log-friendly outcome string."""
+    agent_id   = agent["id"]
     email_addr = agent.get("email")
-    name      = agent.get("full_name") or ""
-    last_sent = agent.get("letter_digest_last_sent_at")
+    name       = agent.get("full_name") or ""
+    last_sent  = agent.get("letter_digest_last_sent_at")
 
     if not email_addr:
         return f"{agent_id[:8]}: no email"
 
-    if _already_sent_today(last_sent):
-        return f"{agent_id[:8]}: already sent today"
+    # Hour check is per-agent now. Different agents in different
+    # timezones each get evaluated against their own 7am.
+    agent_tz   = _agent_tz(agent)
+    local_now  = _now_utc().astimezone(agent_tz)
+    if local_now.hour != SEND_HOUR_LOCAL:
+        return f"{agent_id[:8]}: off-hour ({local_now.hour:02d} {agent_tz.key})"
+
+    if _already_sent_today(last_sent, agent_tz):
+        return f"{agent_id[:8]}: already sent today ({agent_tz.key})"
 
     events = _fetch_recent_events(supa, agent_id, since_iso)
     if not events:
@@ -380,23 +410,16 @@ def _process_agent(supa, agent: dict, since_iso: str) -> str:
         )
         return f"{agent_id[:8]}: sent, stamp failed"
 
-    return f"{agent_id[:8]}: sent {len(events)} events to {email_addr}"
+    return f"{agent_id[:8]}: sent {len(events)} events to {email_addr} ({agent_tz.key})"
 
 
 # ── One tick ─────────────────────────────────────────────────────────────
 
 async def _one_tick() -> dict:
-    """Run one digest sweep. Most ticks are no-ops because the local
-    hour doesn't match SEND_HOUR_LOCAL — we still return a summary
-    dict so the loop logs are uniform."""
-    local = _local_now()
-    if local.hour != SEND_HOUR_LOCAL:
-        return {
-            "tz_hour": local.hour,
-            "wait_for": SEND_HOUR_LOCAL,
-            "fired": False,
-        }
-
+    """Run one digest sweep. Per-agent the task asks: is it currently
+    7am in THIS agent's timezone? Only agents who match get processed.
+    Most agents on most ticks will be off-hour — that's fine, the
+    check is cheap and the agent set is small."""
     supa = get_supabase_client()
     if supa is None:
         return {"error": "supabase unavailable", "fired": False}
@@ -405,15 +428,33 @@ async def _one_tick() -> dict:
     # [now - 24h, now) is "yesterday's activity" for this digest.
     since_iso = (_now_utc() - timedelta(hours=LOOKBACK_HOURS)).isoformat()
 
-    # Pull every agent — small set, no pre-filter needed. Includes
-    # both onboarded and not-yet-onboarded; agents without activity
-    # silently skip in _process_agent.
-    agents = (
-        supa.table("agent_profiles_v3")
-            .select("id, email, full_name, letter_digest_last_sent_at")
-            .not_.is_("email", "null")
-            .execute()
-    ).data or []
+    # Pull every agent. Include digest_timezone explicitly so each
+    # _process_agent can evaluate the hour check in the agent's zone.
+    # Defensive select: if the column doesn't exist yet (pre-migration
+    # 031), Supabase will error — fall back to the column-less select
+    # so we keep working.
+    select_columns = "id, email, full_name, letter_digest_last_sent_at, digest_timezone"
+    try:
+        agents = (
+            supa.table("agent_profiles_v3")
+                .select(select_columns)
+                .not_.is_("email", "null")
+                .execute()
+        ).data or []
+    except Exception as e:
+        if "digest_timezone" in str(e):
+            log.warning(
+                "[letter-digest] digest_timezone column missing — apply migration 031. "
+                "Falling back to global %s.", DEFAULT_TZ_NAME,
+            )
+            agents = (
+                supa.table("agent_profiles_v3")
+                    .select("id, email, full_name, letter_digest_last_sent_at")
+                    .not_.is_("email", "null")
+                    .execute()
+            ).data or []
+        else:
+            raise
 
     sent = 0
     skipped = 0
@@ -431,8 +472,10 @@ async def _one_tick() -> dict:
             log.exception("[letter-digest] error processing %s", agent.get("id"))
             errors += 1
 
+    # 'fired' is True whenever at least one agent had a hit. Used by
+    # the main loop to decide INFO vs DEBUG log level.
     return {
-        "fired":   True,
+        "fired":   sent > 0,
         "checked": len(agents),
         "sent":    sent,
         "skipped": skipped,
@@ -446,8 +489,9 @@ async def _one_tick() -> dict:
 async def letter_digest_loop():
     """Public entrypoint. Wired into FastAPI's lifespan in backend/main.py."""
     log.info(
-        "[letter-digest] starting (tick every %ds, send at %d:00 %s, startup delay %ds)",
-        TICK_INTERVAL_SECS, SEND_HOUR_LOCAL, DISPLAY_TZ.key, STARTUP_DELAY,
+        "[letter-digest] starting (tick every %ds, send at %d:00 in each agent's "
+        "digest_timezone (default %s), startup delay %ds)",
+        TICK_INTERVAL_SECS, SEND_HOUR_LOCAL, DEFAULT_TZ_NAME, STARTUP_DELAY,
     )
     await asyncio.sleep(STARTUP_DELAY)
 

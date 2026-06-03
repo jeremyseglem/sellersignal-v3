@@ -3331,3 +3331,64 @@ async def backfill_letter_interactions(
         'inserted':                 inserted,
         'sample_pairs':             sample,
     }
+
+
+# ─── Set agent digest timezone ───────────────────────────────────────
+# Companion to the per-agent timezone work in letter_digest task.
+# The agent's profile carries a `digest_timezone` column (IANA name);
+# the digest task reads it to decide "is it 7am for THIS agent."
+# Until the profile UI exposes this, operators use this endpoint.
+
+@router.post("/set-agent-timezone")
+async def set_agent_timezone(
+    email: str,
+    timezone: str,
+    _admin: None = Depends(require_admin),
+):
+    """
+    Set agent_profiles_v3.digest_timezone for the agent with the
+    given email.
+
+    Args:
+      email    — agent's email address (must match agent_profiles_v3.email)
+      timezone — IANA timezone name, e.g. 'America/Denver',
+                 'America/Los_Angeles', 'America/New_York'. Validated
+                 against zoneinfo before write — invalid names return 400.
+
+    Returns:
+      {"email": ..., "agent_id": ..., "timezone": ..., "was": ...}
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, Exception) as e:
+        raise HTTPException(
+            400,
+            f"Invalid timezone {timezone!r}. Must be an IANA name like "
+            f"'America/Denver'. ({type(e).__name__})",
+        )
+
+    supa = get_supabase_client()
+    res = (supa.table('agent_profiles_v3')
+           .select('id, email, digest_timezone')
+           .eq('email', email)
+           .limit(1)
+           .execute())
+    rows = res.data or []
+    if not rows:
+        raise HTTPException(404, f"No agent with email={email!r}.")
+    prev = rows[0].get('digest_timezone')
+
+    upd = (supa.table('agent_profiles_v3')
+           .update({'digest_timezone': timezone})
+           .eq('email', email)
+           .execute())
+    if not upd.data:
+        raise HTTPException(500, "Update returned no rows.")
+
+    return {
+        'email':    email,
+        'agent_id': rows[0]['id'],
+        'timezone': timezone,
+        'was':      prev,
+    }
