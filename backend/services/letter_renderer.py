@@ -47,24 +47,30 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-# Default logo path. Will be made per-agent later when we add upload UI.
+# Default logo path. PNG (not SVG) because xhtml2pdf's SVG renderer is
+# too weak to handle even simple path-based logos cleanly. PNG was
+# pre-rendered from data/letterheads/the-agency.svg at 360x360 px (3x
+# the 120-unit viewBox) for retina quality, then committed. Re-render
+# via the build script in data/letterheads/README.md if the SVG ever
+# changes; runtime never touches the SVG → PNG conversion.
 DEFAULT_LOGO_PATH = (
     Path(__file__).resolve().parent.parent.parent
-    / "data" / "letterheads" / "the-agency.svg"
+    / "data" / "letterheads" / "the-agency.png"
 )
 
 
 def _load_logo_data_uri(logo_path: Optional[Path] = None) -> str:
     """
-    Read the SVG logo from disk and return a data:image/svg+xml;base64,...
-    string suitable for embedding in an <img src=""> tag.
+    Read the letterhead logo PNG from disk and return a
+    `data:image/png;base64,...` string suitable for embedding in an
+    `<img src="">` tag.
 
-    Returns empty string if the file is missing — caller can choose
-    to render without a logo rather than crash.
+    Returns empty string if the file is missing — the renderer falls
+    back to a logo-less header rather than crashing the letter send.
     """
     path = logo_path or DEFAULT_LOGO_PATH
     try:
-        svg_bytes = path.read_bytes()
+        png_bytes = path.read_bytes()
     except FileNotFoundError:
         logger.warning("Letterhead logo not found at %s — rendering without logo", path)
         return ""
@@ -72,8 +78,8 @@ def _load_logo_data_uri(logo_path: Optional[Path] = None) -> str:
         logger.warning("Failed to read letterhead logo at %s: %s", path, e)
         return ""
 
-    encoded = base64.b64encode(svg_bytes).decode("ascii")
-    return f"data:image/svg+xml;base64,{encoded}"
+    encoded = base64.b64encode(png_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _fetch_signature_data_uri(signature_url: Optional[str]) -> str:
@@ -252,6 +258,24 @@ def render_letter_html(
 
     today = datetime.now(timezone.utc).strftime("%B %-d, %Y")
 
+    # Letterhead logo — top-right above the date. The PNG is small
+    # enough (~8KB base64-encoded, ~12KB inline) that embedding doesn't
+    # bloat the rendered HTML appreciably. logo_path is the per-call
+    # override; when None (default), the function loads the agency's
+    # red mark from data/letterheads/the-agency.png.
+    logo_data_uri = _load_logo_data_uri(logo_path)
+    logo_html = ""
+    if logo_data_uri:
+        # Float-right so the logo sits at the top-right while the date
+        # remains left-aligned. xhtml2pdf supports `float: right` for
+        # images. Size 60pt = ~5/6 inch square — large enough to read,
+        # small enough to feel like a header mark, not a banner.
+        logo_html = (
+            f'<img src="{logo_data_uri}" '
+            f'style="float:right; width:60pt; height:60pt; '
+            f'margin:0 0 6pt 12pt;" />'
+        )
+
     # Flat, minimal HTML. No wrappers. Element-level CSS. Whitespace
     # between tags collapsed so xhtml2pdf doesn't interpret it as
     # text nodes.
@@ -264,6 +288,7 @@ def render_letter_html(
         '.date { font-size: 10.5pt; color: #555; margin-bottom: 14pt; }'
         '.closing { margin-top: 14pt; margin-bottom: 0; }'
         '</style></head><body>'
+        f'{logo_html}'
         f'<p class="date">{today}</p>'
         f'{recipient_block_html}'
         f'{body_html}'
