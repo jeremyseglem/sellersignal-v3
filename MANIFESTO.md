@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-05-17 (post 5-ZIP expansion, orchestrator redesign, canonicalize autofill task, query-path fix)
+**Last updated:** 2026-06-02 (brand voice prompt fix + My Leads letter badges + dedicated /letters page + daily email digest)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -377,13 +377,17 @@ curl -s -H "X-Admin-Key: ${ADMIN_KEY}" "https://sellersignal.co/api/coverage"
 - **Database:** Supabase (Postgres). All tables `*_v3` to distinguish from archived v1 data.
 - **Auth:** Supabase Auth (magic-link email)
 - **Payments:** Stripe (carried from v1, not yet wired to V3 beta)
-- **Background tasks:** Six asyncio tasks in `backend/tasks/`:
+- **Background tasks:** Ten asyncio tasks in `backend/tasks/`:
   - `autofill.py` — case-parties scraper
   - `obit_autofill.py` — multi-source obit harvester
   - `treasury_autofill.py` — tax-foreclosure harvester
   - `rematch_autofill.py` — drains unmatched-signals queue
   - `snohomish_tenure_autofill.py` — SCOPI per-parcel detail page scraper (idle by default)
   - `canonicalize_autofill.py` — completes deferred / partial owner_canonical_v3 work
+  - `snohomish_daily_autofill.py` — daily new-case-report PDF harvester (24h tick)
+  - `renewal_notifier.py` — Stripe-renewal reminder emails at T-30/T-7/T-1
+  - `letter_scheduler.py` — 6h tick; submits scheduled letters past `stannp_send_date` to Stannp
+  - `letter_digest.py` — hourly tick; fires 07:00 America/Denver with prior-24h letter-event summary email per agent
 - **Hosting:** Railway, single service, auto-deploy on push
 
 ---
@@ -496,6 +500,77 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-06-02 — Brand voice prompt fix + My Leads letter badges + /letters page + daily email digest
+
+Five-part session. Started as one bug fix (letters referencing "2024" as the year to sell and "spring" as the time to list), grew into three new features for surfacing letter activity to the agent.
+
+**Brand voice prompt fix (commits `6edf74e`, `09da575`)**
+
+Jeremy spotted multiple letters in his SixLettersModal preview that referenced "If 2024 becomes the year you move forward" and "families who list in late winter and early spring." Initial grep audit across the codebase came up empty — no hardcoded "2024" or "spring" anywhere. Spent an extended back-and-forth before locating the source: the SixLettersModal's frontend code first tries `profile.generated_scripts[archetypeKey].letter_sequence` (the Anthropic-generated brand voice content stored on the agent profile), falling back to the static templates in `frontend/src/lib/sixLetters.js` only when missing. The stale content was in Jeremy's brand voice content from a generation run that happened when Claude's training data still anchored to 2024 — that JSON got persisted to `agent_profiles_v3.generated_scripts` and replayed on every parcel.
+
+Two fixes:
+1. **`backend/agent_voice/prompts.py`** — added a TIME LANGUAGE rules block to `SYSTEM_PROMPT` forbidding calendar years (2024/2025/2026), seasonal "time to sell" claims (spring market, late winter, before year-end), and absolute positioning ("first quarter", "as we head into [period]"). Plus added 13 new regex patterns to `_BANNED_REGEXES` so future regenerations trigger retry if the model slips. Smoke-tested: all 7 of Jeremy's actual offending strings get caught; no false positives on the existing evergreen template language.
+2. **`POST /api/admin/regenerate-agent-scripts?email=<email>`** — new admin-key-gated endpoint that fires the same generation logic as the JWT-authenticated `/api/agent/generate-scripts`, but addressed at any agent by email. Refactored the core "read profile → run 6 archetypes → write back" logic into a shared `run_generation_for_user(user_id)` helper that both endpoints call. Used immediately to regenerate Jeremy's scripts: 6/6 archetypes succeeded in 121s, ~50K tokens, all output passed the stale-time audit. Reusable for any future prompt iteration without needing each agent to manually click Regenerate.
+
+**Feature A — My Leads letter badges + filter chips (commit `3819e41`)**
+
+Prereq dependency surfaced during scoping: today, starting a sequence or sending a single letter does NOT write to `lead_interactions_v3`. That table only got touched on manual "Mark mailed" clicks in the dossier. Consequence: parcels with active sequences didn't appear in My Leads automatically until the agent manually engaged. Wrong — sending outreach IS engagement. Fixed inside the same commit: `send_letter` and `start_sequence` now both write a `mailed` interaction row at success, best-effort (don't refund on stamp failure since the letter is already on the wire). `'mailed'` isn't in `_FUNNEL_STATUS_EVENTS` so it doesn't override existing 'working' / 'listing_discussion' statuses — purely promotes to engaged_pins for My Leads visibility.
+
+After the prereq, `GET /api/my-leads` gains Step 4.5 that aggregates `letters_sent_v3` per active pin. New per-lead fields: `letters_{sent,delivered,scheduled,returned,failed}_count`, `letter_last_status`, `letter_last_status_at`, `letter_next_scheduled_at`, `letter_next_scheduled_within_week`, `sequence_active`. New top-level `letter_filter_counts` block so the UI can hide zero-hit chips. One round-trip to letters_sent_v3, no N+1.
+
+Frontend MyLeadsPage gains:
+- `LetterBadge` component — priority-ordered single badge in the right meta column. Returned > Failed > Delivered > Sent > Scheduled. Color tones via existing CSS tokens (--alert, --success, --accent, --text-tertiary). Hover surfaces full count breakdown via the native title tooltip.
+- New "Letter activity:" filter chip row above the existing tag-filter row. Six chips: Returned · Failed · Delivered · Sent · Scheduled this week · Sequence active. Multi-select; AND with existing tag filters. Only renders chips with count > 0 so the row stays honest.
+
+**Feature B — Dedicated /letters page (commit `4b44ea9`)**
+
+New `GET /api/letters/sequences-by-agent` returns every sequence (and standalone single-send wrapped as a 1-letter "sequence") for the calling agent. One round-trip: pull all letters_sent_v3 for agent, all letter_sequences_v3, and all touched parcels — bucket in Python by sequence_id, with `sequence_id=NULL` becoming its own group keyed by the letter id. Per bucket: status counts, latest non-scheduled event, next scheduled date. Top-level `filter_counts` and `totals` for header metrics.
+
+Frontend `LettersPage.jsx` at route `/letters`:
+- Header showing totals ("X sequences · Y sent · Z delivered · ...")
+- Filter chip row: Has returned · Has failed · Has delivered · Active · Scheduled pending · Completed · Cancelled. Same tone styling as My Leads.
+- Sortable table (v1: sorted newest-started first; column-click sort is a follow-up). Columns: Parcel · Owner · Started · Progress · Latest event · Next scheduled · Actions.
+- **Six-dot progress indicator** color-coded: green = delivered, gold = in-transit, red = returned/failed, hollow = scheduled.
+- Per-row actions: View (navigates to `/zip/{zip}?pin={pin}` opening the dossier) and Cancel (confirm dialog → `POST /letters/cancel-sequence/{id}` → refresh). Cancel button suppressed for standalone single-sends (by the time we have the row, the letter is in transit at Stannp) and for already-completed/cancelled sequences. Status pill shows "Single send" vs "Active" to make the distinction clear.
+
+Nav: new "Letters" link in both desktop and mobile menus, between My Leads and Profile.
+
+**Feature C1 — Daily letter activity email digest (commits `71744bf`, schema `030`)**
+
+`backend/tasks/letter_digest.py` — hourly tick that fires at 07:00 America/Denver. Per agent with letter events with `status_updated_at` in the prior 24h, sends a single email summary. Sections in action-priority order: Delivered (recipient has the letter; follow-up window opens) → Returned (verify address) → Failed (Stannp couldn't print/mail) → Mailed (informational). Each parcel listed with owner + address + city/state + letter index.
+
+Idempotency: `agent_profiles_v3.letter_digest_last_sent_at` (schema 030) stamped after successful send. Each tick compares its date in America/Denver to today's date in the same timezone — if same, skip. Stamp ONLY on send so no-activity days don't prevent a late status_updated_at near 7am from being included next morning. Hourly + idempotency gives forgiveness across Railway restarts and slow ticks crossing the send window.
+
+Activity-only: no email if no events. Subject pluralizes correctly: "SellerSignal — N letter update(s) yesterday."
+
+Disabled-safe: skips silently if RESEND_API_KEY isn't set, if Supabase is unavailable, or if the agent has no email column populated. Loop still runs so an env update flips it on without redeploy. Off-hour ticks log at DEBUG so production logs stay clean.
+
+v1 timezone: hardcoded to America/Denver for every agent. Per-agent preference is a future iteration; tracked in active issues below.
+
+**Schema migration applied this session:**
+- `schema/030_letter_digest_timestamp.sql` ✅ applied — adds `letter_digest_last_sent_at TIMESTAMPTZ` to `agent_profiles_v3` with `IF NOT EXISTS` so it's safely re-runnable.
+
+**Lessons / patterns reinforced**
+
+- When a bug is "I can't find this string in the code," the source is probably persisted data, not code. Brand voice content is stored in the database, not the codebase — same shape for any future LLM-generated copy that ships once and gets reused.
+- The prereq pattern: a feature spec that looks self-contained ("show letter status badges") can fail without addressing an upstream invariant ("does the lead even appear in the list?"). Always trace the data flow end-to-end before assuming the spec is closed.
+- Hourly-tick + idempotency-stamp > daily-tick. The latter is fragile to deploys, missed ticks, and timezone DST transitions. The former gives forgiveness for all three.
+- Tone-aware filter chips are a reusable pattern across My Leads and the new /letters page. Worth extracting into a shared component if a third surface needs them.
+
+---
+
+### 2026-05-22 to 2026-06-01 — Gap period (not journaled in detail)
+
+Substantial work landed in this window that wasn't captured in the manifesto at the time. High-level recap so the journal isn't misleading; per-commit detail lives in git log.
+
+- **Stripe territory subscriptions** — $299/mo per ZIP with 90-day commitment, operator bypass, Stripe Customer + Subscription wiring (`stripe_customer_id` migration 025). Renewal-notifier background task (`backend/tasks/renewal_notifier.py`) with T-30/T-7/T-1 email reminders via Resend; idempotent per (territory, window) via `renewal_notified_{30d,7d,1d}_at` columns.
+- **Mobile responsiveness** — full pass on briefing, territories, leads, dossier, signup, login pages.
+- **Lob → Stannp direct-mail migration** — complete replacement of Lob with Stannp Growth tier ($0.69/letter cost + $48/mo SaaS amortized). Migrations 027 (`letters_provider`), 028 (`letter_scheduled_status`), 029 (`letter_method_stannp`). New `backend/services/stannp_client.py` (HTTP basic auth, multipart PDF upload, typed exceptions, retry-on-5xx). Pricing locked at $1.99 single / $9.99 sequence. Webhook handler at `/api/letters/stannp-webhook` mapping Stannp events (letter.created/printed/dispatched/delivered/cancelled/failed/returned) to row status updates.
+- **PDF rendering engine swap (WeasyPrint → xhtml2pdf)** — WeasyPrint required libgobject system libs that Nixpacks couldn't reliably install on Railway. xhtml2pdf is pure-Python, no system deps. Renderer rewritten to use flat HTML + element-only CSS (xhtml2pdf's class-selector support is weaker than assumed). Logo dropped (xhtml2pdf SVG rendering too poor) — planned re-introduction as PNG.
+- **Letter scheduler** — new `backend/tasks/letter_scheduler.py` ticks every 6h for scheduled letters past their `stannp_send_date`. Replaces Lob's native `send_date` feature; Stannp doesn't have built-in scheduling.
+
+
 
 ### 2026-05-21 — Bug sweep: letter templates, dossier framing, map data, Snohomish probate
 
@@ -789,21 +864,45 @@ Was: `frontend/src/lib/supabase.js` read `import.meta.env.VITE_SUPABASE_*` at mo
 
 Fix: backend now exposes `GET /api/config` returning `{supabase_url, supabase_anon_key}` from Railway env vars. Frontend fetches at runtime on module load, caches result in `localStorage` under `sellersignal:supabase_config_v1`. `build:safe` polarity flipped — was verifying credentials WERE inlined; now verifies they are NOT (catches accidental regression to build-time injection). Any environment can rebuild the frontend without env vars. Commits `127cd27` (immediate fix) and `895f935` (structural refactor). Architecture documented in the 2026-05-20 afternoon build journal entry above.
 
+### 14. Letter digest hardcoded to America/Denver — no per-agent timezone preference
+
+The `letter_digest.py` task fires at 07:00 America/Denver for every agent, regardless of where the agent actually is. Jeremy's in Bozeman MT so this is right for him; the first WA beta agents will receive their digest at 05:00 or 06:00 Pacific (depending on DST alignment), which is earlier than ideal.
+
+Acceptable for v1 because: (a) digest content doesn't go stale within a few hours so early delivery isn't actively bad, (b) the WA agents aren't running sequences yet, so the volume is zero for now. Fix: add a `timezone TEXT` column to `agent_profiles_v3` with default `'America/Denver'`, expose it on the profile form, and have the digest task read per-agent before deciding "is it 7am for this agent." Small change. Tracked here so it doesn't get lost when the first WA agent starts sending letters.
+
+### 15. Backfill SQL for pre-fix letter activity not yet run
+
+The 2026-06-02 prereq fix (`send_letter` and `start_sequence` write a `mailed` interaction row on success) only affects letters sent AFTER the commit landed. Existing test sequences (Burch / Lane / Christenson on Jeremy's profile, sent during the Stannp end-to-end test session) don't have `lead_interactions_v3` rows, so they don't auto-appear in My Leads even though the new letter badge logic would happily render them. A one-time backfill INSERT — for every `letters_sent_v3` row without a matching `lead_interactions_v3` row, insert one with `event_type='mailed'` — would close the loop. Not blocking; the agent can manually click "Mark mailed" in the dossier as a workaround, or simply view those sequences on the new `/letters` page (which doesn't depend on the interaction log).
+
+### 16. Letters page sort is fixed to "started desc"
+
+The MVP `/letters` page sorts by `started_at` descending. No column-header click for re-sort by latest event / next scheduled / owner name. Acceptable for low volume; revisit when an agent has >50 sequences and wants to triage by "what just happened" vs "what's about to happen". Small addition (~20 min) when needed.
+
 ---
 
 ## On the horizon (post-this-session priorities)
 
 In Jeremy's stated order:
 
-1. **5 next KC ZIPs** beyond the current 26. Good candidates that pair with existing live clusters: 98008 (Bellevue east, completes the Bellevue 04/05/06/07 cluster), 98144 (Mt Baker/Leschi Seattle, luxury waterfront), 98109 (Queen Anne South/SLU, pairs with 98119), 98011 (Bothell south, pairs with 98034 Kirkland north), 98028 (Kenmore, pairs with 98072 Woodinville). Should be re-evaluated against current claim demand before committing.
-2. **Multi-county strategy** — replicate the canonical pipeline against another county's assessor bulk data. Demand-driven expansion using the same orchestrator pattern. "Expediency plus accuracy is a moat" (Jeremy, 2026-05-17).
-3. **Beta growth path** — direct outreach to seed initial users, then Meta ads + Google search.
+1. **Pre-launch checklist (load-bearing for go-live)**:
+   - Order Stannp physical sample pack from dashboard — paper-quality validation
+   - Re-introduce agency logo on letter PDFs as PNG (was SVG, xhtml2pdf can't render cleanly)
+   - Flip `STANNP_MODE` from `test` → `live` in Railway env
+   - Stripe test → live: create $299/mo live Price, new live webhook, update `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_TERRITORY_PRICE_ID` in Railway
+   - Verify `RESEND_API_KEY` is set in Railway (otherwise renewal_notifier + letter_digest both silently no-op)
+   - Backfill SQL for pre-fix letter activity (see active issue #15) — one-time cleanup so existing test sequences show in My Leads
+   - Boot beta agents at go-live (one-time SQL: drop agent_territories_v3 rows + clear assigned_zip)
+2. **5 next KC ZIPs** beyond the current 26. Good candidates that pair with existing live clusters: 98008 (Bellevue east, completes the Bellevue 04/05/06/07 cluster), 98144 (Mt Baker/Leschi Seattle, luxury waterfront), 98109 (Queen Anne South/SLU, pairs with 98119), 98011 (Bothell south, pairs with 98034 Kirkland north), 98028 (Kenmore, pairs with 98072 Woodinville). Should be re-evaluated against current claim demand before committing.
+3. **Multi-county strategy** — replicate the canonical pipeline against another county's assessor bulk data. Demand-driven expansion using the same orchestrator pattern. "Expediency plus accuracy is a moat" (Jeremy, 2026-05-17).
+4. **Beta growth path** — direct outreach to seed initial users, then Meta ads + Google search.
 
 Deferred but on the longer-term roadmap:
 
-- canonicalize_autofill round-robin optimization (cache global canonical PIN set in task state) — see Active Issues #5
-- Mobile responsiveness rebuild from desktop-only inline-styled components
-- Real Lob letter integration (currently preview-only)
+- Per-agent timezone for letter digest (see active issue #14)
+- canonicalize_autofill round-robin optimization (cache global canonical PIN set in task state) — see Active Issues #6
+- Letters page column-header sorting (see active issue #16)
+- C2 (in-app notification bell) — when letter volume justifies real-time pings
+- C3 (Slack/CRM webhook for letter events) — when there's a CRM target to wire to
 - Real skip-trace integration
 - Email outreach integration (Clay/Instantly-style)
 - Demo mode (`?demo=true`) for Zoom pitches
