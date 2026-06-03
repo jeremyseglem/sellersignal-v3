@@ -79,3 +79,9 @@ frontend/.next/
 # Backend lib package — must not be excluded by the generic /lib pattern below
 !backend/lib/
 !backend/lib/**
+
+# Re-exclude python bytecode caches under backend/lib (the !backend/lib/**
+# rule above would otherwise un-ignore them and they keep landing in commits
+# from local smoke tests).
+backend/lib/**/__pycache__/
+backend/lib/**/*.pyc
