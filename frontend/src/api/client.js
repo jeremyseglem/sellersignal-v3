@@ -545,6 +545,28 @@ export const letters = {
   byParcel: (pin) => authedRequest(`/letters/by-parcel/${pin}`),
 
   /**
+   * Agent-wide view: every sequence (and standalone single send) for
+   * the calling agent. Powers the /letters page. Returns:
+   *   {
+   *     sequences: [
+   *       { sequence_id, is_standalone, pin, address, owner_name,
+   *         city, state, started_at, status, total_charged_cents,
+   *         letters_total, letters_sent, letters_delivered,
+   *         letters_scheduled, letters_returned, letters_failed,
+   *         letters_cancelled, latest_event_status, latest_event_at,
+   *         next_scheduled_at, letters: [...] }
+   *     ],
+   *     filter_counts: { active, completed, cancelled, has_delivered,
+   *                      has_returned, has_failed, scheduled_pending },
+   *     totals: { total_sequences, total_letters, total_sent,
+   *               total_delivered, total_scheduled, total_returned,
+   *               total_charged_cents }
+   *   }
+   * Sorted by started_at desc (most recent first).
+   */
+  sequencesByAgent: () => authedRequest('/letters/sequences-by-agent'),
+
+  /**
    * Render a letter as standalone HTML. Returns the raw HTML string
    * (not JSON) so the frontend can open it in a new window for the
    * browser's Print > Save as PDF flow. Logs a 'pdf_rendered' event.

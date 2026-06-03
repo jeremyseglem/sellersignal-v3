@@ -951,6 +951,239 @@ async def letters_by_parcel(
     }
 
 
+@router.get("/sequences-by-agent")
+async def sequences_by_agent(
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Return all sequences (and standalone single-letter sends) for the
+    calling agent. Powers the dedicated Letters page at /letters in
+    the frontend.
+
+    Result shape — one object per "sequence":
+      {
+        "sequence_id": str | None,         # None for one-off sends
+        "is_standalone": bool,             # True if not part of a sequence
+        "pin": str,
+        "zip_code": str,
+        "address": str | None,             # joined from parcels_v3
+        "owner_name": str | None,
+        "city": str | None,
+        "state": str | None,
+        "started_at": str (ISO),
+        "status": "active" | "completed" | "cancelled" | "failed",
+        "cancelled_at": str | None,
+        "cancel_reason": str | None,
+        "total_charged_cents": int,
+        "letters_total": int,              # 1 for standalone, 6 for sequence
+        "letters_sent": int,               # printed / mailed / delivered
+        "letters_delivered": int,
+        "letters_scheduled": int,
+        "letters_returned": int,
+        "letters_failed": int,
+        "letters_cancelled": int,
+        "latest_event_status": str | None, # e.g. "delivered"
+        "latest_event_at": str | None,     # ISO timestamp
+        "next_scheduled_at": str | None,   # ISO timestamp of next queued letter
+        "letters": [ {letter row}, ... ]   # all letters, sorted by letter_index
+      }
+
+    Sorted by started_at desc (most recent first).
+    """
+    user = user_from_authorization(authorization)
+    supa = _supa()
+
+    # Pull every letter for the agent. Includes both sequence-attached
+    # rows and standalone single-sends (sequence_id IS NULL).
+    letters_res = (
+        supa.table("letters_sent_v3")
+        .select(
+            "id,pin,zip_code,sequence_id,letter_index,method,status,"
+            "cost_cents,provider,stannp_letter_id,stannp_mode,"
+            "stannp_send_date,stannp_expected_delivery,stannp_tracking_url,"
+            "status_updated_at,created_at,mailed_at,delivered_at"
+        )
+        .eq("agent_id", user.id)
+        .execute()
+    )
+    letter_rows = (letters_res.data if letters_res else None) or []
+
+    # Pull every sequence-header row separately. Lets us read started_at,
+    # status, cancel_reason, and total_charged_cents for sequences whose
+    # letter rows might all be in a single state.
+    sequences_res = (
+        supa.table("letter_sequences_v3")
+        .select(
+            "id,pin,zip_code,status,started_at,cancelled_at,"
+            "cancel_reason,total_charged_cents"
+        )
+        .eq("agent_id", user.id)
+        .execute()
+    )
+    sequence_rows = (sequences_res.data if sequences_res else None) or []
+    sequence_by_id = {s["id"]: s for s in sequence_rows}
+
+    # Hydrate parcel data for every distinct pin we touched.
+    pins = list({L["pin"] for L in letter_rows} | {s["pin"] for s in sequence_rows})
+    parcel_by_pin: dict = {}
+    if pins:
+        parcels_res = (
+            supa.table("parcels_v3")
+            .select("pin,zip_code,address,owner_name,city,state")
+            .in_("pin", pins)
+            .execute()
+        )
+        for row in (parcels_res.data or []):
+            parcel_by_pin[row["pin"]] = row
+
+    # Bucket letters by sequence_id. Standalone sends (sequence_id=None)
+    # become their own group keyed by the letter row's id with a synthetic
+    # 1-letter "sequence" wrapper.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    by_sequence: dict[str, dict] = {}
+
+    def _ensure_sequence_bucket(key: str, seq_row: dict | None, pin: str, zip_code: str):
+        """Lazily create the bucket so we don't have to know the parcel
+        join result up front."""
+        if key in by_sequence:
+            return by_sequence[key]
+        parcel = parcel_by_pin.get(pin) or {}
+        bucket = {
+            "sequence_id":   None if seq_row is None else seq_row["id"],
+            "is_standalone": seq_row is None,
+            "pin":           pin,
+            "zip_code":      zip_code,
+            "address":       parcel.get("address"),
+            "owner_name":    parcel.get("owner_name"),
+            "city":          parcel.get("city"),
+            "state":         parcel.get("state"),
+            "started_at":    seq_row["started_at"] if seq_row else None,
+            "status":        seq_row["status"]     if seq_row else "active",
+            "cancelled_at":  seq_row.get("cancelled_at")  if seq_row else None,
+            "cancel_reason": seq_row.get("cancel_reason") if seq_row else None,
+            "total_charged_cents": seq_row.get("total_charged_cents", 0) if seq_row else 0,
+            "letters_total": 6 if seq_row else 1,
+            "letters_sent":       0,
+            "letters_delivered":  0,
+            "letters_scheduled":  0,
+            "letters_returned":   0,
+            "letters_failed":     0,
+            "letters_cancelled":  0,
+            "latest_event_status": None,
+            "latest_event_at":     None,
+            "next_scheduled_at":   None,
+            "letters": [],
+        }
+        by_sequence[key] = bucket
+        return bucket
+
+    # Pre-create buckets for all known sequences so empty-letter sequences
+    # (rare but possible if a sequence header row was inserted but the
+    # letter inserts failed) still surface.
+    for s in sequence_rows:
+        _ensure_sequence_bucket(
+            key=s["id"],
+            seq_row=s,
+            pin=s["pin"],
+            zip_code=s["zip_code"],
+        )
+
+    # Bucket the letters.
+    _SENT_STATUSES = ("created", "mailed", "delivered")
+    for L in letter_rows:
+        seq_id = L.get("sequence_id")
+        if seq_id and seq_id in sequence_by_id:
+            bucket = _ensure_sequence_bucket(
+                key=seq_id,
+                seq_row=sequence_by_id[seq_id],
+                pin=L["pin"],
+                zip_code=L["zip_code"],
+            )
+        else:
+            # Standalone single-send. Use the letter's own id as the
+            # bucket key so each one-off is its own row in the UI.
+            bucket = _ensure_sequence_bucket(
+                key=f"standalone:{L['id']}",
+                seq_row=None,
+                pin=L["pin"],
+                zip_code=L["zip_code"],
+            )
+            # Use the letter's own created_at as the bucket's started_at.
+            if bucket["started_at"] is None:
+                bucket["started_at"] = L.get("created_at")
+            # Standalone sends are always charged at their letter cost.
+            if bucket["total_charged_cents"] == 0:
+                bucket["total_charged_cents"] = L.get("cost_cents", 0) or 0
+
+        s = (L.get("status") or "").lower()
+        if s in _SENT_STATUSES:    bucket["letters_sent"]      += 1
+        if s == "delivered":       bucket["letters_delivered"] += 1
+        if s == "scheduled":       bucket["letters_scheduled"] += 1
+        if s == "returned":        bucket["letters_returned"]  += 1
+        if s == "failed":          bucket["letters_failed"]    += 1
+        if s == "cancelled":       bucket["letters_cancelled"] += 1
+
+        # Track the most recent non-scheduled event for the "latest
+        # event" column. Scheduled rows don't represent an event yet —
+        # nothing has happened until the scheduler fires them.
+        if s and s != "scheduled":
+            ts = L.get("status_updated_at") or L.get("delivered_at") \
+                 or L.get("mailed_at") or L.get("created_at")
+            if ts and (bucket["latest_event_at"] is None
+                       or ts > bucket["latest_event_at"]):
+                bucket["latest_event_status"] = s
+                bucket["latest_event_at"]     = ts
+
+        # Next scheduled send — earliest future stannp_send_date among
+        # rows still in scheduled state.
+        if s == "scheduled":
+            send_at = L.get("stannp_send_date")
+            if send_at and send_at >= now_iso:
+                if (bucket["next_scheduled_at"] is None
+                        or send_at < bucket["next_scheduled_at"]):
+                    bucket["next_scheduled_at"] = send_at
+
+        bucket["letters"].append(L)
+
+    # Sort each sequence's letters by letter_index for predictable display.
+    for bucket in by_sequence.values():
+        bucket["letters"].sort(key=lambda L: L.get("letter_index") or 0)
+
+    # Build the response list, sorted by started_at desc. Sequences
+    # without a started_at end up at the bottom (shouldn't happen in
+    # practice but defensive).
+    sequences = list(by_sequence.values())
+    sequences.sort(
+        key=lambda b: (b["started_at"] or ""),
+        reverse=True,
+    )
+
+    # Top-level filter counts so the frontend can hide zero-hit chips.
+    filter_counts = {
+        "active":            sum(1 for b in sequences if b["status"] == "active"),
+        "completed":         sum(1 for b in sequences if b["status"] == "completed"),
+        "cancelled":         sum(1 for b in sequences if b["status"] == "cancelled"),
+        "has_delivered":     sum(1 for b in sequences if b["letters_delivered"] > 0),
+        "has_returned":      sum(1 for b in sequences if b["letters_returned"]  > 0),
+        "has_failed":        sum(1 for b in sequences if b["letters_failed"]    > 0),
+        "scheduled_pending": sum(1 for b in sequences if b["letters_scheduled"] > 0),
+    }
+
+    return {
+        "sequences":     sequences,
+        "filter_counts": filter_counts,
+        "totals": {
+            "total_sequences":   len(sequences),
+            "total_letters":     sum(b["letters_total"] for b in sequences),
+            "total_sent":        sum(b["letters_sent"] for b in sequences),
+            "total_delivered":   sum(b["letters_delivered"] for b in sequences),
+            "total_scheduled":   sum(b["letters_scheduled"] for b in sequences),
+            "total_returned":    sum(b["letters_returned"] for b in sequences),
+            "total_charged_cents": sum(b["total_charged_cents"] for b in sequences),
+        },
+    }
+
+
 # ── 8. Render PDF (free path) ───────────────────────────────────────
 
 

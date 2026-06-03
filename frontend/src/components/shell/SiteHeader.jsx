@@ -241,6 +241,9 @@ function AuthenticatedNav({ agent, isActive, onSignOut }) {
       <Link to="/my-leads" style={navBtnStyle('ghost', isActive('/my-leads'))}>
         My Leads
       </Link>
+      <Link to="/letters" style={navBtnStyle('ghost', isActive('/letters'))}>
+        Letters
+      </Link>
       <Link to="/profile" style={navBtnStyle('ghost', isActive('/profile'))}>
         Profile
       </Link>
@@ -284,6 +287,13 @@ function AuthenticatedMobileMenu({ agent, isActive, onSignOut }) {
         role="menuitem"
       >
         My Leads
+      </Link>
+      <Link
+        to="/letters"
+        className={`${styles.mobileSheetItem} ${isActive('/letters') ? styles.mobileSheetItemActive : ''}`}
+        role="menuitem"
+      >
+        Letters
       </Link>
       <Link
         to="/profile"
