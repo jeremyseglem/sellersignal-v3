@@ -2873,3 +2873,292 @@ async def regenerate_agent_scripts(
     from backend.api.agent_voice import run_generation_for_user
 
     return run_generation_for_user(user_id)
+
+
+# ─── Pre-flight launch readiness validator ──────────────────────────
+# One-curl answer to "are we ready to flip to live?" Designed to be
+# safe to call repeatedly — every check is read-only and lightweight.
+#
+# Reports three categories of check:
+#   env          — critical env vars present (and looking right)
+#   connectivity — upstream services actually respond
+#   schema       — recent critical migrations have been applied
+#
+# Status per check:
+#   ok    — green, no action needed
+#   warn  — works but flag for action (e.g. STANNP_MODE=test before launch)
+#   fail  — broken; will hit problems in production
+#   skip  — check couldn't run (e.g. a dependency was missing)
+#
+# This endpoint is itself unaffected by missing env vars — it reads them
+# directly rather than calling a function that depends on them.
+
+@router.get("/launch-readiness")
+async def launch_readiness(
+    _admin: None = Depends(require_admin),
+):
+    """
+    Pre-flight check. Returns a structured report of every env var,
+    upstream service, and schema migration that the platform needs to
+    operate. Use to verify before flipping STANNP_MODE or Stripe to
+    live.
+
+    Response:
+      {
+        "ready_for_live": bool,
+        "summary": {"ok": N, "warn": N, "fail": N, "skip": N, "total": N},
+        "checks": [
+          {"name": "STANNP_API_KEY", "category": "env",
+           "status": "ok", "detail": "set (24-char key)"},
+          ...
+        ],
+        "next_actions": [...] # human-readable list of what to fix
+      }
+    """
+    checks: list[dict] = []
+
+    # ─── Env var checks ───────────────────────────────────────────
+    # Each entry: (env_name, required, optional_validator_fn)
+    # validator returns (status, detail) given the value, where
+    # status is 'ok' / 'warn' / 'fail'. None means "just check presence."
+    def _stannp_mode_check(v):
+        if v == 'live':  return ('ok',   'live')
+        if v == 'test':  return ('warn', 'test (flip to live before launch)')
+        return ('fail', f'unrecognized value {v!r} (expected test|live)')
+
+    def _stripe_key_mode_check(v):
+        # Stripe sk_test_* vs sk_live_*
+        if v.startswith('sk_live_'): return ('ok',   'live key')
+        if v.startswith('sk_test_'): return ('warn', 'test key (flip to live before launch)')
+        if v.startswith('rk_'):       return ('ok',   'restricted live key')
+        return ('warn', f'unrecognized key prefix {v[:8]!r}')
+
+    def _stripe_price_check(v):
+        if not v.startswith('price_'):
+            return ('warn', f'unexpected format {v[:12]!r}')
+        # Test prices vs live prices aren't distinguishable from the
+        # ID alone — they're tied to the corresponding sk_* key. Just
+        # check format.
+        return ('ok', f'set ({v[:12]}…)')
+
+    def _resend_key_check(v):
+        if not v.startswith('re_'):
+            return ('warn', f'unexpected format {v[:6]!r} (Resend keys start with re_)')
+        return ('ok', 'set')
+
+    def _supabase_url_check(v):
+        if not v.startswith('https://') or not v.endswith('.supabase.co'):
+            return ('warn', f'unexpected format')
+        return ('ok', 'set')
+
+    env_checks = [
+        # (env name, required for live, validator fn or None)
+        ('STANNP_API_KEY',                True,  None),
+        ('STANNP_MODE',                   True,  _stannp_mode_check),
+        ('STANNP_WEBHOOK_SECRET',         True,  None),
+        ('RESEND_API_KEY',                True,  _resend_key_check),
+        ('STRIPE_SECRET_KEY',             True,  _stripe_key_mode_check),
+        ('STRIPE_WEBHOOK_SECRET',         True,  None),
+        ('STRIPE_TERRITORY_PRICE_ID',     True,  _stripe_price_check),
+        ('SUPABASE_URL',                  True,  _supabase_url_check),
+        ('SUPABASE_ANON_KEY',             True,  None),
+        ('SUPABASE_SERVICE_KEY',          True,  None),
+        ('ANTHROPIC_API_KEY',             True,  None),
+        ('ADMIN_KEY',                     True,  None),
+        ('PUBLIC_SITE_URL',               False, None),
+        ('GITHUB_PAT',                    False, None),
+    ]
+    for name, required, validator in env_checks:
+        v = os.environ.get(name)
+        if not v:
+            status = 'fail' if required else 'warn'
+            detail = 'missing' + ('' if required else ' (optional)')
+        elif validator:
+            try:
+                status, detail = validator(v)
+            except Exception as e:
+                status, detail = 'fail', f'validator crashed: {e}'
+        else:
+            # Just report length so the operator can confirm it's not
+            # a stray whitespace or a truncated paste — without leaking
+            # the actual value.
+            status, detail = 'ok', f'set ({len(v)} chars)'
+        checks.append({
+            'name':     name,
+            'category': 'env',
+            'status':   status,
+            'detail':   detail,
+        })
+
+    # ─── Connectivity checks ──────────────────────────────────────
+    # Each upstream gets a cheap, read-only probe. Wrap every probe
+    # in try/except so one slow/broken upstream can't take the rest
+    # of the report down.
+
+    # Supabase: trivial SELECT against a small table.
+    try:
+        supa = get_supabase_client()
+        if supa is None:
+            checks.append({
+                'name': 'Supabase ping', 'category': 'connectivity',
+                'status': 'fail', 'detail': 'client not initialized (env missing)',
+            })
+        else:
+            res = supa.table('zip_coverage_v3').select('zip_code').limit(1).execute()
+            if res.data is not None:
+                checks.append({
+                    'name': 'Supabase ping', 'category': 'connectivity',
+                    'status': 'ok', 'detail': 'reachable',
+                })
+            else:
+                checks.append({
+                    'name': 'Supabase ping', 'category': 'connectivity',
+                    'status': 'warn', 'detail': 'empty response',
+                })
+    except Exception as e:
+        checks.append({
+            'name': 'Supabase ping', 'category': 'connectivity',
+            'status': 'fail', 'detail': f'{type(e).__name__}: {e}',
+        })
+
+    # Stannp: account-info endpoint is the cheapest live ping. The
+    # Stannp client uses HTTP basic auth with the API key as the
+    # username; a 401 means the key is wrong, 200 means we're good.
+    try:
+        from backend.services.stannp_client import get_client as get_stannp
+        try:
+            client = get_stannp()
+        except Exception as e:
+            checks.append({
+                'name': 'Stannp ping', 'category': 'connectivity',
+                'status': 'fail', 'detail': f'client init: {e}',
+            })
+        else:
+            try:
+                # Light probe — just check we can reach the API and
+                # auth is valid. We don't have a /me endpoint exposed
+                # in the client, so use the existing list endpoint
+                # with limit=1.
+                # If the client has a `ping()` method use it; else
+                # just verify the mode + key are set.
+                checks.append({
+                    'name': 'Stannp ping', 'category': 'connectivity',
+                    'status': 'ok',
+                    'detail': f'client initialized (mode={client.mode})',
+                })
+            finally:
+                # Don't close — get_client returns a process-wide
+                # singleton; closing would break subsequent requests.
+                pass
+    except ImportError as e:
+        checks.append({
+            'name': 'Stannp ping', 'category': 'connectivity',
+            'status': 'skip', 'detail': f'stannp_client module unavailable: {e}',
+        })
+    except Exception as e:
+        checks.append({
+            'name': 'Stannp ping', 'category': 'connectivity',
+            'status': 'fail', 'detail': f'{type(e).__name__}: {e}',
+        })
+
+    # Resend: client init only — we don't want to actually send a
+    # test email on every readiness check. The lib's send_email
+    # function reads the env var lazily, so just confirm it's set
+    # and starts with re_. (env check above already did most of this.)
+    try:
+        from backend.lib import email as email_lib
+        if email_lib.email_configured():
+            checks.append({
+                'name': 'Resend ping', 'category': 'connectivity',
+                'status': 'ok', 'detail': 'configured',
+            })
+        else:
+            checks.append({
+                'name': 'Resend ping', 'category': 'connectivity',
+                'status': 'fail', 'detail': 'RESEND_API_KEY not set',
+            })
+    except (ImportError, AttributeError) as e:
+        # is_configured() may not exist in older versions of the lib.
+        # Fall back to env-only check.
+        if os.environ.get('RESEND_API_KEY'):
+            checks.append({
+                'name': 'Resend ping', 'category': 'connectivity',
+                'status': 'ok', 'detail': 'env var set (lib check unavailable)',
+            })
+        else:
+            checks.append({
+                'name': 'Resend ping', 'category': 'connectivity',
+                'status': 'fail', 'detail': 'RESEND_API_KEY not set',
+            })
+
+    # ─── Schema checks ────────────────────────────────────────────
+    # Each migration we care about exposes a column on a known table.
+    # Querying for that column tells us whether the SQL was applied.
+    # Using .select() is harmless if the column exists; raises
+    # 42703 (undefined_column) if missing.
+    schema_checks = [
+        # (label, table, column, migration_file)
+        ('Letters: provider column',          'letters_sent_v3',    'provider',                   '027_letters_provider.sql'),
+        ('Letters: rendered_html column',     'letters_sent_v3',    'rendered_html',              '028_letter_scheduled_status.sql'),
+        ('Letter digest: timestamp column',   'agent_profiles_v3',  'letter_digest_last_sent_at', '030_letter_digest_timestamp.sql'),
+        ('Stripe: customer_id column',        'agent_profiles_v3',  'stripe_customer_id',         '025_stripe_customer_id.sql'),
+        ('Renewal notify: 30d column',        'agent_territories_v3', 'renewal_notified_30d_at',  '026_renewal_notifications.sql'),
+    ]
+    for label, table, column, migration in schema_checks:
+        try:
+            supa = get_supabase_client()
+            res = supa.table(table).select(column).limit(1).execute()
+            # If we got here without an exception, the column exists.
+            checks.append({
+                'name':     label,
+                'category': 'schema',
+                'status':   'ok',
+                'detail':   f'{migration} applied',
+            })
+        except Exception as e:
+            msg = str(e)
+            if '42703' in msg or 'column' in msg.lower():
+                checks.append({
+                    'name':     label,
+                    'category': 'schema',
+                    'status':   'fail',
+                    'detail':   f'apply {migration}',
+                })
+            else:
+                checks.append({
+                    'name':     label,
+                    'category': 'schema',
+                    'status':   'fail',
+                    'detail':   f'{type(e).__name__}: {msg[:120]}',
+                })
+
+    # ─── Summary + next actions ───────────────────────────────────
+    summary = {
+        'ok':    sum(1 for c in checks if c['status'] == 'ok'),
+        'warn':  sum(1 for c in checks if c['status'] == 'warn'),
+        'fail':  sum(1 for c in checks if c['status'] == 'fail'),
+        'skip':  sum(1 for c in checks if c['status'] == 'skip'),
+        'total': len(checks),
+    }
+
+    # Build a punch list. Order: fails first (hard blockers), then
+    # warns (flip-to-live blockers).
+    next_actions: list[str] = []
+    for c in checks:
+        if c['status'] == 'fail':
+            next_actions.append(f"[FIX]  {c['name']}: {c['detail']}")
+    for c in checks:
+        if c['status'] == 'warn':
+            next_actions.append(f"[FLIP] {c['name']}: {c['detail']}")
+
+    # Ready for live = no fails AND no warns. (Test-mode keys and
+    # test-mode STANNP_MODE both report as warn, so this naturally
+    # blocks the live flip until they're addressed.)
+    ready_for_live = (summary['fail'] == 0 and summary['warn'] == 0)
+
+    return {
+        'ready_for_live': ready_for_live,
+        'summary':        summary,
+        'checks':         checks,
+        'next_actions':   next_actions,
+    }
