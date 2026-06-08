@@ -189,7 +189,7 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
         market = (p.get('market_key') or '').upper()
         if raw_pt in {'R', 'K'}:
             final_pt = raw_pt
-        elif market == 'WA_SNOHOMISH':
+        elif market in {'WA_SNOHOMISH', 'AZ_MARICOPA'}:
             final_pt = 'R'
         elif not raw_pt:
             final_pt = 'R'

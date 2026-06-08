@@ -1106,6 +1106,7 @@ async def onboard_zip(
         city = (
             KC_ZIP_TO_CITY.get(zip_code)
             or SNO_ZIP_TO_CITY.get(zip_code)
+            or MARICOPA_ZIP_TO_CITY.get(zip_code)
             or "Bellevue"
         )
 
@@ -1118,11 +1119,26 @@ async def onboard_zip(
     if is_snohomish and market_key == "WA_KING":
         market_key = "WA_SNOHOMISH"
 
+    # Maricopa County, AZ — auto-detect when the default market_key is left
+    # in place. Also flips state to AZ (the signature defaults to WA). Same
+    # opt-out shape as Snohomish: an explicit ?market_key= still wins.
+    is_maricopa = zip_code in MARICOPA_ZIP_TO_CITY
+    if is_maricopa and market_key == "WA_KING":
+        market_key = "AZ_MARICOPA"
+        if state == "WA":
+            state = "AZ"
+
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
     #   KC:        wa-king-{zip}-owners.json
     #   Snohomish: wa-snohomish-{zip}-owners.json
-    seed_prefix = "wa-snohomish" if is_snohomish else "wa-king"
+    #   Maricopa:  az-maricopa-{zip}-owners.json
+    if is_maricopa:
+        seed_prefix = "az-maricopa"
+    elif is_snohomish:
+        seed_prefix = "wa-snohomish"
+    else:
+        seed_prefix = "wa-king"
     json_path = f"/app/data/seeds/{seed_prefix}-{zip_code}-owners.json"
     # Railway dist may not be at /app — try a few common paths
     candidates = [
@@ -1138,7 +1154,8 @@ async def onboard_zip(
             break
 
     if not found_path:
-        builder = ("build_snohomish_owners.py" if is_snohomish
+        builder = ("build_maricopa_owners.py" if is_maricopa
+                   else "build_snohomish_owners.py" if is_snohomish
                    else "build_kc_owners.py")
         raise HTTPException(
             400,
@@ -1447,6 +1464,34 @@ SNO_ZIP_TO_CITY = {
     "98290": "Snohomish",
 }
 
+# Maricopa County, AZ — first out-of-state market. Locked target set
+# (2026-06-06): flagship prestige anchors + price×velocity SFH picks.
+# Seed files: data/seeds/az-maricopa-{zip}-owners.json (built by
+# scripts/build_maricopa_owners.py from the Assessor Parcels MapServer).
+# market_key = AZ_MARICOPA, state = AZ.
+MARICOPA_ZIP_TO_CITY = {
+    "85253": "Paradise Valley",
+    "85331": "Cave Creek",
+    "85262": "Scottsdale",
+    "85377": "Carefree",
+    "85255": "Scottsdale",
+    "85254": "Scottsdale",
+    "85018": "Phoenix",
+    "85259": "Scottsdale",
+    "85266": "Scottsdale",
+    "85260": "Scottsdale",
+    "85028": "Phoenix",
+    "85054": "Phoenix",
+    "85050": "Phoenix",
+    "85085": "Phoenix",
+    "85268": "Fountain Hills",
+    "85298": "Gilbert",
+    "85249": "Chandler",
+    "85207": "Mesa",
+    "85284": "Tempe",
+    "85086": "Phoenix",
+}
+
 
 @router.post("/seed-from-json/{zip_code}",
              dependencies=[Depends(require_admin)])
@@ -1489,7 +1534,11 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
     # Per-county seed-file dispatch. Adding a new county = add the ZIP
     # to its *_ZIP_TO_CITY dict above; the file path and market_key
     # follow from that.
-    if zip_code in SNO_ZIP_TO_CITY:
+    if zip_code in MARICOPA_ZIP_TO_CITY:
+        market_key = "AZ_MARICOPA"
+        city = MARICOPA_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"az-maricopa-{zip_code}-owners.json"
+    elif zip_code in SNO_ZIP_TO_CITY:
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"wa-snohomish-{zip_code}-owners.json"
