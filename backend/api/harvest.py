@@ -328,6 +328,41 @@ def harvest_match_only(
     return stats
 
 
+@router.get("/diag/ocr-check")
+def diag_ocr_check(
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Confirm the OCR toolchain (tesseract + poppler/pdftoppm) is present in the
+    runtime image. Used to verify the Nixpacks build installed the system
+    packages the Maricopa Recorder harvester depends on BEFORE wiring the
+    harvester to rely on them (cf. the pypdf-vs-pdftotext lesson: verify a new
+    system dependency on Railway, not just in a local container). Read-only.
+    """
+    _require_admin(x_admin_key)
+    import shutil
+    import subprocess
+
+    def _probe(cmd):
+        path = shutil.which(cmd[0])
+        if not path:
+            return {"available": False, "path": None, "version": None}
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            lines = (out.stdout or out.stderr or "").strip().splitlines()
+            return {"available": True, "path": path, "version": lines[0] if lines else None}
+        except Exception as e:
+            return {"available": True, "path": path, "version": f"error: {type(e).__name__}"}
+
+    tess = _probe(["tesseract", "--version"])
+    popp = _probe(["pdftoppm", "-v"])
+    return {
+        "tesseract": tess,
+        "pdftoppm": popp,
+        "ocr_ready": bool(tess["available"] and popp["available"]),
+    }
+
+
 @router.get("/diag/parties-count")
 def diag_parties_count(
     x_admin_key: Optional[str] = Header(None),

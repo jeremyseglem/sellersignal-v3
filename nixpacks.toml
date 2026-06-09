@@ -1,0 +1,20 @@
+# Nixpacks build configuration.
+#
+# Sole purpose: install the OCR system toolchain the Maricopa County Recorder
+# harvester (backend/harvesters/maricopa_recorder.py) needs at runtime:
+#   - tesseract-ocr (+ English data) — OCR engine
+#   - poppler-utils                  — provides pdftoppm to rasterize recorded-document PDFs
+#
+# This is ADDITIVE: Nixpacks still auto-detects the Python app from
+# requirements.txt + runtime.txt and builds it normally. We only append apt
+# packages to the setup phase; we do not override the Python build, start
+# command (Procfile), or nix packages.
+#
+# Why a build-config change is risk-managed here: a failed Nixpacks build does
+# NOT take down the live service — Railway keeps serving the previous good
+# deploy until a new build succeeds. Rollback is `git revert HEAD && push`.
+#
+# Verify after deploy:  GET /api/harvest/diag/ocr-check  -> {"ocr_ready": true}
+
+[phases.setup]
+aptPkgs = ["tesseract-ocr", "tesseract-ocr-eng", "poppler-utils"]
