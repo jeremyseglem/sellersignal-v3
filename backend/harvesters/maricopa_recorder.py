@@ -332,6 +332,76 @@ def harvest(doc_code: str, begin: str, end: str, parcel_apns: set[str],
     }
 
 
+def _normalize_party_name(raw: str) -> str:
+    return re.sub(r"[^A-Z ]", " ", (raw or "").upper()).strip()
+
+
+def discover_dated(op, doc_code: str, begin: str, end: str, max_results: int = 400):
+    """Like discover() but returns (recording_number, recording_date_iso) pairs."""
+    qs = urllib.parse.urlencode({
+        "rec": "0", "suf": "", "nm": "", "bdt": begin, "edt": end,
+        "cde": doc_code, "max": str(max_results), "res": "True",
+        "doc1": doc_code, "doc2": "", "doc3": "", "doc4": "", "doc5": "",
+    })
+    html = _get(op, LEGACY_BASE + "GetRecDataRecentPgDn.aspx?" + qs)
+    text = re.sub(r"<[^>]+>", " ", html)
+    out, seen = [], set()
+    for m in re.finditer(r"(\d{11})\s+(\d{2}/\d{2}/\d{4})", text):
+        rec = m.group(1)
+        if rec in seen:
+            continue
+        seen.add(rec)
+        try:
+            iso = datetime.strptime(m.group(2), "%m/%d/%Y").date().isoformat()
+        except ValueError:
+            iso = None
+        out.append((rec, iso))
+    return out
+
+
+def to_signal_row(parsed: dict):
+    """
+    Map a parsed record to a raw_signals_v3 row in the proven shape.
+
+    PROBATE ONLY for now: the matcher's _dispatch_probate reads party_names[0]
+    as the decedent and matches it (strict full name) against parcels_v3 owners.
+    NS/foreclosure (trustee sale) has no matcher dispatcher yet, so emitting it
+    would never match — add a foreclosure dispatcher before harvesting NS to DB.
+    """
+    if parsed.get("signal_type") != "probate":
+        return None
+    decedent = parsed.get("decedent")
+    if not decedent or not parsed.get("recording_number"):
+        return None
+    parties = [{"raw": decedent, "normalized": _normalize_party_name(decedent),
+                "role": "decedent", "matchable": True}]
+    pr = parsed.get("owner_name")  # the Personal Representative (lead contact)
+    if pr:
+        parties.append({"raw": pr, "normalized": _normalize_party_name(pr),
+                        "role": "personal_representative", "matchable": False})
+    return {
+        "source_type": "az_maricopa_recorder",
+        "signal_type": "probate",
+        "trust_level": "high",
+        "party_names": parties,
+        "event_date": parsed.get("event_date"),
+        "jurisdiction": "AZ_MARICOPA",
+        "property_hint": parsed.get("legal_description") or parsed.get("property_address"),
+        "document_ref": parsed.get("recording_number"),
+        "raw_data": {
+            "recording_number": parsed.get("recording_number"),
+            "doc_code": parsed.get("doc_code"),
+            "case_number": parsed.get("case_number"),
+            "pr_name": pr,
+            "decedent": decedent,
+            "apn": parsed.get("apn"),
+            "property_address": parsed.get("property_address"),
+            "legal_description": parsed.get("legal_description"),
+            "harvester": "maricopa_recorder",
+        },
+    }
+
+
 if __name__ == "__main__":
     import json
     import os
