@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-06-02 (brand voice prompt fix + My Leads letter badges + dedicated /letters page + daily email digest)
+**Last updated:** 2026-06-08 (Maricopa County AZ — first out-of-state market; 85254 pilot live, Phase 1 parcel wiring)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -501,7 +501,66 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-06-08 — Maricopa County (AZ) Phase 1: first out-of-state market; 85254 pilot live
+
+First market outside Washington. Validates that the downstream pipeline (matcher,
+canonicalizer, selector, briefings, dossier, orchestrator) is genuinely source-agnostic —
+only the seed builder + market wiring are net-new. Commit `6256bfe`.
+
+**Strategy.** Per Jeremy: best 20–30 ZIPs per market, then move on (not full-county, not
+dynamic). WA (28 KC+Snohomish ZIPs) is now a finished area; Maricopa is next.
+
+**Structural finding.** In WA, pressure events are *litigated* (court portals). In AZ they are
+*recorded* (County Recorder). The Recorder — not the court — is the primary signal-discovery
+surface, and it's KC-class or better: the Document Search supports **document-code + date-range
+discovery** (e.g. all "Notice of Trustee Sale" in a window). The Superior Court docket is
+name/case-number only (no date/type discovery) — so divorce is the one signal genuinely harder
+than KC; eviction (Justice Courts, name-only, targets landlords) is low-value in luxury ZIPs.
+Full analysis in `MARICOPA_FEASIBILITY.md`.
+
+**Parcel layer (richest of the 3 markets).** Maricopa County Assessor Parcels MapServer
+(`gis.mcassessor.maricopa.gov/.../Parcels/MapServer/0`) carries owner-of-record (`OWNER_NAME`),
+value (`FCV_CUR`), inline `SALE_DATE`/`SALE_PRICE` (tenure — no SCOPI-style autofill needed),
+`MAIL_*` vs `PHYSICAL_*` (absentee), `PUC`+`LC_CUR` (prop_type), and `LONGITUDE`/`LATITUDE` as
+columns (WGS84 — no geometry backfill, no reprojection). Web Mercator layer (102100).
+
+**Locked target ZIP set (20).** Flagship anchors fixed regardless of formula (85253 Paradise
+Valley, 85331 Cave Creek, 85262 Desert Mountain, 85377 Carefree); the rest by median price ×
+sales velocity with SFH dominance required (85255/85254/85018/85259/85266/85260/85028/85054/
+85050/85085/85268/85298/85249/85207/85284/85086). Condo cores (85251 Old Town, 85016 Biltmore)
+screened out. Full list + values in `MARICOPA_FEASIBILITY.md`.
+
+**Code shipped (commit `6256bfe`).**
+- `scripts/build_maricopa_owners.py` — seed builder, mirrors `build_snohomish_owners.py`. Filters
+  `PHYSICAL_ZIP`, composes street from `PHYSICAL_STREET_*`, parses `FCV_CUR`/`SALE_*`, 80%
+  address gate. Output `data/seeds/az-maricopa-{zip}-owners.json`.
+- `backend/api/admin.py` — `MARICOPA_ZIP_TO_CITY` (20 ZIPs); `onboard_zip` auto-detects Maricopa
+  → `market_key=AZ_MARICOPA`, `state=AZ`, `az-maricopa-` seed prefix (same opt-out shape as
+  Snohomish); `seed-from-json` dispatch extended.
+- `backend/harvesters/matcher.py` — `AZ_MARICOPA` added to the prop_type market-aware default
+  (`final_pt='R'`); Phase-2 forward-compat (Maricopa PUC `01xx`=SFR/R, `07xx`=condo/K).
+- NOT needed: arcgis.py MARKET_CONFIGS (orchestrator seeds from JSON, not ArcGIS ingest),
+  geometry_backfill config (lat/lng inline), canonicalizer rules (market-agnostic).
+
+**85254 pilot — LIVE.** Bare `POST /onboard-zip/85254` exercised the auto-detect (zero params →
+AZ_MARICOPA/Scottsdale/AZ). register→seed→classify→band→publish→refresh_counts all ok. 18,280
+parcels; archetypes (trust_young 4,755, individual_settled 3,055, llc_investor_early 1,918, …);
+bands (Band2=1,255, Band2.5=179); **1,229 Build Now leads** (trust 76, LLC 100-cap, tenure
+100-cap). call_now/probate/divorce=0 (Phase 2). absentee=0 (seed omits owner_state — Phase-1.5
+reingest, same as Snohomish launch; `MAIL_STATE` is in source).
+
+**Known transient hits (issue #11 contention, not AZ bugs):** seed dropped ~2,000 parcels
+(batches 2,8 "Server disconnected"; 17,280/19,280 — idempotent re-fire recovers); canonicalize
+failed on the same disconnect (`live_canonicalize_failed` end state; irrelevant to Phase 1 — no
+court signals to match — retry when Phase 2 lands).
+
+**Phase 2 (next, not built).** Recorder harvester: doc-code+date pulls for Notice of Trustee
+Sale (foreclosure) + Affidavit of Death/Succession + PR Deed of Distribution (death/estate, PR
+named on the recorded instrument). Divorce court-bound (name-only). Tax via Treasurer delinquent
+list (annual, $25 FTP). Then port the other 19 ZIPs (repeat: build seed → onboard, one at a time).
+
 ### 2026-06-02 — Brand voice prompt fix + My Leads letter badges + /letters page + daily email digest
+
 
 Five-part session. Started as one bug fix (letters referencing "2024" as the year to sell and "spring" as the time to list), grew into three new features for surfacing letter activity to the agent.
 
