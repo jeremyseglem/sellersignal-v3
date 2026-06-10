@@ -28,6 +28,7 @@ Design (Path B):
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -161,7 +162,23 @@ def _load_owners_db(
                 q = q.or_(f"market_key.in.({keys}),market_key.is.null")
             else:
                 q = q.in_('market_key', sorted(market_keys))
-        batch = q.range(offset, offset + PAGE - 1).execute().data or []
+        # Per-page retry (2026-06-10): a single transient "Server
+        # disconnected" at page N was killing the whole load (and with it
+        # the rematch tick) after N-1 successful pages. Retry each page
+        # up to 3 times with a short backoff before giving up.
+        batch = None
+        for attempt in range(3):
+            try:
+                batch = q.range(offset, offset + PAGE - 1).execute().data or []
+                break
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                log.warning(
+                    f"_load_owners_db page at offset {offset} failed "
+                    f"(attempt {attempt + 1}/3): {e} — retrying"
+                )
+                time.sleep(1.5 * (attempt + 1))
         parcels.extend(batch)
         if len(batch) < PAGE:
             break
