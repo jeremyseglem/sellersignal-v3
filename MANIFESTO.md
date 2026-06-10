@@ -501,6 +501,25 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-06-10 (cont.) — Enriched seed pipeline, batch canonicalization, all 19 AZ ZIPs staged
+
+**Seed pipeline now carries owner_state / owner_city / lat / lng (commit `cf53e4e`).** `build_maricopa_owners.py` emits MAIL_STATE/MAIL_CITY plus the Assessor layer's WGS84 LATITUDE/LONGITUDE attributes. `seed_from_json.py` passes the new fields through (optional — legacy KC/SNO seeds re-run unchanged), resolves the parcel `state` column from market_key via `_MARKET_STATE` (85254 had been seeded `state='WA'`), and derives `is_out_of_state`/`is_absentee` per row. Net effect: an AZ ZIP needs **no geometry backfill and no Phase-1.5 reingest** — the Issue #14 worker-blocking backfill is unnecessary for this market, and the Snohomish-style absentee=0 hole can't recur.
+
+**Absentee selector generalized (same commit).** `weekly_selector.py` compared `owner_state != 'WA'` (hardcoded) in both the bucket filter and the counts block — AZ absentee was structurally 0. Now compares against each lead's own situs state (`L.get('state')`, fallback WA); `briefings.py` lead shape carries `state`. Verified: 85254 reseeded (19,280 rows, 0 failures) + reclassify + reband → **absentee bucket 0 → 100 (capped)**, 2,565 real OOS owners (CA-heavy).
+
+**Batch canonicalization shipped (commits `8369226` + fixes).** Three admin endpoints replace the 2h-per-ZIP sequential canon drain for bulk onboarding:
+- `POST /api/admin/canon-batch/submit/{zip}` (`dry_run=true` supported) — reads the committed seed file, skips pins already in `owner_canonical_v3`, dedupes identical raw names, submits one Anthropic Message Batch (same model/prompt/validator as the real-time path; 50% token discount). AZ ZIPs get a prompt addendum covering Maricopa's surname-first slash co-owner format ("GRABER TAYLOR/AMELIA") which the KC prompt never described — ~35% of AZ names.
+- `GET /api/admin/canon-batch/status/{batch_id}` — poll.
+- `POST /api/admin/canon-batch/ingest/{batch_id}?zip_code={zip}` — downloads results, validates with the same `_validate_and_normalize`, fans deduped results out to all pins sharing the name, bulk-upserts. Idempotent.
+
+**Required order: seed → canon-batch → onboard.** `owner_canonical_v3.pin` has an FK to `parcels_v3.pin`, so parcels must be seeded first (seeding does NOT make a ZIP live — that needs register+publish). Onboarding after ingest means the orchestrator's canonicalize step finds everything already_done and the ZIP launches Contact-Now-ready. The real-time canon path stays for incremental/drip work.
+
+**All 19 remaining AZ ZIPs seeded into parcels_v3** (247,129 rows, zero failures; 266,409 Maricopa parcels total with 85254). None live yet. Proving batch for 85377 (`msgbatch_01CEL2Su5kgECED3So7TYAuV`, 2,405 unique names) submitted; ingest + slash-format quality check pending, then the other 18 submit in parallel, then onboard all 19.
+
+**Street View is down PLATFORM-WIDE (open, Jeremy-side):** every Street View Static request 403s with "You must enable Billing on the Google Cloud Project" — confirmed on both an 85254 pin and a KC pin (9808100010). Not a code issue; the Google Cloud project behind the Maps key has billing disabled. Fix: enable billing in console.cloud.google.com (no deploy needed), then referrer-restrict the key to sellersignal.co and API-restrict it.
+
+**85254 canon quality note:** it was canonicalized under the KC-only prompt before the AZ addendum existed. Once 85377 proves the addendum, a ~$2 batch re-run of 85254 would upgrade its slash-format parses. Jeremy's call, queued.
+
 ### 2026-06-10 — Matcher source→market scoping + 582-row cross-market cleanup (gate for Maricopa 19-ZIP rollout)
 
 Pre-rollout audit found **cross-market match contamination**: the matcher loaded all parcels platform-wide and matched any signal against any parcel by surname, regardless of county. Observed case: Snohomish probate `26-4-01148-31` (decedent Russell, Paula E) matched to a Scottsdale AZ parcel owned by a Russell trust, `trust_level: high`. False-match probability scales with parcel count — a hard gate before adding 19 more AZ ZIPs (~300K parcels).
