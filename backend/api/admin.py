@@ -3728,6 +3728,8 @@ def canon_batch_ingest(
                 rec = _validate_and_normalize(parsed, raw=raw)
                 stats["succeeded"] += 1
             except Exception:
+                # Model replied but unparseable — write a low-conf fallback
+                # so the name is visible as needing attention.
                 rec = _validate_and_normalize({
                     'surname_primary': '', 'surnames_all': [],
                     'given_primary': '', 'given_all': [],
@@ -3735,12 +3737,17 @@ def canon_batch_ingest(
                     'co_owners': [], 'confidence': 0.1}, raw=raw)
                 stats["errored"] += 1
         else:
-            rec = _validate_and_normalize({
-                'surname_primary': '', 'surnames_all': [],
-                'given_primary': '', 'given_all': [],
-                'entity_type': 'unknown', 'entity_name': raw,
-                'co_owners': [], 'confidence': 0.1}, raw=raw)
+            # Request-level error (rate limit, api_error, …). Write NOTHING:
+            # fallback rows here poison the retry path — the pin looks
+            # canonicalized, so a plain resubmit skips it forever (same
+            # failure mode as the geometry-backfill sentinel rows). Leaving
+            # it pending means `canon-batch/submit/{zip}` naturally picks up
+            # exactly the errored names on the next run.
             stats["errored"] += 1
+            etype = getattr(result.result, "type", "unknown")
+            stats.setdefault("error_types", {})
+            stats["error_types"][etype] = stats["error_types"].get(etype, 0) + 1
+            continue
 
         clean = {k: v for k, v in rec.items() if not k.startswith('_')}
         for pin in pins_by_name.get(raw, [rep_pin]):
