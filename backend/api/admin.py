@@ -3554,11 +3554,16 @@ def canon_batch_submit(
     zip_code: str,
     x_admin_key: Optional[str] = Header(None),
     dry_run: bool = False,
+    force: bool = False,
 ):
     """Submit one Anthropic message batch for every not-yet-canonicalized
     owner name in this ZIP's seed file. Dedupes identical raw names
     (one request per unique name; ingest fans the result out to all pins
-    sharing it). Returns the batch_id — keep it for status/ingest."""
+    sharing it). Returns the batch_id — keep it for status/ingest.
+
+    force=true: re-parse EVERY name regardless of existing canonical rows
+    (used to upgrade a ZIP parsed under an older prompt — e.g. 85254's
+    pre-addendum run). Ingest upserts on pin, so rows are replaced."""
     require_admin(x_admin_key)
     supa = get_supabase_client()
     if supa is None:
@@ -3586,7 +3591,7 @@ def canon_batch_submit(
                                  f"first: POST /api/admin/seed-from-json/"
                                  f"{zip_code}?market_key=...&city=...")
 
-    done = _canon_existing_pins(supa, all_pins)
+    done = set() if force else _canon_existing_pins(supa, all_pins)
     pending = {p: n for p, n in names_by_pin.items() if p not in done}
 
     # Empty owner names need no API call — write low-confidence unknown
