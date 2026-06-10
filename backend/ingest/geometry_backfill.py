@@ -57,6 +57,18 @@ MARKET_CONFIGS = {
         ),
         'pin_field': 'PARCEL_ID',
     },
+    'AZ_MARICOPA': {
+        # Maricopa County Assessor parcels layer. Geometry is Web Mercator
+        # POLYGONS, but the layer also exposes per-parcel WGS84 LATITUDE /
+        # LONGITUDE *attributes* — exact parcel points — so we read those
+        # directly instead of reprojecting polygon centroids.
+        # NOTE: the layer's APN is UNDASHED ('16703002') while parcels_v3.pin
+        # is dashed ('167-03-002'), so the AZ branch in _fetch_geometry_for_pins
+        # undashes pins for the WHERE clause and maps the result back.
+        'url': 'https://gis.mcassessor.maricopa.gov/arcgis/rest/services/Parcels/MapServer/0/query',
+        'pin_field': 'APN',
+        'coords_from_attributes': True,
+    },
 }
 
 BATCH_SIZE = 50        # PINs per ArcGIS IN clause. 200 was too large —
@@ -109,22 +121,37 @@ async def _fetch_geometry_for_pins(pins: list[str],
         raise ValueError(f"Market {market_key} not configured for geometry backfill")
 
     out: dict[str, tuple[float, float]] = {}
+    attr_mode = bool(config.get('coords_from_attributes'))
 
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         for i in range(0, len(pins), BATCH_SIZE):
             batch = pins[i:i + BATCH_SIZE]
-            # Build WHERE clause like: PARCELID IN ('1234','5678',...)
-            quoted = ",".join(f"'{p}'" for p in batch)
-            where_clause = f"{config['pin_field']} IN ({quoted})"
 
-            params = {
-                'where':        where_clause,
-                'outFields':    config['pin_field'],
-                'returnGeometry': 'true',
-                'outSR':        '4326',
-                'f':            'json',
-                'resultRecordCount': str(PAGE_SIZE),
-            }
+            if attr_mode:
+                # Layer APN is undashed; parcels_v3.pin is dashed. Query by
+                # undashed APN, map results back to the original dashed pin.
+                apn_map = {p.replace('-', ''): p for p in batch}  # undashed -> pin
+                quoted = ",".join(f"'{a}'" for a in apn_map)
+                where_clause = f"{config['pin_field']} IN ({quoted})"
+                params = {
+                    'where':        where_clause,
+                    'outFields':    f"{config['pin_field']},LATITUDE,LONGITUDE",
+                    'returnGeometry': 'false',
+                    'f':            'json',
+                    'resultRecordCount': str(PAGE_SIZE),
+                }
+            else:
+                # Build WHERE clause like: PARCELID IN ('1234','5678',...)
+                quoted = ",".join(f"'{p}'" for p in batch)
+                where_clause = f"{config['pin_field']} IN ({quoted})"
+                params = {
+                    'where':        where_clause,
+                    'outFields':    config['pin_field'],
+                    'returnGeometry': 'true',
+                    'outSR':        '4326',
+                    'f':            'json',
+                    'resultRecordCount': str(PAGE_SIZE),
+                }
             url = f"{config['url']}?{urlencode(params)}"
 
             try:
@@ -137,10 +164,19 @@ async def _fetch_geometry_for_pins(pins: list[str],
 
             for feat in data.get('features', []):
                 attrs = feat.get('attributes', {}) or {}
-                pin = str(attrs.get(config['pin_field'], '')).strip()
-                if not pin:
+                raw_pin = str(attrs.get(config['pin_field'], '')).strip()
+                if not raw_pin:
                     continue
-                lat, lng = _extract_lat_lng(feat.get('geometry', {}) or {})
+                if attr_mode:
+                    pin = apn_map.get(raw_pin, raw_pin)
+                    lat, lng = attrs.get('LATITUDE'), attrs.get('LONGITUDE')
+                    try:
+                        lat, lng = float(lat), float(lng)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    pin = raw_pin
+                    lat, lng = _extract_lat_lng(feat.get('geometry', {}) or {})
                 if lat is not None and lng is not None:
                     out[pin] = (lat, lng)
 
