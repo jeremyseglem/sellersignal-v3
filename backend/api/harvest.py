@@ -5561,3 +5561,107 @@ def admin_zip_quality_score(
             'after the all-ZIP audit. No onboarding gating yet.'
         ),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# /diag/cross-market-matches   (added 2026-06-10)
+#
+# Read-only audit for source→market scope violations: match rows whose
+# parcel sits in a market the signal's source can't legitimately cover
+# (e.g. a Snohomish court probate matched to a Scottsdale AZ parcel).
+# Companion to matcher.SOURCE_MARKET_SCOPE — run this BEFORE any cleanup
+# to see exactly which rows the scope fix would have prevented.
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/diag/cross-market-matches")
+def diag_cross_market_matches(
+    x_admin_key: Optional[str] = Header(None),
+    sample_limit: int = 25,
+):
+    """Count and sample raw_signal_matches_v3 rows that violate the
+    source→market scope. Read-only; deletes nothing."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    from backend.harvesters.matcher import SOURCE_MARKET_SCOPE
+
+    # 1. Load all match rows (paged) — id, raw_signal_id, pin
+    matches: list[dict] = []
+    page, PAGE = 0, 1000
+    while True:
+        rows = (supa.table('raw_signal_matches_v3')
+                .select('id, raw_signal_id, pin')
+                .order('id', desc=False)
+                .range(page * PAGE, (page + 1) * PAGE - 1)
+                .execute()).data or []
+        matches.extend(rows)
+        if len(rows) < PAGE:
+            break
+        page += 1
+        if page > 100:
+            break
+
+    if not matches:
+        return {"total_matches": 0, "violations": 0, "by_pair": {}, "sample": []}
+
+    # 2. Resolve each signal's source_type (chunked .in_ — URL limit)
+    signal_ids = sorted({m['raw_signal_id'] for m in matches})
+    source_by_signal: dict = {}
+    for i in range(0, len(signal_ids), 100):
+        chunk = signal_ids[i:i + 100]
+        rows = (supa.table('raw_signals_v3')
+                .select('id, source_type, signal_type, document_ref')
+                .in_('id', chunk)
+                .execute()).data or []
+        for r in rows:
+            source_by_signal[r['id']] = r
+
+    # 3. Resolve each pin's market_key (chunked .in_)
+    pins = sorted({m['pin'] for m in matches})
+    market_by_pin: dict = {}
+    for i in range(0, len(pins), 100):
+        chunk = pins[i:i + 100]
+        rows = (supa.table('parcels_v3')
+                .select('pin, market_key, zip_code')
+                .in_('pin', chunk)
+                .execute()).data or []
+        for r in rows:
+            market_by_pin[r['pin']] = r
+
+    # 4. Flag violations
+    violations: list[dict] = []
+    by_pair: dict = {}
+    for m in matches:
+        sig = source_by_signal.get(m['raw_signal_id']) or {}
+        src = (sig.get('source_type') or '').strip()
+        allowed = SOURCE_MARKET_SCOPE.get(src)
+        if allowed is None:
+            continue  # unrestricted source
+        parcel = market_by_pin.get(m['pin']) or {}
+        market = (parcel.get('market_key') or 'WA_KING').upper()
+        if market in allowed:
+            continue
+        key = f"{src} -> {market}"
+        by_pair[key] = by_pair.get(key, 0) + 1
+        violations.append({
+            "match_id":      m['id'],
+            "raw_signal_id": m['raw_signal_id'],
+            "pin":           m['pin'],
+            "parcel_zip":    parcel.get('zip_code'),
+            "parcel_market": market,
+            "source_type":   src,
+            "signal_type":   sig.get('signal_type'),
+            "document_ref":  sig.get('document_ref'),
+        })
+
+    return {
+        "total_matches": len(matches),
+        "violations":    len(violations),
+        "by_pair":       by_pair,
+        "sample":        violations[:sample_limit],
+        "note": ("Read-only. Cleanup path: delete these match rows, then "
+                 "refresh coverage counts for affected ZIPs. The matcher "
+                 "scope fix prevents new ones."),
+    }

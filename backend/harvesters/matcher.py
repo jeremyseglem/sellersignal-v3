@@ -167,6 +167,10 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
             # to confine matches to enabled ZIPs even when the matcher
             # itself runs unfiltered (e.g. via the rematch_autofill task).
             'zip_code':       p.get('zip_code') or '',
+            # market_key preserved for the source→market scope filter in
+            # _process_one. Parcels with no market_key predate the
+            # multi-market era and are all King County — default WA_KING.
+            'market_key':     (p.get('market_key') or 'WA_KING').upper(),
         }
         # Market-aware prop_type default. The existing `or 'R'` defaults
         # falsy values (NULL, empty) to 'R'. That covered KC parcels where
@@ -366,6 +370,32 @@ def _fetch_unmatched_batch(supa, batch_size: int) -> list[dict]:
     return rows
 
 
+# ─── Source → market scoping ──────────────────────────────────────────
+#
+# A signal harvested from a county's records can only legitimately match
+# parcels in that county's market. Without this scope, a Snohomish
+# probate decedent named Russell surname-matches a Scottsdale AZ parcel
+# owned by a Russell trust (observed in production 2026-06-10: signal
+# 26-4-01148-31 → pin 167-22-321, trust_level high). False matches scale
+# with parcel count, so this must hold before multi-market expansion.
+#
+# Sources not listed here are UNRESTRICTED (None) — preserves current
+# behavior for any source added without updating this map. Update this
+# map when a new harvester ships.
+SOURCE_MARKET_SCOPE: dict = {
+    'kc_superior_court':    {'WA_KING'},
+    'kc_treasury':          {'WA_KING'},
+    'wa_state_courts':      {'WA_SNOHOMISH'},   # Snohomish daily reports
+    'obituary_rss':         {'WA_KING', 'WA_SNOHOMISH'},  # WA-region obit sources
+    'az_maricopa_recorder': {'AZ_MARICOPA'},
+}
+
+
+def _allowed_markets_for(source_type: str) -> "set | None":
+    """Allowed parcel market_keys for a signal source, or None = no limit."""
+    return SOURCE_MARKET_SCOPE.get((source_type or '').strip())
+
+
 def _process_one(
     supa,
     row: dict,
@@ -393,6 +423,15 @@ def _process_one(
         return 0
 
     candidates = dispatcher(row, owners_db, use_codes)
+    # Source→market scope: a county-records signal may only match parcels
+    # in that county's market. See SOURCE_MARKET_SCOPE above.
+    allowed_markets = _allowed_markets_for(row.get("source_type") or "")
+    if allowed_markets is not None:
+        candidates = [
+            c for c in candidates
+            if owners_db.get(c.get("parcel_id"), {}).get("market_key", "WA_KING")
+            in allowed_markets
+        ]
     # Filter to zip if provided (paranoia — owners_db was already zip-filtered)
     if zip_filter:
         candidates = [c for c in candidates if c.get("parcel_id") in owners_db]
