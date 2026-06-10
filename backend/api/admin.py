@@ -3536,7 +3536,7 @@ def canon_batch_submit(
     owner name in this ZIP's seed file. Dedupes identical raw names
     (one request per unique name; ingest fans the result out to all pins
     sharing it). Returns the batch_id — keep it for status/ingest."""
-    _require_admin(x_admin_key)
+    require_admin(x_admin_key)
     supa = get_supabase_client()
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
@@ -3619,7 +3619,7 @@ def canon_batch_status(
     batch_id: str,
     x_admin_key: Optional[str] = Header(None),
 ):
-    _require_admin(x_admin_key)
+    require_admin(x_admin_key)
     from anthropic import Anthropic
     b = Anthropic().messages.batches.retrieve(batch_id)
     return {
@@ -3646,7 +3646,7 @@ def canon_batch_ingest(
     """Download a completed batch's results, validate each parse with the
     SAME validator as the real-time path, fan results out to every pin
     sharing the raw name, and bulk-upsert owner_canonical_v3. Idempotent."""
-    _require_admin(x_admin_key)
+    require_admin(x_admin_key)
     supa = get_supabase_client()
     if supa is None:
         raise HTTPException(503, "Supabase not configured")
