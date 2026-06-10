@@ -176,6 +176,42 @@ async def rematch_autofill_loop() -> None:
                 await asyncio.sleep(IDLE_INTERVAL)
                 continue
 
+            # ── Market-scoped tick (2026-06-10) ──────────────────────
+            # Loading every parcel (610K+) each tick made ticks take 10+
+            # minutes. Instead: find the market group of the OLDEST
+            # unmatched signal, load only that group's parcels, and fetch
+            # only that group's sources. Other groups get the next tick.
+            # Sources with unrestricted scope (None) fall back to a full
+            # load, restricted to just those sources.
+            src_rows = (supa.table('raw_signals_v3')
+                        .select('source_type')
+                        .is_('matched_at', 'null')
+                        .order('harvested_at', desc=False)
+                        .limit(1000)
+                        .execute()).data or []
+            distinct_sources = []
+            for r in src_rows:
+                st = (r.get('source_type') or '').strip()
+                if st and st not in distinct_sources:
+                    distinct_sources.append(st)
+            tick_sources: Optional[list] = None
+            tick_markets: Optional[set] = None
+            if distinct_sources:
+                lead = distinct_sources[0]
+                tick_markets = M._allowed_markets_for(lead)
+                if tick_markets is None:
+                    # Unrestricted source — full parcel load, but still
+                    # restrict the fetch to unrestricted sources only.
+                    tick_sources = [s for s in distinct_sources
+                                    if M._allowed_markets_for(s) is None]
+                else:
+                    tick_sources = [s for s in distinct_sources
+                                    if M._allowed_markets_for(s) == tick_markets]
+                state["current_scope"] = {
+                    "markets": sorted(tick_markets) if tick_markets else "ALL",
+                    "sources": tick_sources,
+                }
+
             # Run the matcher in-process. No HTTP, no timeout.
             # process_unmatched is sync, so wrap in a thread to avoid
             # blocking the asyncio loop (which is also handling other
@@ -186,6 +222,8 @@ async def rematch_autofill_loop() -> None:
                 ZIP_FILTER,
                 BATCH_SIZE,
                 MAX_BATCHES,
+                tick_sources,
+                tick_markets,
             )
 
             unmatched_after = _count_unmatched(supa)

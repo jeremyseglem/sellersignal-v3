@@ -48,6 +48,8 @@ def process_unmatched(
     zip_filter: Optional[str] = None,
     batch_size: int = 100,
     max_batches: int = 50,
+    source_types: Optional[list] = None,
+    market_keys: Optional[set] = None,
 ) -> dict:
     """
     Process up to (batch_size * max_batches) unmatched raw_signals.
@@ -55,6 +57,13 @@ def process_unmatched(
     zip_filter: if set (e.g. '98004'), only write matches for parcels in
                 that ZIP. Harvester runs KC-wide but the pilot scopes
                 to 98004.
+
+    source_types / market_keys: market-scoped mode (2026-06-10). When set
+    TOGETHER, owners_db loads only the given markets' parcels and the
+    signal fetch is restricted to the given sources. Callers MUST keep
+    these consistent (sources' allowed markets == loaded markets);
+    otherwise signals would process against a parcel set that excludes
+    their market and be falsely marked matched_at with 0 matches.
 
     Returns summary stats.
     """
@@ -66,8 +75,9 @@ def process_unmatched(
         "errors":       [],
     }
 
-    # Pre-load owners_db for the zip filter (or the whole KC coverage)
-    owners_db, use_codes = _load_owners_db(supa, zip_filter)
+    # Pre-load owners_db for the zip filter (or the whole KC coverage),
+    # optionally scoped to specific markets (rematch_autofill fast path)
+    owners_db, use_codes = _load_owners_db(supa, zip_filter, market_keys)
     if not owners_db:
         log.warning("No owners loaded — check canonicalization status")
         stats["errors"].append("No owners in owners_db")
@@ -77,7 +87,7 @@ def process_unmatched(
 
     batch_n = 0
     while batch_n < max_batches:
-        rows = _fetch_unmatched_batch(supa, batch_size)
+        rows = _fetch_unmatched_batch(supa, batch_size, source_types)
         if not rows:
             log.info("No more unmatched raw_signals")
             break
@@ -109,7 +119,11 @@ def process_unmatched(
 
 # ─── Internals ─────────────────────────────────────────────────────────
 
-def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
+def _load_owners_db(
+    supa,
+    zip_filter: Optional[str],
+    market_keys: Optional[set] = None,
+) -> tuple[dict, dict]:
     """
     Load canonicalized owners into the shape the legacy matchers expect.
 
@@ -139,12 +153,24 @@ def _load_owners_db(supa, zip_filter: Optional[str]) -> tuple[dict, dict]:
         )
         if zip_filter:
             q = q.eq('zip_code', zip_filter)
+        if market_keys:
+            keys = ",".join(sorted(market_keys))
+            if 'WA_KING' in market_keys:
+                # Legacy pre-multi-market parcels have market_key NULL and
+                # are all King County — include them in WA_KING scope.
+                q = q.or_(f"market_key.in.({keys}),market_key.is.null")
+            else:
+                q = q.in_('market_key', sorted(market_keys))
         batch = q.range(offset, offset + PAGE - 1).execute().data or []
         parcels.extend(batch)
         if len(batch) < PAGE:
             break
         offset += PAGE
-        if offset > 200000:
+        if offset > 800000:
+            # Hard stop only as a runaway guard. NOTE: this was 200000,
+            # which silently truncated owners_db once the platform passed
+            # 200K parcels (610K as of 2026-06-10) — signals could never
+            # match parcels beyond the window.
             break
 
     # Filter out gov-owned parcels — they can't be seller signals
@@ -359,12 +385,20 @@ def _load_canonical_for_pins(supa, pins: list[str]) -> dict:
     return out
 
 
-def _fetch_unmatched_batch(supa, batch_size: int) -> list[dict]:
-    """Pull next batch of raw_signals with matched_at IS NULL."""
-    rows = (supa.table('raw_signals_v3')
-            .select('*')
-            .is_('matched_at', 'null')
-            .order('harvested_at', desc=False)
+def _fetch_unmatched_batch(
+    supa, batch_size: int, source_types: Optional[list] = None
+) -> list[dict]:
+    """Pull next batch of raw_signals with matched_at IS NULL.
+
+    source_types: restrict to these sources (market-scoped mode). Must
+    correspond to the markets loaded in owners_db — see process_unmatched.
+    """
+    q = (supa.table('raw_signals_v3')
+         .select('*')
+         .is_('matched_at', 'null'))
+    if source_types:
+        q = q.in_('source_type', sorted(source_types))
+    rows = (q.order('harvested_at', desc=False)
             .limit(batch_size)
             .execute()).data or []
     return rows
