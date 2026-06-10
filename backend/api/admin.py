@@ -1462,6 +1462,14 @@ KC_ZIP_TO_CITY = {
     "98119": "Seattle",
     "98136": "Seattle",
     "98199": "Seattle",
+    # 2026-06-10 gap-fill expansion (value-screened vs live-ZIP floor)
+    "98008": "Bellevue",
+    "98011": "Bothell",
+    "98028": "Kenmore",
+    "98065": "Snoqualmie",
+    "98102": "Seattle",
+    "98109": "Seattle",
+    "98177": "Seattle",
 }
 
 # Snohomish County ZIPs. Phase 1 — only 98290 (Snohomish/Lake Stevens area).
@@ -1473,6 +1481,10 @@ SNO_ZIP_TO_CITY = {
     "98020": "Edmonds",
     "98026": "Edmonds",
     "98290": "Snohomish",
+    # 2026-06-10 gap-fill expansion
+    "98012": "Mill Creek",
+    "98021": "Bothell",
+    "98275": "Mukilteo",
 }
 
 # Maricopa County, AZ — first out-of-state market. Locked target set
