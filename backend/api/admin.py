@@ -26,6 +26,17 @@ router = APIRouter()
 
 # ─── Auth ────────────────────────────────────────────────────────────────
 
+
+def _resolve_state(state, market_key):
+    """Resolve situs state from market_key when not explicitly passed.
+    Prevents the 'Phoenix, WA' bug (2026-06-10): both onboarding endpoints
+    defaulted state='WA', so all AZ ZIPs registered as WA unless the
+    operator remembered &state=AZ."""
+    if state:
+        return state
+    from backend.ingest.seed_from_json import _MARKET_STATE
+    return _MARKET_STATE.get((market_key or '').upper(), 'WA')
+
 def require_admin(x_admin_key: Optional[str] = Header(None)) -> None:
     """
     Gate admin endpoints on a matching X-Admin-Key header.
@@ -850,7 +861,7 @@ async def register_zip(
     zip_code: str = Path(..., pattern=r'^\d{5}$'),
     market_key: str = "WA_KING",
     city: Optional[str] = None,
-    state: str = "WA",
+    state: Optional[str] = None,
     source_url: Optional[str] = None,
 ):
     """
@@ -901,7 +912,7 @@ async def register_zip(
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = cmd_register(zip_code, market_key, city, state, source_url)
+        rc = cmd_register(zip_code, market_key, city, _resolve_state(state, market_key), source_url)
 
     output = buf.getvalue()
     if rc != 0:
@@ -1057,7 +1068,7 @@ async def onboard_zip(
     zip_code: str = Path(..., pattern=r'^\d{5}$'),
     market_key: str = "WA_KING",
     city: Optional[str] = None,
-    state: str = "WA",
+    state: Optional[str] = None,
 ):
     """
     Run the full end-to-end ZIP onboarding pipeline as a background task.
@@ -1179,7 +1190,7 @@ async def onboard_zip(
             json_path=found_path,
             market_key=market_key,
             city=city,
-            state=state,
+            state=_resolve_state(state, market_key),
         )
     )
     # Don't await — return immediately
