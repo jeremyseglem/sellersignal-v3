@@ -501,6 +501,10 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-06-10 — Territory map: metro switcher (presentation fix for multi-metro)
+
+With 85254 (Phoenix) now drawable alongside the 28 WA ZIPs, the territory map's single `fitBounds` spanned Seattle→Phoenix (~1,100 mi) — an unusable national view. Fixed in `frontend/src/components/territories/TerritoryMap.jsx` (one file): group live ZIPs into **metros** (keyed off `state` — WA→"Seattle", AZ→"Phoenix"; per-metro bounds come from the actual polygons so each view is tight) and show **one metro at a time** via on-brand pill tabs (top-center, clear of Leaflet's top-left zoom; only rendered when >1 metro exists). Defaults to the agent's own metro if they hold a territory, else the largest. The polygon collection is fetched once and cached in a ref; switching metros re-renders the cached collection (filtered to the metro's ZIP set) and re-fits bounds — no refetch. WA-only behavior is unchanged (single metro → no tabs, same fit). Rebuilt `dist` via `npm run build:safe` (bundle `index-B9wUCmcL.js`; guard confirmed runtime config fetch). Commit `03aa786`. Scales cleanly to future metros (each new market_key's state becomes another tab); if a far-flung *same-state* cluster ever onboards (e.g. Spokane WA), switch the grouping key from `state` to market_key/county.
+
 ### 2026-06-10 — AZ geometry backfill: 85254 on the maps (Phase 1 geometry, deferred from 06-08)
 
 Phase 1 onboarded 85254 (Scottsdale) live but **deferred geometry** — the Maricopa seed carried no lat/lng, and the geometry backfill + ZIP-polygon bundle were WA-only. Result: 85254 was live in coverage and the ZIP list but **invisible on both maps**. Two distinct gaps, both closed this session:
