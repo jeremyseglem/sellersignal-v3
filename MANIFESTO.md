@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-06-08 (Maricopa County AZ — first out-of-state market; 85254 pilot live, Phase 1 parcel wiring)
+**Last updated:** 2026-06-10 (AZ geometry backfill — 85254 now renders on territory + briefing maps; az.json ZCTA polygons for 20 AZ ZIPs)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -48,7 +48,7 @@ Snohomish:      98290 (cross-county pilot, separate market_key WA_SNOHOMISH)
 
 ### Live measurements (snapshot 2026-05-21)
 ```
-total live ZIPs:    28  (26 KC + 2 Edmonds Snohomish)
+total live ZIPs:    29  (26 KC + 2 Edmonds Snohomish + 1 AZ Maricopa/85254; 85254 geometry backfilled 2026-06-10)
 total parcels:      ~277,500  (98020 grew to 8,351 after today's reingest; see below)
 court signals harvested:   ~16,850  (~16,337 KC case_parties + 513 Snohomish raw_signals_v3)
 Snohomish probate matches: 93 strict+weak rows after today's matcher re-run
@@ -501,6 +501,21 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-06-10 — AZ geometry backfill: 85254 on the maps (Phase 1 geometry, deferred from 06-08)
+
+Phase 1 onboarded 85254 (Scottsdale) live but **deferred geometry** — the Maricopa seed carried no lat/lng, and the geometry backfill + ZIP-polygon bundle were WA-only. Result: 85254 was live in coverage and the ZIP list but **invisible on both maps**. Two distinct gaps, both closed this session:
+
+**1. Territory map (ZIP boundary polygons).** `/api/zip-polygons` loads committed static bundles at `data/zip_polygons/{state}.json` (Census ZCTA boundaries; props `{zip,lat,lng}`). Only `wa.json` existed → AZ ZIPs had no polygon. Created **`data/zip_polygons/az.json`** with 2020 Census ZCTA polygons for all **20 AZ target ZIPs** (TIGERweb `tigerWMS_Current/MapServer/2`, `outSR=4326`, centroid from `CENTLAT/CENTLON`; 756 KB). `/api/zip-polygons` now returns 29 features incl. 85254. Future AZ onboards already have polygons.
+
+**2. Briefing map (per-parcel pins).** 85254's 19,280 parcels had `lat/lng = NULL`. Added **`AZ_MARICOPA` to `geometry_backfill.MARKET_CONFIGS`** + an isolated `coords_from_attributes` branch in `_fetch_geometry_for_pins`. AZ differs from WA two ways: (a) the Assessor layer geometry is Web Mercator polygons, but it also exposes per-parcel **WGS84 `LATITUDE`/`LONGITUDE` attributes** (exact parcel points) — so we read those directly, `returnGeometry=false`; (b) the layer's **`APN` is undashed** (`16703002`) while `parcels_v3.pin` is dashed (`167-03-002`) — the branch undashes pins for the `APN IN (...)` WHERE and maps each result back to the original dashed pin via an `apn_map`. **WA path byte-for-byte unchanged** (attr_mode=False → original code). Endpoint `/api/admin/geometry/85254` auto-resolved `market_key=AZ_MARICOPA` from coverage and worked unmodified.
+
+Ran the backfill in chunks (`?limit=`): **19,280 → 0 missing, fetched 100%, not_found 0 throughout** (no wrongful geocode_skipped marks — the Assessor endpoint cooperated cleanly from Railway; earlier curl flakiness was local rate-limiting). `/api/map/85254` now returns all parcels with coords; bounds sit tightly on Scottsdale (33.58–33.66, -111.98 to -111.92).
+
+Commit `7813190` (geometry_backfill + az.json). Git note: remote had diverged (Phase 2 harvester commit landed with a different hash + a UI-added workflow), so aligned local via `reset --hard FETCH_HEAD` and **cherry-picked** the AZ geometry commit on top rather than rebasing the divergent harvester commit.
+
+**Operational lesson (logged as Active Issue #14):** the geometry backfill writes **per-pin on the single uvicorn worker**, inside the async handler — so the event loop is **blocked for the whole update phase** (~3–5 min per 1,500-pin chunk). The site returns connection timeouts *during* a chunk and recovers between. Tolerable for one ZIP at low beta traffic, but the remaining 19 AZ ZIPs would be ~19× this. Move the update to a threadpool / background job before the next big geocode. Also note the **bash/client ~5-min ceiling**: `limit=3000` outran the client timeout (server kept processing; no data lost — next call re-fetches remaining nulls). `limit=1500` is the safe chunk size.
+
+
 ### 2026-06-08 — Maricopa County (AZ) Phase 1: first out-of-state market; 85254 pilot live
 
 First market outside Washington. Validates that the downstream pipeline (matcher,
@@ -843,6 +858,17 @@ Project bootstrapped from v1 archive. Owner canonicalizer + classifier. ArcGIS i
 ## Active issues / known cracks (May 20, 2026)
 
 These are tracked here so they don't get lost. None are production blockers.
+
+### 14. Geometry backfill blocks the single worker (event-loop stall during updates)
+
+`backend/ingest/geometry_backfill._bulk_update_coords` writes lat/lng **one PIN at a time** with the synchronous Supabase client, called (un-awaited) from inside the async `backfill_geometry_zip_async` handler. With one uvicorn worker, the event loop is blocked for the entire update phase, so `sellersignal.co` returns connection timeouts *during* each chunk and recovers between (observed 2026-06-10 backfilling 85254 — `health=000` mid-chunk, `200` between). Tolerable for a single ZIP at low beta traffic; **not** acceptable for the remaining 19 AZ ZIPs (~19× the volume) or any future large county.
+
+Fixes available (pick before the next big geocode):
+- **(a)** Run `_bulk_update_coords` in a threadpool (`await asyncio.to_thread(...)` / `run_in_executor`) so the event loop keeps serving requests during updates. Smallest change.
+- **(b)** True bulk upsert — batch the lat/lng updates into a single PostgREST upsert per N rows instead of per-PIN (also cuts wall-clock from ~0.15 s/PIN to seconds per batch).
+- **(c)** Move geometry backfill to a background task (like the autofills) with a status endpoint, so the HTTP call returns immediately.
+
+Also: keep geometry chunks at `?limit=1500`. `limit=3000` outruns the ~5-min client/bash timeout (the server keeps processing and finishes; no data lost since the next call re-fetches remaining null pins, but the client gets no response).
 
 ### ~~1. `?city=` query param not flowing through to register~~ **RESOLVED 2026-05-17**
 
