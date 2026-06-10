@@ -3548,6 +3548,21 @@ def canon_batch_submit(
 
     names_by_pin = _load_seed_names(zip_code)
     all_pins = list(names_by_pin.keys())
+
+    # owner_canonical_v3.pin has an FK to parcels_v3.pin — parcels must be
+    # seeded before any canonical row can be written. Seeding does NOT make
+    # the ZIP live (that requires register+publish), so the pre-onboarding
+    # flow is: seed-from-json -> canon-batch -> onboard-zip.
+    try:
+        pc = (supa.table('parcels_v3').select('pin', count='exact')
+              .eq('zip_code', zip_code).limit(1).execute()).count or 0
+    except Exception:
+        pc = 0
+    if pc == 0:
+        raise HTTPException(409, f"No parcels_v3 rows for {zip_code}. Seed "
+                                 f"first: POST /api/admin/seed-from-json/"
+                                 f"{zip_code}?market_key=...&city=...")
+
     done = _canon_existing_pins(supa, all_pins)
     pending = {p: n for p, n in names_by_pin.items() if p not in done}
 
