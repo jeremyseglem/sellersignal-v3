@@ -501,6 +501,19 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-06-10 — Matcher source→market scoping + 582-row cross-market cleanup (gate for Maricopa 19-ZIP rollout)
+
+Pre-rollout audit found **cross-market match contamination**: the matcher loaded all parcels platform-wide and matched any signal against any parcel by surname, regardless of county. Observed case: Snohomish probate `26-4-01148-31` (decedent Russell, Paula E) matched to a Scottsdale AZ parcel owned by a Russell trust, `trust_level: high`. False-match probability scales with parcel count — a hard gate before adding 19 more AZ ZIPs (~300K parcels).
+
+**Fix (commit `4802086`):** `SOURCE_MARKET_SCOPE` map in `harvesters/matcher.py` — `kc_superior_court`/`kc_treasury` → WA_KING; `wa_state_courts` → WA_SNOHOMISH; `az_maricopa_recorder` → AZ_MARICOPA; `obituary_rss` → WA-wide; **unknown sources unrestricted** (update the map when a new harvester ships). owners_db entries now carry `market_key` (empty → WA_KING, the pre-multi-market default). Candidates filtered post-dispatch in `_process_one`.
+
+**Audit + cleanup (commits `4802086`, `b608296`):** new read-only `GET /api/harvest/diag/cross-market-matches` found **582 violations of 13,912 total matches (4.2%)**: 260 kc→Snohomish, 321 Snohomish→KC, 1 Snohomish→AZ. New confirm-gated `POST /api/harvest/clear-cross-market-matches` (idempotent, recomputes live, returns affected ZIPs) deleted all 582. Re-audit: zero. Coverage counts refreshed on all 28 ZIPs — **every delta was 0 except 98115 (+2)**: the false matches were never in stored Contact-Now counts, so no visible launch-eve drop anywhere.
+
+**Operational lessons:**
+- `POST /api/coverage/refresh-counts` with NO zip_code (all-ZIP mode) **blocks the single uvicorn worker and browns out production** (health 000 mid-run) — same class as Issue #14. Use per-ZIP calls (~72s each) with spacing.
+- Back-to-back per-ZIP refreshes saturate the Supabase pool (issue #11): during the sweep, 98199's briefing 500'd with broken-pipe repeatedly and looked like a ZIP-specific bug; it was queue-position + pool exhaustion. Recovered untouched once the sweep stopped. Don't diagnose ZIP-specific failures while a refresh sweep is running.
+- Within-WA cross-county matches are not 100% provably false (a decedent can own property in an adjacent county), but surname-only evidence across counties is overwhelmingly collision; accuracy-first says scope to county. Jeremy approved deleting all 582.
+
 ### 2026-06-10 — Territory map: metro switcher (presentation fix for multi-metro)
 
 With 85254 (Phoenix) now drawable alongside the 28 WA ZIPs, the territory map's single `fitBounds` spanned Seattle→Phoenix (~1,100 mi) — an unusable national view. Fixed in `frontend/src/components/territories/TerritoryMap.jsx` (one file): group live ZIPs into **metros** (keyed off `state` — WA→"Seattle", AZ→"Phoenix"; per-metro bounds come from the actual polygons so each view is tight) and show **one metro at a time** via on-brand pill tabs (top-center, clear of Leaflet's top-left zoom; only rendered when >1 metro exists). Defaults to the agent's own metro if they hold a territory, else the largest. The polygon collection is fetched once and cached in a ref; switching metros re-renders the cached collection (filtered to the metro's ZIP set) and re-fits bounds — no refetch. WA-only behavior is unchanged (single metro → no tabs, same fit). Rebuilt `dist` via `npm run build:safe` (bundle `index-B9wUCmcL.js`; guard confirmed runtime config fetch). Commit `03aa786`. Scales cleanly to future metros (each new market_key's state becomes another tab); if a far-flung *same-state* cluster ever onboards (e.g. Spokane WA), switch the grouping key from `state` to market_key/county.
