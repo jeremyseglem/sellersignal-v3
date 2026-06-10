@@ -3441,3 +3441,294 @@ async def set_agent_timezone(
         'timezone': timezone,
         'was':      prev,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Batch canonicalization (added 2026-06-10)
+#
+# Bulk owner-name canonicalization via the Anthropic Message Batches API.
+# Same model, same prompt, same validation, same owner_canonical_v3 rows
+# as the real-time path in ingest/owner_canonicalizer.py — but submitted
+# as one batch per ZIP so Anthropic parallelizes instead of our single
+# worker dripping 3 concurrent requests (2h/ZIP -> typically <1h for all
+# ZIPs combined, at 50% token cost).
+#
+# Reads names from the committed SEED FILE, not parcels_v3 — so a ZIP can
+# be canonicalized BEFORE onboarding. The orchestrator's canonicalize
+# step then finds every pin already done and completes instantly.
+#
+# Flow (operator-driven, stateless across redeploys — batch_id is the
+# only handle and it lives at Anthropic):
+#   1. POST /admin/canon-batch/submit/{zip}          -> batch_id
+#   2. GET  /admin/canon-batch/status/{batch_id}     -> poll until ended
+#   3. POST /admin/canon-batch/ingest/{batch_id}?zip_code={zip}
+# ═══════════════════════════════════════════════════════════════════════
+
+_AZ_PROMPT_ADDENDUM = """
+
+ADDITIONAL PATTERNS — Maricopa County AZ Assessor OWNER_NAME format
+(applies to every string in this batch):
+  - Surname-FIRST with slash-separated co-owner given names:
+      "GRABER TAYLOR/AMELIA" -> primary TAYLOR GRABER, co-owner AMELIA GRABER
+      (co-owner inherits the primary surname unless their own surname appears)
+  - Slash co-owner WITH their own surname:
+      "UHLINGER ROBERT H/KENNEY LINDA DEGRECHIE" -> primary ROBERT UHLINGER,
+      co-owner LINDA KENNEY (DEGRECHIE secondary surname token)
+  - "TR" token marks a trust association:
+      "ROBERT E/WENDY J TR RUSSELL" -> entity_type "trust", surname RUSSELL,
+      co-owned by ROBERT and WENDY
+  - Pure entities (HOAs, LLC, INC) follow the same entity rules as above."""
+
+
+def _load_seed_names(zip_code: str) -> dict:
+    """pin -> raw owner_name from the committed seed file for this ZIP."""
+    import json as _json
+    from pathlib import Path as _Path
+    market_key = None
+    supa = get_supabase_client()
+    if supa is not None:
+        try:
+            cov = (supa.table('zip_coverage_v3')
+                   .select('market_key')
+                   .eq('zip_code', zip_code).single().execute())
+            market_key = (cov.data or {}).get('market_key')
+        except Exception:
+            market_key = None
+    candidates = []
+    if market_key == 'AZ_MARICOPA' or zip_code.startswith('85'):
+        candidates.append(f"data/seeds/az-maricopa-{zip_code}-owners.json")
+    if market_key == 'WA_SNOHOMISH':
+        candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
+    candidates.append(f"data/seeds/wa-king-{zip_code}-owners.json")
+    candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
+    for rel in candidates:
+        p = _Path(rel)
+        if p.exists():
+            with open(p) as f:
+                data = _json.load(f)
+            return {str(pin): (v.get('owner_name') or '').strip()
+                    for pin, v in data.items()}
+    raise HTTPException(404, f"No seed file found for {zip_code} "
+                             f"(tried: {candidates})")
+
+
+def _canon_existing_pins(supa, pins: list) -> set:
+    """Which of these pins already have owner_canonical_v3 rows."""
+    done = set()
+    for i in range(0, len(pins), 100):
+        chunk = pins[i:i + 100]
+        try:
+            rows = (supa.table('owner_canonical_v3')
+                    .select('pin').in_('pin', chunk).execute()).data or []
+            done.update(r['pin'] for r in rows)
+        except Exception as e:
+            print(f"  [canon-batch] existing-pins chunk failed: {e}")
+    return done
+
+
+@router.post("/canon-batch/submit/{zip_code}")
+def canon_batch_submit(
+    zip_code: str,
+    x_admin_key: Optional[str] = Header(None),
+    dry_run: bool = False,
+):
+    """Submit one Anthropic message batch for every not-yet-canonicalized
+    owner name in this ZIP's seed file. Dedupes identical raw names
+    (one request per unique name; ingest fans the result out to all pins
+    sharing it). Returns the batch_id — keep it for status/ingest."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    from backend.ingest.owner_canonicalizer import (
+        MODEL, MAX_TOKENS, SYSTEM_PROMPT, upsert_canonical,
+        _validate_and_normalize,
+    )
+
+    names_by_pin = _load_seed_names(zip_code)
+    all_pins = list(names_by_pin.keys())
+    done = _canon_existing_pins(supa, all_pins)
+    pending = {p: n for p, n in names_by_pin.items() if p not in done}
+
+    # Empty owner names need no API call — write low-confidence unknown
+    # rows directly (same shape the real-time path produces).
+    empties = [p for p, n in pending.items() if not n]
+    if not dry_run:
+        for p in empties:
+            rec = _validate_and_normalize({
+                'surname_primary': '', 'surnames_all': [],
+                'given_primary': '', 'given_all': [],
+                'entity_type': 'unknown', 'entity_name': '',
+                'co_owners': [], 'confidence': 0.0}, raw='')
+            upsert_canonical(supa, p, rec)
+    for p in empties:
+        pending.pop(p, None)
+
+    # Dedupe identical names: one request, custom_id = representative pin.
+    rep_pin_by_name: dict = {}
+    for p, n in pending.items():
+        rep_pin_by_name.setdefault(n, p)
+    unique = list(rep_pin_by_name.items())  # [(name, rep_pin)]
+
+    system = SYSTEM_PROMPT
+    if zip_code.startswith('85'):
+        system = SYSTEM_PROMPT + _AZ_PROMPT_ADDENDUM
+
+    summary = {
+        "zip_code": zip_code,
+        "seed_pins": len(all_pins),
+        "already_done": len(done),
+        "empty_names_written": len(empties),
+        "pending_pins": len(pending),
+        "unique_names_to_submit": len(unique),
+        "model": MODEL,
+        "az_prompt_addendum": zip_code.startswith('85'),
+    }
+    if dry_run:
+        return summary | {"dry_run": True, "batch_id": None}
+    if not unique:
+        return summary | {"batch_id": None,
+                          "note": "Nothing pending — ZIP fully canonicalized."}
+
+    from anthropic import Anthropic
+    client = Anthropic()
+    requests_payload = [
+        {
+            "custom_id": rep_pin,
+            "params": {
+                "model": MODEL,
+                "max_tokens": MAX_TOKENS,
+                "system": system,
+                "messages": [{
+                    "role": "user",
+                    "content": f"Parse this owner name: {name}",
+                }],
+            },
+        }
+        for name, rep_pin in unique
+    ]
+    batch = client.messages.batches.create(requests=requests_payload)
+    return summary | {"batch_id": batch.id,
+                      "processing_status": batch.processing_status,
+                      "next": f"GET /api/admin/canon-batch/status/{batch.id}"}
+
+
+@router.get("/canon-batch/status/{batch_id}")
+def canon_batch_status(
+    batch_id: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    _require_admin(x_admin_key)
+    from anthropic import Anthropic
+    b = Anthropic().messages.batches.retrieve(batch_id)
+    return {
+        "batch_id": b.id,
+        "processing_status": b.processing_status,
+        "request_counts": {
+            "processing": b.request_counts.processing,
+            "succeeded": b.request_counts.succeeded,
+            "errored": b.request_counts.errored,
+            "canceled": b.request_counts.canceled,
+            "expired": b.request_counts.expired,
+        },
+        "created_at": str(b.created_at),
+        "ended_at": str(b.ended_at) if b.ended_at else None,
+    }
+
+
+@router.post("/canon-batch/ingest/{batch_id}")
+def canon_batch_ingest(
+    batch_id: str,
+    zip_code: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Download a completed batch's results, validate each parse with the
+    SAME validator as the real-time path, fan results out to every pin
+    sharing the raw name, and bulk-upsert owner_canonical_v3. Idempotent."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    from anthropic import Anthropic
+    from backend.ingest.owner_canonicalizer import (
+        MODEL, _validate_and_normalize, _strip_markdown_fences,
+    )
+    import json as _json
+
+    client = Anthropic()
+    b = client.messages.batches.retrieve(batch_id)
+    if b.processing_status != "ended":
+        raise HTTPException(409, f"Batch not finished: "
+                                 f"{b.processing_status}. Poll status first.")
+
+    names_by_pin = _load_seed_names(zip_code)
+    pins_by_name: dict = {}
+    for p, n in names_by_pin.items():
+        if n:
+            pins_by_name.setdefault(n, []).append(p)
+
+    rows: list = []
+    stats = {"succeeded": 0, "errored": 0, "fanout_rows": 0,
+             "unmapped_custom_ids": 0}
+    for result in client.messages.batches.results(batch_id):
+        rep_pin = result.custom_id
+        raw = names_by_pin.get(rep_pin)
+        if raw is None:
+            stats["unmapped_custom_ids"] += 1
+            continue
+        if result.result.type == "succeeded":
+            try:
+                text = result.result.message.content[0].text
+                parsed = _json.loads(_strip_markdown_fences(text))
+                rec = _validate_and_normalize(parsed, raw=raw)
+                stats["succeeded"] += 1
+            except Exception:
+                rec = _validate_and_normalize({
+                    'surname_primary': '', 'surnames_all': [],
+                    'given_primary': '', 'given_all': [],
+                    'entity_type': 'unknown', 'entity_name': raw,
+                    'co_owners': [], 'confidence': 0.1}, raw=raw)
+                stats["errored"] += 1
+        else:
+            rec = _validate_and_normalize({
+                'surname_primary': '', 'surnames_all': [],
+                'given_primary': '', 'given_all': [],
+                'entity_type': 'unknown', 'entity_name': raw,
+                'co_owners': [], 'confidence': 0.1}, raw=raw)
+            stats["errored"] += 1
+
+        clean = {k: v for k, v in rec.items() if not k.startswith('_')}
+        for pin in pins_by_name.get(raw, [rep_pin]):
+            rows.append({
+                'pin': pin,
+                'surname_primary': clean.get('surname_primary', '') or None,
+                'surnames_all': clean.get('surnames_all', []),
+                'given_primary': clean.get('given_primary', '') or None,
+                'given_all': clean.get('given_all', []),
+                'entity_type': clean.get('entity_type', 'unknown'),
+                'entity_name': clean.get('entity_name', '') or None,
+                'co_owners': clean.get('co_owners', []),
+                'confidence': clean.get('confidence', 0.0),
+                'raw_name': clean.get('raw_name', ''),
+                'model': clean.get('model', MODEL),
+            })
+            stats["fanout_rows"] += 1
+
+    upserted = 0
+    failed = 0
+    for i in range(0, len(rows), 500):
+        chunk = rows[i:i + 500]
+        try:
+            supa.table('owner_canonical_v3').upsert(
+                chunk, on_conflict='pin').execute()
+            upserted += len(chunk)
+        except Exception as e:
+            print(f"  [canon-batch] ingest upsert chunk failed: {e}")
+            failed += len(chunk)
+
+    return stats | {"zip_code": zip_code, "rows_upserted": upserted,
+                    "rows_failed": failed,
+                    "note": ("Idempotent — re-run on transient failures. "
+                             "ZIP is Contact-Now-ready once rows_failed=0.")}
