@@ -5573,18 +5573,9 @@ def admin_zip_quality_score(
 # to see exactly which rows the scope fix would have prevented.
 # ═══════════════════════════════════════════════════════════════════════
 
-@router.get("/diag/cross-market-matches")
-def diag_cross_market_matches(
-    x_admin_key: Optional[str] = Header(None),
-    sample_limit: int = 25,
-):
-    """Count and sample raw_signal_matches_v3 rows that violate the
-    source→market scope. Read-only; deletes nothing."""
-    _require_admin(x_admin_key)
-    supa = get_supabase_client()
-    if supa is None:
-        raise HTTPException(503, "Supabase not configured")
-
+def _compute_cross_market_violations(supa) -> dict:
+    """Shared violation computation for the diag and cleanup endpoints.
+    Returns {total_matches, violations: [...], by_pair: {...}}."""
     from backend.harvesters.matcher import SOURCE_MARKET_SCOPE
 
     # 1. Load all match rows (paged) — id, raw_signal_id, pin
@@ -5604,7 +5595,7 @@ def diag_cross_market_matches(
             break
 
     if not matches:
-        return {"total_matches": 0, "violations": 0, "by_pair": {}, "sample": []}
+        return {"total_matches": 0, "violations": [], "by_pair": {}}
 
     # 2. Resolve each signal's source_type (chunked .in_ — URL limit)
     signal_ids = sorted({m['raw_signal_id'] for m in matches})
@@ -5658,10 +5649,83 @@ def diag_cross_market_matches(
 
     return {
         "total_matches": len(matches),
-        "violations":    len(violations),
+        "violations":    violations,
         "by_pair":       by_pair,
-        "sample":        violations[:sample_limit],
-        "note": ("Read-only. Cleanup path: delete these match rows, then "
-                 "refresh coverage counts for affected ZIPs. The matcher "
-                 "scope fix prevents new ones."),
+    }
+
+
+@router.get("/diag/cross-market-matches")
+def diag_cross_market_matches(
+    x_admin_key: Optional[str] = Header(None),
+    sample_limit: int = 25,
+):
+    """Count and sample raw_signal_matches_v3 rows that violate the
+    source→market scope. Read-only; deletes nothing."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    result = _compute_cross_market_violations(supa)
+    return {
+        "total_matches": result["total_matches"],
+        "violations":    len(result["violations"]),
+        "by_pair":       result["by_pair"],
+        "sample":        result["violations"][:sample_limit],
+        "note": ("Read-only. Cleanup path: POST /clear-cross-market-matches"
+                 "?confirm=true, then refresh coverage counts for affected "
+                 "ZIPs. The matcher scope fix prevents new ones."),
+    }
+
+
+@router.post("/clear-cross-market-matches")
+def clear_cross_market_matches(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+):
+    """DESTRUCTIVE: delete raw_signal_matches_v3 rows that violate the
+    source→market scope (recomputed live — same logic as the diag).
+    Idempotent: a second run finds zero violations. Returns affected
+    ZIPs so coverage counts can be refreshed afterward."""
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400,
+            "Deletes cross-market match rows from raw_signal_matches_v3. "
+            "Run GET /diag/cross-market-matches first to review, then "
+            "pass ?confirm=true.",
+        )
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    result = _compute_cross_market_violations(supa)
+    violations = result["violations"]
+    if not violations:
+        return {"deleted": 0, "by_pair": {}, "affected_zips": [],
+                "note": "No violations found — nothing deleted."}
+
+    match_ids = [v["match_id"] for v in violations]
+    affected_zips = sorted({v["parcel_zip"] for v in violations
+                            if v.get("parcel_zip")})
+    deleted = 0
+    for i in range(0, len(match_ids), 100):
+        chunk = match_ids[i:i + 100]
+        try:
+            (supa.table('raw_signal_matches_v3')
+             .delete()
+             .in_('id', chunk)
+             .execute())
+            deleted += len(chunk)
+        except Exception as e:
+            log.warning(f"clear-cross-market-matches chunk failed: {e}")
+
+    return {
+        "deleted":       deleted,
+        "expected":      len(match_ids),
+        "by_pair":       result["by_pair"],
+        "affected_zips": affected_zips,
+        "note": ("Now run POST /api/coverage/refresh-counts?confirm=true"
+                 "&zip_code={zip} for each affected ZIP, then re-run the "
+                 "diag to confirm zero."),
     }
