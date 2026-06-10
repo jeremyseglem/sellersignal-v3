@@ -1,0 +1,49 @@
+name: Maricopa Recorder Harvester
+
+on:
+  schedule:
+    # Daily at 14:00 UTC (7am Phoenix). 14-day lookback makes missed runs
+    # self-healing.
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "Write to DB (1) or dry run (0)"
+        required: false
+        default: "0"
+      days:
+        description: "Lookback window in days"
+        required: false
+        default: "14"
+      codes:
+        description: "Comma list of doc codes"
+        required: false
+        default: "PD"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OCR system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Run harvester
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          DAYS: ${{ github.event_name == 'schedule' && '14' || github.event.inputs.days }}
+          CODES: ${{ github.event_name == 'schedule' && 'PD' || github.event.inputs.codes }}
+        run: python3 scripts/run_maricopa_recorder.py
