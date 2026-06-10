@@ -94,6 +94,21 @@ const POLY_HOVER_BOOST = {
   weightDelta:      0.8,
 };
 
+// ─── Metro grouping ────────────────────────────────────────────────────────
+// Territories now span more than one metro (Puget Sound + Phoenix), which are
+// ~1,100 miles apart. A single map fit to all of them is unusable, so we group
+// ZIPs into metros and show one at a time. Grouping keys off `state` (always
+// present on a coverage record); the per-metro bounds come from the actual
+// polygons, so a metro view stays tight as long as its ZIPs are co-located.
+// If a future market adds a far-flung same-state cluster (e.g. Spokane), switch
+// this to key off market_key / county instead.
+const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix' };
+
+function metroOf(z) {
+  const st = z?.state || 'other';
+  return { key: st, label: STATE_METRO_LABELS[st] || st };
+}
+
 // ─── Component ───────────────────────────────────────────────────────────
 export default function TerritoryMap({
   role,
@@ -109,6 +124,7 @@ export default function TerritoryMap({
   const mapInstance = useRef(null);
   const layerGroup  = useRef(null);
   const labelGroup  = useRef(null);
+  const collectionRef = useRef(null);   // cached polygon FeatureCollection (re-rendered on metro switch)
 
   // Index `zips` array by zip_code for O(1) lookup
   const zipIndex = useMemo(() => {
@@ -116,6 +132,26 @@ export default function TerritoryMap({
     for (const z of zips) m[z.zip_code] = z;
     return m;
   }, [zips]);
+
+  // Group ZIPs into metros — one tight map per metro. Ordered by ZIP count desc.
+  const metros = useMemo(() => {
+    const byKey = {};
+    const order = [];
+    for (const z of zips) {
+      const m = metroOf(z);
+      if (!byKey[m.key]) {
+        byKey[m.key] = { ...m, zips: new Set(), count: 0 };
+        order.push(m.key);
+      }
+      byKey[m.key].zips.add(z.zip_code);
+      byKey[m.key].count += 1;
+    }
+    return order.map((k) => byKey[k]).sort((a, b) => b.count - a.count);
+  }, [zips]);
+
+  // Which metro the map is currently showing. Defaults below (after metros
+  // and myZip are known) to the agent's own metro, else the largest.
+  const [selectedMetro, setSelectedMetro] = useState(null);
 
   // Stats card state (the only thing that drives re-renders)
   const [selected, setSelected]     = useState(null);   // zip_code or null
@@ -172,8 +208,8 @@ export default function TerritoryMap({
     zipPolygons.list()
       .then((collection) => {
         if (cancelled) return;
-        renderPolygons(collection);
-        setPolysLoaded(true);
+        collectionRef.current = collection;
+        setPolysLoaded(true);   // metro-render effect below draws the active metro
       })
       .catch((e) => {
         if (cancelled) return;
@@ -181,10 +217,32 @@ export default function TerritoryMap({
       });
 
     return () => { cancelled = true; };
-    // We intentionally render only once (zipIndex changes are reflected
-    // by re-styling existing layers, not re-rendering — see effect below).
+    // We fetch once; metro switches re-render the cached collection (see
+    // the metro-render effect) rather than re-fetching.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Pick the initial metro once metros are known: the agent's own metro if
+  // they hold a territory there, otherwise the largest metro.
+  useEffect(() => {
+    if (selectedMetro || !metros.length) return;
+    let initial = metros[0].key;
+    if (myZip && zipIndex[myZip]) {
+      const m = metroOf(zipIndex[myZip]);
+      if (metros.some((x) => x.key === m.key)) initial = m.key;
+    }
+    setSelectedMetro(initial);
+  }, [metros, myZip, zipIndex, selectedMetro]);
+
+  // Draw (and redraw) the polygons for the selected metro. Fires on metro
+  // switch and once polygons finish loading. Clears any open stats card so a
+  // selection from a different metro doesn't linger across the switch.
+  useEffect(() => {
+    if (!mapInstance.current || !collectionRef.current || !selectedMetro) return;
+    setSelected(null);
+    renderPolygons(collectionRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMetro, polysLoaded]);
 
   function renderPolygons(collection) {
     if (!collection?.features?.length) return;
@@ -192,11 +250,16 @@ export default function TerritoryMap({
     layerGroup.current.clearLayers();
     labelGroup.current.clearLayers();
 
+    // Only draw the metro the map is currently showing.
+    const activeMetro = metros.find((m) => m.key === selectedMetro);
+    const allow = activeMetro ? activeMetro.zips : null;
+
     const featureLayers = [];
 
     for (const feature of collection.features) {
       const zip = feature.properties?.zip;
       if (!zip) continue;
+      if (allow && !allow.has(zip)) continue;
       const zipRec = zipIndex[zip];
       const status = statusForZip(zip, myZip, zipRec);
 
@@ -298,6 +361,14 @@ export default function TerritoryMap({
       <style>{INLINE_CSS}</style>
 
       <div ref={mapEl} style={STYLES.map} />
+
+      {metros.length > 1 && selectedMetro && (
+        <MetroTabs
+          metros={metros}
+          selected={selectedMetro}
+          onSelect={setSelectedMetro}
+        />
+      )}
 
       {polyError && (
         <div style={STYLES.errorBanner}>{polyError}</div>
@@ -586,6 +657,35 @@ function LegendItem({ swatch, label, muted, tint }) {
   );
 }
 
+// ─── Metro switcher (pill tabs over the map; one tight metro at a time) ──
+function MetroTabs({ metros, selected, onSelect }) {
+  return (
+    <div style={STYLES.metroTabs} role="tablist" aria-label="Metro areas">
+      {metros.map((m) => {
+        const active = m.key === selected;
+        return (
+          <button
+            key={m.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onSelect(m.key)}
+            style={{ ...STYLES.metroTab, ...(active ? STYLES.metroTabActive : null) }}
+          >
+            {m.label}
+            <span style={{
+              ...STYLES.metroTabCount,
+              ...(active ? STYLES.metroTabCountActive : null),
+            }}>
+              {m.count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Styles ────────────────────────────────────────────────────────────
 const STYLES = {
   wrap: {
@@ -599,6 +699,35 @@ const STYLES = {
     background: 'var(--bg-card)',
   },
   map: { width: '100%', height: '100%' },
+
+  // ── Metro switcher pills (top-center, clear of Leaflet's top-left zoom) ──
+  metroTabs: {
+    position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+    display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 4,
+    zIndex: 600, padding: 4, borderRadius: 999,
+    background: 'var(--bg-card)', border: '1px solid var(--border)',
+    boxShadow: '0 4px 16px rgba(44,36,24,0.12)',
+    maxWidth: 'calc(100% - 24px)',
+  },
+  metroTab: {
+    display: 'inline-flex', alignItems: 'center', gap: 7,
+    padding: '7px 14px', borderRadius: 999, border: 'none',
+    background: 'transparent', cursor: 'pointer', whiteSpace: 'nowrap',
+    fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600,
+    color: 'var(--text-secondary)',
+    transition: 'background 140ms ease, color 140ms ease',
+  },
+  metroTabActive: {
+    background: 'var(--accent)', color: 'var(--text-inverse, #fff)',
+  },
+  metroTabCount: {
+    fontSize: 11, fontWeight: 700, lineHeight: 1,
+    padding: '2px 6px', borderRadius: 999,
+    background: 'rgba(44,36,24,0.06)', color: 'var(--text-tertiary)',
+  },
+  metroTabCountActive: {
+    background: 'rgba(255,255,255,0.22)', color: 'var(--text-inverse, #fff)',
+  },
   errorBanner: {
     position: 'absolute', top: 12, left: 12, right: 12,
     padding: '12px 16px', background: 'rgba(158,75,60,0.10)',
