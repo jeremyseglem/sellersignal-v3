@@ -1562,7 +1562,6 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
             json_path=str(seed_path),
             zip_code=zip_code,
             market_key=market_key,
-            default_state="WA",
             default_city=city,
         )
     except Exception as e:

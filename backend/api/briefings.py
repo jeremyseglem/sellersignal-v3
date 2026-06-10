@@ -591,6 +591,9 @@ async def get_briefing(
                 'is_out_of_state': bool(p.get('is_out_of_state')),
                 'owner_state':  p.get('owner_state'),
                 'owner_city':   p.get('owner_city'),
+                # Situs state — the absentee selector compares owner_state
+                # against this per-lead (AZ leads vs AZ, WA vs WA).
+                'state':        p.get('state'),
                 'value':        p.get('total_value') or 0,
                 'zip':          p.get('zip_code'),
                 'tenure_years': p.get('tenure_years'),

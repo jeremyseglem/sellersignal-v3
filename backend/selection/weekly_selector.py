@@ -792,12 +792,15 @@ def _select_absentee_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP)
     n = _coerce_n(n)
     def base_filter(L):
         owner_state = (L.get('owner_state') or '').strip().upper()
-        # Must be a valid US state AND not WA. Without the
+        # Must be a valid US state AND differ from the parcel's own situs
+        # state (per-lead — generalizes to AZ and future markets; legacy
+        # leads without a state field fall back to WA). Without the
         # _VALID_US_STATES guard, junk values from upstream ingest
         # (truncations like 'A', 'SH', 'ST', '98') get classified as
         # out-of-state and pollute the bucket.
+        home_state = (L.get('state') or 'WA').strip().upper()
         is_out_of_state = (owner_state in _VALID_US_STATES
-                           and owner_state != 'WA')
+                           and owner_state != home_state)
         return (L['pin'] not in exclude_pins
                 and owner_base_key(L) not in used_owner_keys
                 and not _has_blocker(L)
@@ -950,8 +953,10 @@ def count_contact_now_eligible_per_bucket(leads, exclude_pins):
         if (L['pin'] not in seen_pins
             and not _has_blocker(L)):
             owner_state = (L.get('owner_state') or '').strip().upper()
-            # Same valid-US-state guard as _select_absentee_bucket.
-            if owner_state in _VALID_US_STATES and owner_state != 'WA':
+            # Same valid-US-state guard as _select_absentee_bucket;
+            # per-lead home state (legacy leads fall back to WA).
+            home_state = (L.get('state') or 'WA').strip().upper()
+            if owner_state in _VALID_US_STATES and owner_state != home_state:
                 absentee_pins.add(L['pin'])
     counts['absentee'] = len(absentee_pins)
     seen_pins.update(absentee_pins)

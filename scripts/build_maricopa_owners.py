@@ -220,6 +220,10 @@ OUT_FIELDS = ",".join([
     "MAIL_CITY", "MAIL_STATE", "MAIL_ZIP",
     "FCV_CUR", "SALE_DATE", "SALE_PRICE",
     "PUC", "LC_CUR", "CONST_YEAR",
+    # WGS84 point attributes exposed by the Assessor layer — carrying
+    # these in the seed makes the per-ZIP geometry backfill unnecessary
+    # for AZ (and avoids Issue #14's worker-blocking backfill chunks).
+    "LATITUDE", "LONGITUDE",
 ])
 WHERE = f"PHYSICAL_ZIP='{TARGET_ZIP}'"
 
@@ -291,6 +295,14 @@ for feat in all_features:
         "address":            address,
         "value":              value,
         "owner_type":         classify_owner_type(owner_name),
+        # Mailing city/state straight off the Assessor record — feeds
+        # owner_state/owner_city in parcels_v3 so the absentee bucket
+        # works without a Phase-1.5 reingest (the Snohomish gap shape).
+        "owner_city":         (attrs.get("MAIL_CITY") or "").strip(),
+        "owner_state":        (attrs.get("MAIL_STATE") or "").strip().upper(),
+        # WGS84 parcel point — seeds lat/lng directly, no geometry backfill.
+        "lat":                attrs.get("LATITUDE"),
+        "lng":                attrs.get("LONGITUDE"),
     }
 
 if skipped_no_pin:

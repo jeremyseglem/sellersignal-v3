@@ -27,9 +27,23 @@ from pathlib import Path
 
 
 def _derive_flags(parcel: dict) -> dict:
-    """Compute is_absentee, is_out_of_state from parcel data where possible."""
-    # We don't have mailing address in this JSON shape, so these default False.
-    # True ingest from ArcGIS sets them correctly; this is a bootstrap path.
+    """Compute is_absentee, is_out_of_state from parcel data where possible.
+
+    When the seed carries owner_state (mailing state — AZ seeds do as of
+    2026-06-10), is_out_of_state is computed against the parcel's own
+    situs state. Seeds without owner_state (legacy KC/SNO shape) keep the
+    bootstrap False defaults; reingest-property-details sets them later.
+    """
+    owner_state = (parcel.get('owner_state') or '').strip().upper()
+    home_state = (parcel.get('state') or '').strip().upper()
+    if owner_state and home_state:
+        oos = (len(owner_state) == 2 and owner_state.isalpha()
+               and owner_state != home_state)
+        return {
+            'is_absentee':     oos,
+            'is_out_of_state': oos,
+            'is_vacant_land':  False,
+        }
     return {
         'is_absentee':     False,
         'is_out_of_state': False,
@@ -69,20 +83,34 @@ def _to_int(v) -> int | None:
         return None
 
 
+_MARKET_STATE = {
+    'WA_KING':      'WA',
+    'WA_SNOHOMISH': 'WA',
+    'AZ_MARICOPA':  'AZ',
+}
+
+
 def load_parcels_from_json(
     json_path: str,
     zip_code: str,
     market_key: str = 'WA_KING',
-    default_state: str = 'WA',
+    default_state: str | None = None,
     default_city: str = 'Bellevue',
 ) -> list[dict]:
     """
     Read the JSON and transform into parcels_v3 row dicts.
     Returns a list ready for supabase.table('parcels_v3').upsert(...)
+
+    default_state: if None, resolved from market_key via _MARKET_STATE
+    (falls back to 'WA'). Prevents the cmd_seed-default-Bellevue bug
+    shape recurring on the state column (85254 was seeded state='WA').
     """
     path = Path(json_path)
     if not path.exists():
         raise FileNotFoundError(f"{json_path} not found")
+
+    if not default_state:
+        default_state = _MARKET_STATE.get((market_key or '').upper(), 'WA')
 
     with open(path) as f:
         data = json.load(f)
@@ -109,6 +137,21 @@ def load_parcels_from_json(
             'last_transfer_price': _to_int(p.get('sale_price')),
             'tenure_years':      p.get('tenure_years'),
         }
+        # Optional enrichment fields — present in AZ seeds (2026-06-10+),
+        # absent in legacy KC/SNO seeds. Only set when present so older
+        # seed files re-run cleanly without nulling reingested values.
+        owner_state = (p.get('owner_state') or '').strip().upper()
+        if owner_state:
+            row['owner_state'] = owner_state
+        owner_city = (p.get('owner_city') or '').strip()
+        if owner_city:
+            row['owner_city'] = owner_city
+        if p.get('lat') is not None and p.get('lng') is not None:
+            try:
+                row['lat'] = float(p['lat'])
+                row['lng'] = float(p['lng'])
+            except (TypeError, ValueError):
+                pass
         row.update(_derive_flags(row))
         rows.append(row)
 
