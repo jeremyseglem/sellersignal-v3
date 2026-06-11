@@ -527,6 +527,19 @@ def _process_one(
         gate_strengths = {}
         filtered_candidates = []
         for c in candidates:
+            # County-resolved candidates BYPASS the surname gate (2026-06-11).
+            # Their identity comes from the full county owner roll — the gate
+            # would just re-apply fuzzy surname logic, and it breaks on the
+            # recorder's 'LAST FIRST … DECD AKA' strings (it extracted 'AKA'
+            # as the surname and vetoed a valid heir match). Strength was
+            # already decided at dispatch (strict if unambiguous, weak for
+            # heir/ambiguous) — same doctrine as the tax_foreclosure bypass.
+            mm = (c.get("trigger_hint") or {}).get("match_method", "")
+            if mm.startswith("county_resolved"):
+                gate_strengths[c["parcel_id"]] = (
+                    c.get("trigger_hint", {}).get("match_strength", "weak"))
+                filtered_candidates.append(c)
+                continue
             strength = _surname_gate(c["parcel_id"], owners_db, parties)
             if strength is None:
                 continue
