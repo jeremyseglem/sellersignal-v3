@@ -80,58 +80,71 @@ def classify_doc_type(doc_type: str):
 
 # ── 1. render ────────────────────────────────────────────────────────────────
 
-def _results_url(begin: date, end: date, page_num: int = 1) -> str:
-    # Param set proven to paginate (probe 2026-06-10): the original five params
-    # plus &page=N. Do NOT add recordedDateRangeStart or other params — they
-    # alter/﻿break the query and collapse results to a single page.
+def _results_url(begin: date, end: date) -> str:
+    # The five params proven to render results. neumo ignores a URL `page`
+    # param (verified 2026-06-11: page=4 returned page-1's first doc), so we
+    # paginate by CLICKING the in-DOM next control, not via the URL.
     qs = urllib.parse.urlencode({
         "department": "RP",
         "recordedDateRange": f"{begin.strftime('%Y%m%d')},{end.strftime('%Y%m%d')}",
         "searchType": "quickSearch",
         "keywordSearch": "false",
         "searchOcrText": "false",
-        "page": str(page_num),
     })
     return f"{RESULTS_URL}?{qs}"
 
 
-def render_page(page, begin: date, end: date, page_num: int,
-                settle_seconds: float = 7.0) -> str:
-    """Navigate to one results page (1-indexed) and return the table inner_text.
+def _click_next(page) -> bool:
+    """Click neumo's 'next page' control. Returns True if a click happened.
 
-    `page` is a live Playwright page on a context that has already cleared the
-    Cloudflare gate (first navigation to the site root). The managed challenge
-    re-clears transparently on subsequent same-origin navigations.
+    The pager renders as `◀ 1 2 3 ... ▶`. The right-arrow is the reliable
+    next control; fall back to an aria-labelled Next button.
     """
-    page.goto(_results_url(begin, end, page_num), wait_until="domcontentloaded",
-              timeout=60000)
-    time.sleep(settle_seconds)
+    for sel in [
+        "a[aria-label='Next']", "button[aria-label='Next']",
+        "[aria-label='Next page']", "a[rel='next']",
+    ]:
+        el = page.query_selector(sel)
+        if el and el.is_enabled():
+            el.click()
+            return True
+    # Fallback: the ▶ glyph
     try:
-        page.wait_for_load_state("networkidle", timeout=12000)
+        el = page.query_selector("text=▶")
+        if el:
+            el.click()
+            return True
     except Exception:
         pass
-    return extract_grid_text(page)
+    return False
 
 
 def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
                      polite_delay: float = 1.2):
-    """Yield parsed rows across all pages of a recorded-date window.
-
-    neumo paginates via &page=N at 50 rows/page. We advance pages until a page
-    yields no new doc numbers (or repeats the previous page's first doc number),
-    which marks the end — robust against neumo clamping page beyond the last.
+    """Yield parsed rows across all pages of a recorded-date window by clicking
+    neumo's next-page control until the first doc number stops changing.
     """
+    page.goto(_results_url(begin, end), wait_until="domcontentloaded", timeout=60000)
+    time.sleep(8)
+    try:
+        page.wait_for_load_state("networkidle", timeout=12000)
+    except Exception:
+        pass
+
     prev_first = None
     seen_docs: set[str] = set()
-    for pnum in range(1, max_pages + 1):
-        grid_text = render_page(page, begin, end, pnum)
+    for _ in range(max_pages):
+        grid_text = extract_grid_text(page)
         rows = parse_rows_from_text(grid_text)
         if not rows:
-            break
+            # one retry: SPA may still be rendering
+            time.sleep(3)
+            rows = parse_rows_from_text(extract_grid_text(page))
+            if not rows:
+                break
         first_doc = rows[0].get("doc_number")
         if first_doc and first_doc == prev_first:
-            # page didn't advance (clamped at last page) — stop
-            break
+            break  # page didn't advance — last page
         prev_first = first_doc
         new_in_page = 0
         for r in rows:
@@ -142,7 +155,13 @@ def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
                 yield r
         if new_in_page == 0:
             break
+        if not _click_next(page):
+            break
         time.sleep(polite_delay)
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
 
 
 # ── 2. parse ─────────────────────────────────────────────────────────────────

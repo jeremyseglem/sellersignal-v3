@@ -45,31 +45,55 @@ jobs:
               page.goto(URL, wait_until="domcontentloaded", timeout=45000)
               time.sleep(8)
 
-              # Validate pagination: walk 06/02 (known ~1,296 records) pages 1..5
-              # using the EXACT param set, count rows + first doc per page.
+              # Discover the real next-page control + confirm clicking advances.
               try:
                   import re as _re
                   base = ("https://dallas.tx.publicsearch.us/results?department=RP"
                           "&recordedDateRange=20260602,20260602&searchType=quickSearch"
                           "&keywordSearch=false&searchOcrText=false")
-                  prev_first = None
-                  for pnum in range(1, 6):
-                      page.goto(f"{base}&page={pnum}", wait_until="domcontentloaded", timeout=45000)
-                      time.sleep(7)
-                      try: page.wait_for_load_state("networkidle", timeout=10000)
-                      except Exception: pass
-                      # parse via the harvester regex
-                      el = page.query_selector("table")
-                      txt = el.inner_text() if el else page.inner_text("body")
-                      docs = _re.findall(r"\b(20\d{10})\b", txt)
-                      first = docs[0] if docs else None
-                      advanced = (first != prev_first)
-                      prev_first = first
-                      print(f"PAGE {pnum}: rows~{len(docs)} first_doc={first} advanced={advanced}")
-                      # show the column header + first row once
-                      if pnum == 1:
-                          mi = txt.find("DOC TYPE")
-                          print("  HEADERROW:", txt[mi:mi+200].replace(chr(10)," ") if mi>=0 else txt[:200].replace(chr(10)," "))
+                  page.goto(base, wait_until="domcontentloaded", timeout=45000)
+                  time.sleep(10)
+                  try: page.wait_for_load_state("networkidle", timeout=12000)
+                  except Exception: pass
+
+                  # dump candidate pager elements with their attributes
+                  pager = page.evaluate("""() => {
+                      const out=[];
+                      document.querySelectorAll('a,button,[role=button],li').forEach(e=>{
+                          const t=(e.textContent||'').trim();
+                          const al=e.getAttribute('aria-label')||'';
+                          const cl=e.className||'';
+                          if(/next|▶|»|\\bpage\\b/i.test(t+' '+al+' '+cl) && (t.length<25)){
+                              out.push({tag:e.tagName, txt:t, aria:al, cls:String(cl).slice(0,50),
+                                        rel:e.getAttribute('rel')||'', disabled:e.disabled||false});
+                          }
+                      });
+                      return out.slice(0,25);
+                  }""")
+                  print("=== PAGER ELEMENTS ===")
+                  for x in pager: print(x)
+
+                  el0 = page.query_selector("table")
+                  t0 = (el0.inner_text() if el0 else page.inner_text("body"))
+                  d0 = _re.findall(r"\b20\d{10}\b", t0)
+                  print("BEFORE first_doc:", d0[0] if d0 else None, "rows~", len(d0))
+
+                  # try clicking ▶
+                  clicked=False
+                  for sel in ["a[aria-label='Next']","button[aria-label='Next']","[aria-label='Next page']","a[rel='next']","text=▶","text=»"]:
+                      e=page.query_selector(sel)
+                      if e:
+                          try:
+                              e.click(); clicked=True; print("CLICKED via", sel); break
+                          except Exception as ce:
+                              print("click fail",sel,ce)
+                  time.sleep(6)
+                  try: page.wait_for_load_state("networkidle", timeout=10000)
+                  except Exception: pass
+                  el1=page.query_selector("table")
+                  t1=(el1.inner_text() if el1 else page.inner_text("body"))
+                  d1=_re.findall(r"\b20\d{10}\b", t1)
+                  print("AFTER  first_doc:", d1[0] if d1 else None, "rows~", len(d1), "advanced=", (d1[0] if d1 else None)!=(d0[0] if d0 else None))
               except Exception as e:
                   print("search err:", e)
 
