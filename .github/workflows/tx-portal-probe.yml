@@ -1,0 +1,53 @@
+name: TX Portal Probe
+
+# One-shot diagnostic: does a GitHub Actions runner clear the Cloudflare / edge
+# gate on Texas county court & recorder search portals? Reports HTTP status only.
+# Writes nothing to the database. Pure access test before committing to a harvester.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe TX portals
+        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+          probe () {
+            local label="$1"; local url="$2"
+            echo "=============================================="
+            echo "PROBE: $label"
+            echo "URL:   $url"
+            code=$(curl -s -o /tmp/body.html -w "%{http_code}" --max-time 30 \
+              -A "$UA" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              -H "Accept-Language: en-US,en;q=0.9" \
+              "$url" 2>/dev/null)
+            size=$(stat -c%s /tmp/body.html 2>/dev/null || echo 0)
+            cf=$(grep -ciE "just a moment|cf-mitigated|challenge-platform|cloudflare" /tmp/body.html 2>/dev/null || echo 0)
+            title=$(grep -oiE "<title>[^<]*</title>" /tmp/body.html 2>/dev/null | head -1)
+            echo "STATUS: $code   SIZE: ${size}b   CF_MARKERS: $cf"
+            echo "TITLE:  $title"
+            if [ "$code" = "200" ] && [ "$cf" = "0" ]; then
+              echo "VERDICT: ✅ OPEN — runner cleared, no Cloudflare challenge"
+            elif [ "$cf" != "0" ]; then
+              echo "VERDICT: ⚠️ CLOUDFLARE CHALLENGE — runner blocked at edge"
+            else
+              echo "VERDICT: ❓ status $code — inspect"
+            fi
+          }
+
+          # Travis (Austin) — County Clerk unified search (probate cases + recorder deeds)
+          probe "Travis tccsearch root"        "https://www.tccsearch.org/"
+
+          # Dallas — County Courts Portal (Odyssey, probate) + recorder
+          probe "Dallas Courts Portal"         "https://courtsportal.dallascounty.org/DALLASPROD/Home/Dashboard/29"
+          probe "Dallas recorder publicsearch" "https://dallas.tx.publicsearch.us/"
+
+          # Harris (Houston) — County Clerk court records + recorder
+          probe "Harris County Clerk records"  "https://www.cclerk.hctx.net/"
+          probe "Harris recorder publicsearch" "https://harris.tx.publicsearch.us/"
+
+          echo "=============================================="
+          echo "Probe complete. Read VERDICT lines above."
