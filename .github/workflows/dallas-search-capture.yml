@@ -1,0 +1,83 @@
+name: Dallas Search Capture
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Drive a search
+        run: |
+          cat > cap.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import time, json
+
+          URL = "https://dallas.tx.publicsearch.us/"
+          api_calls = []
+
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = b.new_context(
+                  user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width":1366,"height":1100}, locale="en-US")
+              page = ctx.new_page()
+
+              def on_resp(resp):
+                  u = resp.url
+                  if "/api/" in u or "search" in u.lower() or "document" in u.lower() or "graphql" in u.lower():
+                      if "publicsearch.us/" in u and not any(u.endswith(e) for e in [".css",".js",".svg",".png",".jpg",".woff",".woff2"]):
+                          try:
+                              body = resp.text()[:1200]
+                          except Exception:
+                              body = "<binary>"
+                          api_calls.append({"status":resp.status,"url":u[:300],"body":body})
+              page.on("response", on_resp)
+
+              page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+              time.sleep(8)
+
+              # Type a doc-type term into the quick search box and submit.
+              # The placeholder box accepts "grantor/grantee, subdivision, doc type, or doc#"
+              try:
+                  box = page.query_selector("input[type='text']") or page.query_selector("input:not([type='hidden'])")
+                  if box:
+                      box.click(); box.fill("Affidavit of Death")
+                      time.sleep(1)
+                      page.keyboard.press("Enter")
+                      time.sleep(10)
+                      try: page.wait_for_load_state("networkidle", timeout=15000)
+                      except Exception: pass
+                      page.screenshot(path="results.png", full_page=True)
+                      print("RESULTS_URL:", page.url)
+                      # capture any result row text
+                      txt = page.inner_text("body")[:1500]
+                      print("BODY_SNIPPET:", txt.replace("\n"," ")[:800])
+                  else:
+                      print("no search box found")
+              except Exception as e:
+                  print("search err:", e)
+
+              b.close()
+
+          print("=== API CALLS ===")
+          for c in api_calls[-25:]:
+              print(c["status"], c["url"])
+              if c["body"] and c["body"] != "<binary>":
+                  print("   BODY:", c["body"][:400].replace("\n"," "))
+          PYEOF
+          python cap.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dallas-search
+          path: "*.png"
+          if-no-files-found: ignore
