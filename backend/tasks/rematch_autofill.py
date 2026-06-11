@@ -173,7 +173,19 @@ async def rematch_autofill_loop() -> None:
             if unmatched_before == 0:
                 # Nothing to do. Idle poll.
                 state["signals_remaining"] = 0
-                await asyncio.sleep(IDLE_INTERVAL)
+                # Interruptible idle (2026-06-11): a single long sleep made
+                # the task unwakeable — resume/reset endpoints set flags but
+                # could not break an in-flight asyncio.sleep(3600), costing
+                # three deploy-to-restart cycles in one debugging session.
+                # Sleep in short slices and exit early when the trigger
+                # endpoint sets the wake flag.
+                slept = 0
+                while slept < IDLE_INTERVAL:
+                    if state.get("wake_requested"):
+                        state["wake_requested"] = False
+                        break
+                    await asyncio.sleep(20)
+                    slept += 20
                 continue
 
             # ── Market-scoped tick (2026-06-10) ──────────────────────

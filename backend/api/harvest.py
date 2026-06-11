@@ -2186,6 +2186,19 @@ def rematch_autofill_pause(x_admin_key: Optional[str] = Header(None)):
     return {"enabled": False, "message": "Rematch autofill paused."}
 
 
+@router.post("/rematch-autofill-trigger")
+def rematch_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
+    """Wake the rematch autofill task from its idle sleep so it re-scans
+    for unmatched signals immediately (e.g. right after a scoped reset).
+    The idle loop checks the wake flag every 20s."""
+    _require_admin(x_admin_key)
+    from backend.tasks.rematch_autofill import state
+    state["wake_requested"] = True
+    state["enabled"] = True
+    state["backoff_until"] = None
+    return {"message": "Wake requested — task re-scans within ~20s."}
+
+
 @router.post("/rematch-autofill-resume")
 def rematch_autofill_resume(x_admin_key: Optional[str] = Header(None)):
     """Resume the rematch autofill task and clear any backoff window."""
