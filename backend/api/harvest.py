@@ -572,6 +572,23 @@ def diag_scrape_attempts(
     }
 
 
+@router.get("/diag/parcel-by-pin")
+def diag_parcel_by_pin(pin: str, x_admin_key: Optional[str] = Header(None)):
+    """Read-only parcel inspection. Added 2026-06-11 to verify whether
+    Dallas parcels carry market_key='TX_DALLAS' (the rematch tick's
+    market-scoped owners_db load filters on it; a NULL/mismatched value
+    silently empties owners_db for that market and zeroes all matches)."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    rows = (supa.table('parcels_v3')
+            .select('pin, zip_code, owner_name, market_key, prop_type, '
+                    'owner_type, address')
+            .eq('pin', pin).limit(1).execute()).data or []
+    return {"found": bool(rows), "row": rows[0] if rows else None}
+
+
 @router.get("/diag/signals-by-source")
 def diag_signals_by_source(
     source_type: str,
