@@ -218,27 +218,48 @@ def _normalize_party_name(raw: str) -> str:
     return re.sub(r"[^A-Z ]", " ", (raw or "").upper()).strip()
 
 
+def _strip_decd(name: str) -> str:
+    """Remove trailing estate markers (DECD, DECEASED, FKA, AKA, EST OF) for matching."""
+    n = (name or "").upper()
+    n = re.sub(r"\b(DECD|DECEASED|EST(ATE)? OF|FKA|AKA|NKA|ET AL|ET UX)\b", " ", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
 def to_signal_row(row: dict) -> dict | None:
     """Map a parsed recorder row to a raw_signals_v3 row (proven shape).
 
-    For an estate/death instrument the GRANTOR is the decedent or the estate;
-    the GRANTEE is the heir / personal representative (the lead contact). We put
-    the decedent first (party_names[0]) because the matcher reads [0] as the
-    name to match against parcels_v3 owners — and the deceased is the one still
-    on title in the assessor roll.
+    On a Texas AFFIDAVIT OF HEIRSHIP the recorder tags the deceased owner with a
+    'DECD' suffix — and that party can appear in EITHER the grantor or grantee
+    column (verified 2026-06-11: DECD landed on the grantee). The decedent is the
+    one still on the DCAD roll, so we match on the DECD-tagged name (party_names[0]
+    is read by the matcher against parcel owners). The other party is the
+    affiant/heir (the lead contact). Falls back to grantor-as-decedent when
+    neither party carries a DECD marker.
     """
     sig = classify_doc_type(row.get("doc_type"))
     if not sig:
         return None
-    decedent = row.get("grantor")
-    if not decedent or not row.get("doc_number"):
+    grantor = (row.get("grantor") or "").strip()
+    grantee = (row.get("grantee") or "").strip()
+    if not row.get("doc_number") or not (grantor or grantee):
         return None
 
-    parties = [{"raw": decedent, "normalized": _normalize_party_name(decedent),
+    g_decd = "DECD" in grantor.upper() or "DECEASED" in grantor.upper()
+    e_decd = "DECD" in grantee.upper() or "DECEASED" in grantee.upper()
+    if e_decd and not g_decd:
+        decedent_raw, heir_raw = grantee, grantor
+    else:
+        decedent_raw, heir_raw = grantor, grantee
+
+    decedent_clean = _strip_decd(decedent_raw)
+    if not decedent_clean:
+        return None
+
+    parties = [{"raw": decedent_raw, "normalized": _normalize_party_name(decedent_clean),
                 "role": "decedent", "matchable": True}]
-    heir = row.get("grantee")
-    if heir and heir.upper() != decedent.upper():
-        parties.append({"raw": heir, "normalized": _normalize_party_name(heir),
+    if heir_raw and heir_raw.upper() != decedent_raw.upper():
+        parties.append({"raw": heir_raw,
+                        "normalized": _normalize_party_name(_strip_decd(heir_raw)),
                         "role": "personal_representative", "matchable": False})
 
     return {
@@ -253,8 +274,10 @@ def to_signal_row(row: dict) -> dict | None:
         "raw_data": {
             "doc_number": row.get("doc_number"),
             "doc_type": row.get("doc_type"),
-            "grantor": decedent,
-            "grantee": heir,
+            "grantor": grantor,
+            "grantee": grantee,
+            "decedent": decedent_raw,
+            "heir": heir_raw,
             "town": row.get("town"),
             "book_vol_page": row.get("book_vol_page"),
             "legal_description": row.get("legal_description"),
