@@ -45,35 +45,46 @@ jobs:
               page.goto(URL, wait_until="domcontentloaded", timeout=45000)
               time.sleep(8)
 
-              # Land on a results page, then capture the doc-types list the app
-              # uses for filtering + try a keyword search for death instruments.
+              # Land on a dense window and inspect pagination controls + how many
+              # rows render per page, and whether a page/offset URL param exists.
               try:
-                  # capture ALL json-ish responses while we drive the UI
-                  page.goto("https://dallas.tx.publicsearch.us/results?department=RP&recordedDateRange=20260601,20260610&searchType=quickSearch&keywordSearch=false&searchOcrText=false",
+                  page.goto("https://dallas.tx.publicsearch.us/results?department=RP&recordedDateRange=20260602,20260602&searchType=quickSearch&keywordSearch=false&searchOcrText=false",
                             wait_until="domcontentloaded", timeout=45000)
                   time.sleep(10)
                   try: page.wait_for_load_state("networkidle", timeout=15000)
                   except Exception: pass
                   print("RESULTS_URL:", page.url)
-
-                  # Try keyword-search for the estate/death instruments directly via URL.
-                  for kw in ["AFFIDAVIT OF DEATH", "PERSONAL REPRESENTATIVE", "EXECUTOR", "TRANSFER ON DEATH"]:
-                      enc = kw.replace(" ", "%20")
-                      u = ("https://dallas.tx.publicsearch.us/results?department=RP"
-                           "&recordedDateRange=20260101,20260610&searchType=quickSearch"
-                           f"&keywordSearch=true&searchText={enc}&searchOcrText=false")
-                      page.goto(u, wait_until="domcontentloaded", timeout=45000)
-                      time.sleep(7)
-                      try: page.wait_for_load_state("networkidle", timeout=10000)
-                      except Exception: pass
-                      body = page.inner_text("body")
-                      # count rows by recorded-date pattern
-                      import re as _re
-                      n = len(_re.findall(r"\d{1,2}/\d{1,2}/20\d{2}", body))
-                      head = body.replace("\n"," ")
-                      mi = head.find("DOC TYPE")
-                      print(f"KW '{kw}': approx_date_cells={n}  grid_head={head[mi:mi+260] if mi>0 else head[:200]}")
-                  page.screenshot(path="results.png", full_page=True)
+                  # rows currently in DOM
+                  body = page.inner_text("body")
+                  import re as _re
+                  ndates = len(_re.findall(r"\d{1,2}/\d{1,2}/20\d{2}", body))
+                  print("date_cells_in_dom:", ndates)
+                  # pagination: capture any element text like "1-25 of 6066" or page buttons
+                  for kw in ["of ", "Results", "Page", "Next", "Showing", "per page", "Rows"]:
+                      idx = body.find(kw)
+                      if idx > 0:
+                          print(f"PAGINATION_HINT '{kw}':", body[max(0,idx-40):idx+40].replace(chr(10)," "))
+                  # dump anchors / buttons that look like pagination
+                  ctrls = page.evaluate("""() => {
+                      const out=[];
+                      document.querySelectorAll('a,button,[role=button]').forEach(e=>{
+                          const t=(e.textContent||'').trim();
+                          const al=(e.getAttribute('aria-label')||'');
+                          if(/next|prev|page|\\d+\\s*-\\s*\\d+|per page/i.test(t+' '+al) && t.length<40)
+                              out.push((t||al)+' :: href='+(e.getAttribute('href')||'')+' data-page='+(e.getAttribute('data-page')||''));
+                      });
+                      return out.slice(0,40);
+                  }""")
+                  print("=== PAGINATION CONTROLS ===")
+                  for c in ctrls: print(c)
+                  # try a results URL with a page/skip param
+                  for param in ["page=2", "skip=25", "offset=25", "pageNumber=2", "from=25"]:
+                      u2=f"https://dallas.tx.publicsearch.us/results?department=RP&recordedDateRange=20260602,20260602&searchType=quickSearch&keywordSearch=false&searchOcrText=false&{param}"
+                      page.goto(u2, wait_until="domcontentloaded", timeout=40000); time.sleep(6)
+                      b2=page.inner_text("body")
+                      nd2=len(_re.findall(r"\d{1,2}/\d{1,2}/20\d{2}", b2))
+                      first=_re.search(r"\d{12}", b2)
+                      print(f"PARAM {param}: date_cells={nd2} first_docnum={first.group(0) if first else 'none'}")
               except Exception as e:
                   print("search err:", e)
 
