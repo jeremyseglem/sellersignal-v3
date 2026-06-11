@@ -34,6 +34,7 @@ re-computes because (zip, new_monday) isn't in the dict.
 Bypass: pass ?force_rebuild=true to skip the cache.
 """
 from collections import OrderedDict
+import re as _re
 import time
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from datetime import datetime, date, timedelta, timezone
@@ -464,10 +465,37 @@ async def get_briefing(
                 parties_by_case = {}
 
         # Apply contact_status to each match in every overlay
+        _TX_SOURCES = {'tx_topics_citations', 'tx_dallas_recorder'}
+        _CORP_PR_RE = _re.compile(
+            r'\b(LLC|INC|CORP|CO|TRUST|BANK|INVESTMENTS?|PROPERTIES|HOLDINGS|'
+            r'LLP|PLLC|PC|LAW|ATTORNEY|ESQ|GROUP|PARTNERS|CAPITAL)\b', _re.I)
         for overlay in overlay_by_pin.values():
             for m in overlay.get('harvester_matches', []) or []:
                 ref = m.get('document_ref')
                 src = m.get('source_type')
+
+                # ── TX court/recorder probate (Rule 6 extension, 2026-06-11)
+                # TX sources carry the PR in the SIGNAL itself (TOPICs
+                # citation names the applicant; recorder heirship names the
+                # affiant heir) — there is no case_parties_v3 row to consult.
+                # Classify the PR name directly: family-looking → actionable;
+                # corporate/attorney-looking → unworkable; absent → no PR yet.
+                if src in _TX_SOURCES and m.get('signal_type') == 'probate':
+                    pr_name = None
+                    for p in (m.get('party_names') or []):
+                        if isinstance(p, dict) and \
+                                p.get('role') == 'personal_representative':
+                            pr_name = (p.get('raw') or '').strip()
+                            break
+                    if pr_name:
+                        if _CORP_PR_RE.search(pr_name):
+                            m['contact_status'] = 'unworkable_pr'
+                        else:
+                            m['contact_status'] = 'family_pr_identified'
+                    else:
+                        m['contact_status'] = 'no_pr_yet'
+                    continue
+
                 if not ref or src != 'kc_superior_court':
                     m['contact_status'] = 'not_applicable'
                     continue

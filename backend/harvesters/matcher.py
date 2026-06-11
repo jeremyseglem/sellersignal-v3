@@ -672,6 +672,44 @@ def _dispatch_probate(row, owners_db, use_codes):
     if candidates:
         return candidates
 
+    # ── Layer 0.5: county-resolved HEIR identity ────────────────────────
+    # If the named applicant/PR (the heir) owns a live-ZIP parcel, that's a
+    # probate_heir contact lead — weak by survivor doctrine: the heir↔parcel
+    # link is real (county roll) but heir↔THIS-parcel-inherits is inference.
+    # Example shape: heirship affidavit for Mary G Burns filed by David G
+    # Burns, who owns the $3.07M Preston Hollow home — the likely inherited
+    # property, surfaced for agent review rather than asserted strict.
+    rd = row.get('raw_data') or {}
+    heir_resolved = rd.get('resolved_heir_parcels') or []
+    for rp in heir_resolved:
+        pin = rp.get('acct')
+        if not pin or pin not in owners_db:
+            continue
+        candidates.append({
+            "parcel_id":     pin,
+            "signal_family": "probate_heir",
+            "trigger_hint": {
+                "case_number":    row.get('document_ref'),
+                "filing_date":    (row.get('event_date') or ''),
+                "decedent":       decedent_raw,
+                "match_method":   "county_resolved_heir_identity",
+                "match_strength": "weak",
+            },
+        })
+    if candidates:
+        return candidates
+
+    # ── County resolution outranks fuzzy matching (2026-06-11) ─────────
+    # When the harvester ran the county-wide owner-roll resolution
+    # (county_resolution_ran marker), the roll is AUTHORITATIVE about what
+    # the decedent owns. If resolution found their property elsewhere (or
+    # nowhere), a surname coincidence in a live ZIP must not produce a
+    # match: verified false-positive shape — decedent 'Denise Owen' (owns
+    # in Mesquite per the roll) fuzzy-matched strangers 'John K Owen' and
+    # 'David A Owen' in 75209/75225 as strict. Skip Layer 1 entirely.
+    if rd.get('county_resolution_ran'):
+        return []
+
     # Layer 1: decedent match
     for pin, info in owners_db.items():
         # Admit residential (R) + condominium (K). Reject anything

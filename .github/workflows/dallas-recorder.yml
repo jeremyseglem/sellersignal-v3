@@ -40,12 +40,30 @@ jobs:
         run: |
           pip install requests playwright
           python -m playwright install --with-deps chromium
+      - name: Week key for DCAD cache
+        id: wk
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache DCAD bulk roll (refreshed weekly)
+        id: dcad-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dcad2026.zip
+          key: dcad-current-${{ steps.wk.outputs.week }}
+      - name: Download DCAD bulk roll (county-wide decedent resolution)
+        if: steps.dcad-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sL --max-time 1500 --retry 3 --retry-delay 10 -C - \
+            -A "Mozilla/5.0" \
+            "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5CDATA%20PRODUCTS%5CDCAD2026_CURRENT.ZIP" \
+            -o /tmp/dcad2026.zip
+          ls -la /tmp/dcad2026.zip
       - name: Run Dallas recorder
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           # cron runs write=1; manual dispatch uses the input (default 0)
           WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          DCAD_ZIP: /tmp/dcad2026.zip
           DAYS: ${{ github.event.inputs.days || '7' }}
           CHUNK_DAYS: ${{ github.event.inputs.chunk_days || '1' }}
         run: python scripts/run_dallas_recorder.py

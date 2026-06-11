@@ -126,12 +126,21 @@ def main():
         # full list (live-ZIP hits power parcel-identity matching; non-live
         # hits are expansion intel).
         if owner_index:
+            sig["raw_data"]["county_resolution_ran"] = True
             resolved = owner_index.resolve(sig["raw_data"]["decedent"])
             if resolved:
                 sig["raw_data"]["resolved_parcels"] = resolved
                 best = resolved[0]
                 sig["property_hint"] = (f"{best['address']}, {best['city']} "
                                         f"{best['zip']}").strip(", ")
+            # Heir/applicant resolution: if the named applicant (future PR)
+            # owns county property, that's a probate_heir contact lead —
+            # weak by doctrine (the link is inference, not court record).
+            applicant_name = sig["raw_data"].get("applicant")
+            if applicant_name:
+                heir_hits = owner_index.resolve(applicant_name)
+                if heir_hits:
+                    sig["raw_data"]["resolved_heir_parcels"] = heir_hits
         # NOTE: dedupe-skip removed for upsert semantics — re-writing an
         # existing cause_number UPDATES it (merge-duplicates), which is how
         # previously-written signals gain resolved_parcels on re-runs.

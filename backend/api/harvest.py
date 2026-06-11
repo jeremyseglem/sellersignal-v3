@@ -3729,6 +3729,20 @@ def harvest_rematch_reset_scoped(
             break
         ids = [r['id'] for r in rows]
         try:
+            # Delete this batch's EXISTING match rows first. Without this,
+            # a matcher code change that no longer produces a previously-
+            # written match leaves the stale row behind (re-processing only
+            # inserts; it doesn't reconcile). Concrete case 2026-06-11: the
+            # county-resolution precision fix invalidated 4 surname-
+            # coincidence strict matches on tx_topics_citations signals —
+            # resetting matched_at alone would have left them live.
+            (supa.table('raw_signal_matches_v3')
+             .delete()
+             .in_('raw_signal_id', ids)
+             .execute())
+        except Exception as e:
+            log.warning(f"rematch-reset-scoped match-delete batch failed: {e}")
+        try:
             (supa.table('raw_signals_v3')
              .update({'matched_at': None, 'match_count': 0})
              .in_('id', ids)

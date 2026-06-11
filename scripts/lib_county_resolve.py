@@ -47,14 +47,19 @@ def _tokens(name: str) -> list[str]:
     return [t for t in n.split() if len(t) > 1 and t not in _NOISE]
 
 
-def _decedent_parts(decedent: str) -> tuple[str | None, str | None, set]:
-    """('SURNAME', 'FIRSTNAME', {given tokens}) from 'First Middle Last'.
-    Uses only the segment before any a/k/a alias; surname = last token,
-    first = first token."""
+def _decedent_parts(decedent: str, order: str = "first_last") -> tuple[str | None, str | None, set]:
+    """('SURNAME', 'FIRSTNAME', {given tokens}) from a decedent name.
+
+    order='first_last'  -> 'Mary G Burns'  (TOPICs citations style)
+    order='last_first'  -> 'BURNS MARY G'  (recorder grid style)
+
+    Uses only the segment before any a/k/a alias."""
     primary = re.split(r"\ba/?k/?a\b", decedent or "", flags=re.I)[0]
     toks = _tokens(_SUFFIX_RE.sub(" ", primary))
     if len(toks) < 2:
         return None, None, set()
+    if order == "last_first":
+        return toks[0], toks[1], set(toks[1:])
     return toks[-1], toks[0], set(toks[:-1])
 
 
@@ -98,7 +103,8 @@ class CountyOwnerIndex:
                 idx._by_surname[t].append(rec)
         return idx
 
-    def resolve(self, decedent: str, max_hits: int = 5) -> list[dict]:
+    def resolve(self, decedent: str, max_hits: int = 5,
+                order: str = "first_last") -> list[dict]:
         """Return county parcels whose owner plausibly IS this decedent.
 
         Requires: surname AND the decedent's FIRST given name both present in
@@ -106,7 +112,7 @@ class CountyOwnerIndex:
         false-positive shape: 'Billy Ray Garner' must NOT match 'GARNER
         JOHNNY RAY' on the shared middle name RAY.
         """
-        surname, first, givens = _decedent_parts(decedent)
+        surname, first, givens = _decedent_parts(decedent, order=order)
         if not surname or not first:
             return []
         hits = []

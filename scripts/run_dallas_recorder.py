@@ -33,6 +33,9 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 WRITE = os.environ.get("WRITE", "0") == "1"
+# County-wide decedent/heir resolution (the inversion). Set DCAD_ZIP to the
+# bulk Data Products zip to enable; empty disables.
+DCAD_ZIP = os.environ.get("DCAD_ZIP", "")
 DAYS = int(os.environ.get("DAYS", "7"))
 CHUNK_DAYS = int(os.environ.get("CHUNK_DAYS", "1"))
 TABLE = "raw_signals_v3"
@@ -111,8 +114,10 @@ def main():
                     if sig:
                         estate_in_chunk += 1
                         estate_rows += 1
-                        if sig["document_ref"] not in seen:
-                            all_rows.append(sig)
+                        # upsert semantics (merge-duplicates): re-runs
+                        # UPDATE existing rows, which is how previously
+                        # written signals gain resolved_parcels.
+                        all_rows.append(sig)
                 print(f"  {cstart}..{cend}: {grid_rows} grid rows, {estate_in_chunk} estate")
             except Exception as e:
                 err += 1
@@ -122,6 +127,35 @@ def main():
 
     print(f"[dallas_recorder] grid_rows={total_grid_rows} estate_instruments={estate_rows} "
           f"new_mappable={len(all_rows)} errors={err}")
+
+    if DCAD_ZIP and os.path.exists(DCAD_ZIP):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from lib_county_resolve import CountyOwnerIndex
+        idx = CountyOwnerIndex.from_dcad_zip(DCAD_ZIP)
+        print(f"[recorder] county owner index: {idx.total:,} accounts")
+        n_res = 0
+        for sig in all_rows:
+            rd = sig.get("raw_data") or {}
+            sig["raw_data"] = rd
+            rd["county_resolution_ran"] = True
+            parties = sig.get("party_names") or []
+            dec = parties[0].get("raw") if parties else None
+            if dec:
+                hits = idx.resolve(dec, order="last_first")
+                if hits:
+                    rd["resolved_parcels"] = hits
+                    b = hits[0]
+                    sig["property_hint"] = sig.get("property_hint") or                         f"{b['address']}, {b['city']} {b['zip']}".strip(", ")
+                    n_res += 1
+            for pp in parties[1:]:
+                if pp.get("role") == "personal_representative" and pp.get("raw"):
+                    hh = idx.resolve(pp["raw"], order="last_first")
+                    if hh:
+                        rd["resolved_heir_parcels"] = hh
+                    break
+        print(f"[recorder] county_resolved={n_res}/{len(all_rows)}")
+    else:
+        print("[recorder] no DCAD_ZIP — skipping county-wide resolution")
 
     if WRITE:
         if not (SUPABASE_URL and SERVICE_KEY):
