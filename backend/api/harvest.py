@@ -572,6 +572,35 @@ def diag_scrape_attempts(
     }
 
 
+@router.get("/diag/signals-by-source")
+def diag_signals_by_source(
+    source_type: str,
+    limit: int = 5,
+    document_ref: Optional[str] = None,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Read-only signal inspection — returns raw_signals_v3 rows for a
+    source (optionally one document_ref) including raw_data and party_names.
+    Added 2026-06-11 while debugging why the county-resolved TX signals
+    produced zero matches; there was no way to see what a signal row
+    actually contained without DB console access."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    q = (supa.table('raw_signals_v3')
+         .select('id, source_type, signal_type, document_ref, event_date, '
+                 'party_names, property_hint, matched_at, match_count, '
+                 'raw_data')
+         .eq('source_type', source_type)
+         .order('id', desc=True)
+         .limit(max(1, min(limit, 20))))
+    if document_ref:
+        q = q.eq('document_ref', document_ref)
+    rows = (q.execute()).data or []
+    return {"count": len(rows), "rows": rows}
+
+
 @router.get("/diag/signal-date-range")
 def diag_signal_date_range(
     x_admin_key: Optional[str] = Header(None),
