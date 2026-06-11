@@ -45,41 +45,35 @@ jobs:
               page.goto(URL, wait_until="domcontentloaded", timeout=45000)
               time.sleep(8)
 
-              # Go straight to a results page for a recent window, then read the
-              # Document Type facet links to capture their exact URL param values.
+              # Land on a results page, then capture the doc-types list the app
+              # uses for filtering + try a keyword search for death instruments.
               try:
+                  # capture ALL json-ish responses while we drive the UI
                   page.goto("https://dallas.tx.publicsearch.us/results?department=RP&recordedDateRange=20260601,20260610&searchType=quickSearch&keywordSearch=false&searchOcrText=false",
                             wait_until="domcontentloaded", timeout=45000)
                   time.sleep(10)
                   try: page.wait_for_load_state("networkidle", timeout=15000)
                   except Exception: pass
-                  page.screenshot(path="results.png", full_page=True)
                   print("RESULTS_URL:", page.url)
 
-                  # Enumerate every link href on the results page that carries a
-                  # documentTypes / docType param — that reveals the facet codes.
-                  hrefs = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
-                      .map(a => a.getAttribute('href') || '')
-                      .filter(h => /documentType|docType|doc_type/i.test(h))""")
-                  print("=== DOCTYPE FACET HREFS ===")
-                  for h in hrefs[:60]:
-                      print(h)
-
-                  # Also dump the visible Document Type facet labels + the full
-                  # left-rail text so we can map label -> code.
-                  facet = page.evaluate("""() => {
-                      const out = [];
-                      document.querySelectorAll('*').forEach(el => {
-                          const t = (el.getAttribute && (el.getAttribute('data-doc-type') || el.getAttribute('data-value'))) || '';
-                          if (t) out.push(t + ' :: ' + (el.textContent||'').trim().slice(0,40));
-                      });
-                      return out.slice(0,80);
-                  }""")
-                  print("=== DATA-ATTR FACETS ===")
-                  for f in facet: print(f)
-
-                  txt = page.inner_text("body")[:2000]
-                  print("BODY_SNIPPET:", txt.replace("\n"," ")[:1200])
+                  # Try keyword-search for the estate/death instruments directly via URL.
+                  for kw in ["AFFIDAVIT OF DEATH", "PERSONAL REPRESENTATIVE", "EXECUTOR", "TRANSFER ON DEATH"]:
+                      enc = kw.replace(" ", "%20")
+                      u = ("https://dallas.tx.publicsearch.us/results?department=RP"
+                           "&recordedDateRange=20260101,20260610&searchType=quickSearch"
+                           f"&keywordSearch=true&searchText={enc}&searchOcrText=false")
+                      page.goto(u, wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(7)
+                      try: page.wait_for_load_state("networkidle", timeout=10000)
+                      except Exception: pass
+                      body = page.inner_text("body")
+                      # count rows by recorded-date pattern
+                      import re as _re
+                      n = len(_re.findall(r"\d{1,2}/\d{1,2}/20\d{2}", body))
+                      head = body.replace("\n"," ")
+                      mi = head.find("DOC TYPE")
+                      print(f"KW '{kw}': approx_date_cells={n}  grid_head={head[mi:mi+260] if mi>0 else head[:200]}")
+                  page.screenshot(path="results.png", full_page=True)
               except Exception as e:
                   print("search err:", e)
 
