@@ -885,9 +885,21 @@ async def register_zip(
         if city is None:
             city = SNO_ZIP_TO_CITY[zip_code]
 
+    # Auto-detect Maricopa / Dallas ZIPs the same way (explicit params override).
+    if zip_code in MARICOPA_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "AZ_MARICOPA"
+        if city is None:
+            city = MARICOPA_ZIP_TO_CITY[zip_code]
+    if zip_code in DALLAS_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "TX_DALLAS"
+        if city is None:
+            city = DALLAS_ZIP_TO_CITY[zip_code]
+
     # Default city from the KC map for known KC ZIPs
     if city is None:
-        city = KC_ZIP_TO_CITY.get(zip_code)
+        city = (KC_ZIP_TO_CITY.get(zip_code)
+                or MARICOPA_ZIP_TO_CITY.get(zip_code)
+                or DALLAS_ZIP_TO_CITY.get(zip_code))
         if city is None and market_key == "WA_KING":
             raise HTTPException(
                 400,
@@ -1139,15 +1151,25 @@ async def onboard_zip(
         if state == "WA":
             state = "AZ"
 
+    # Dallas County, TX — same auto-detect/opt-out shape.
+    is_dallas = zip_code in DALLAS_ZIP_TO_CITY
+    if is_dallas and market_key == "WA_KING":
+        market_key = "TX_DALLAS"
+        if state == "WA":
+            state = "TX"
+
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
     #   KC:        wa-king-{zip}-owners.json
     #   Snohomish: wa-snohomish-{zip}-owners.json
     #   Maricopa:  az-maricopa-{zip}-owners.json
+    #   Dallas:    tx-dallas-{zip}-owners.json
     if is_maricopa:
         seed_prefix = "az-maricopa"
     elif is_snohomish:
         seed_prefix = "wa-snohomish"
+    elif is_dallas:
+        seed_prefix = "tx-dallas"
     else:
         seed_prefix = "wa-king"
     json_path = f"/app/data/seeds/{seed_prefix}-{zip_code}-owners.json"
@@ -1167,6 +1189,7 @@ async def onboard_zip(
     if not found_path:
         builder = ("build_maricopa_owners.py" if is_maricopa
                    else "build_snohomish_owners.py" if is_snohomish
+                   else "build_dallas_owners.py" if is_dallas
                    else "build_kc_owners.py")
         raise HTTPException(
             400,
@@ -1516,6 +1539,20 @@ MARICOPA_ZIP_TO_CITY = {
 }
 
 
+# Seed files: data/seeds/tx-dallas-{zip}-owners.json (built by
+# scripts/build_dallas_owners.py from the DCAD bulk Data Products ZIP).
+# market_key = TX_DALLAS, state = TX. Signals come from the Dallas County
+# recorder (tx_dallas_recorder, via the Dallas Recorder GitHub Action).
+DALLAS_ZIP_TO_CITY = {
+    "75205": "Highland Park",
+    "75225": "University Park",
+    "75230": "Preston Hollow",
+    "75209": "Dallas",
+    "75220": "Dallas",
+    "75229": "Dallas",
+}
+
+
 @router.post("/seed-from-json/{zip_code}",
              dependencies=[Depends(require_admin)])
 async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
@@ -1561,6 +1598,10 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "AZ_MARICOPA"
         city = MARICOPA_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"az-maricopa-{zip_code}-owners.json"
+    elif zip_code in DALLAS_ZIP_TO_CITY:
+        market_key = "TX_DALLAS"
+        city = DALLAS_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"tx-dallas-{zip_code}-owners.json"
     elif zip_code in SNO_ZIP_TO_CITY:
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
@@ -3520,6 +3561,8 @@ def _load_seed_names(zip_code: str) -> dict:
     candidates = []
     if market_key == 'AZ_MARICOPA' or zip_code.startswith('85'):
         candidates.append(f"data/seeds/az-maricopa-{zip_code}-owners.json")
+    if market_key == 'TX_DALLAS' or zip_code.startswith('752'):
+        candidates.append(f"data/seeds/tx-dallas-{zip_code}-owners.json")
     if market_key == 'WA_SNOHOMISH':
         candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-king-{zip_code}-owners.json")

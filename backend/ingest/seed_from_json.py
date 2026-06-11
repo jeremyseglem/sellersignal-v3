@@ -87,6 +87,7 @@ _MARKET_STATE = {
     'WA_KING':      'WA',
     'WA_SNOHOMISH': 'WA',
     'AZ_MARICOPA':  'AZ',
+    'TX_DALLAS':    'TX',
 }
 
 
