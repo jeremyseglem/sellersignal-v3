@@ -28,6 +28,7 @@ gate, same output schema keyed by parcel id.
 from __future__ import annotations
 
 import csv
+import re
 import json
 import os
 import sys
@@ -40,6 +41,14 @@ csv.field_size_limit(10_000_000)
 TARGET_ZIP = os.environ.get("TARGET_ZIP", "").strip()
 DCAD_DIR = os.environ.get("DCAD_DIR", "/tmp/dcad")
 DCAD_ZIP = os.environ.get("DCAD_ZIP", "")
+# Parcel geometry shapefile (DCAD "GIS Products" -> PARCEL_GEOM.zip, unzipped).
+# Provides per-ACCT polygons in TX State Plane North Central (EPSG:2276, US ft).
+# When present, the builder computes WGS84 centroids and writes lat/lng into
+# the seed so seed-from-json populates coordinates at ingest time — no
+# post-onboarding geometry backfill needed (the KC-reingest-equivalent for
+# Dallas, whose ArcGIS layer has no situs-ZIP field to reingest by).
+# Set GEOM_SHP="" to skip (seed will have no lat/lng).
+GEOM_SHP = os.environ.get("GEOM_SHP", os.path.join(DCAD_DIR, "PARCEL_GEOM/PARCEL_GEOM.shp"))
 OUT_DIR = os.environ.get("OUT_DIR", "data/seeds")
 MIN_ADDRESS_COVERAGE = float(os.environ.get("MIN_ADDRESS_COVERAGE", "0.80"))
 TODAY = date.today()
@@ -107,6 +116,77 @@ def _open_csv(name: str):
     return csv.reader(open(path, encoding="latin-1", newline=""))
 
 
+def _load_centroids(accounts: set) -> dict:
+    """Return {acct: (lat, lng)} WGS84 centroids from the DCAD parcel
+    geometry shapefile, for the given account set only. Pure-python
+    (pyshp + pyproj); skips gracefully if the shapefile or libs are absent."""
+    if not GEOM_SHP or not os.path.exists(GEOM_SHP):
+        _log(f"geometry: shapefile not found at {GEOM_SHP} — seed will lack lat/lng")
+        return {}
+    try:
+        import shapefile  # pyshp
+        from pyproj import Transformer
+    except ImportError as e:
+        _log(f"geometry: missing lib ({e}) — pip install pyshp pyproj; skipping lat/lng")
+        return {}
+    t = Transformer.from_crs("EPSG:2276", "EPSG:4326", always_xy=True)
+    out = {}
+    r = shapefile.Reader(GEOM_SHP)
+    acct_idx = [f[0] for f in r.fields[1:]].index("Acct")
+    n = r.numRecords
+    for i in range(n):
+        acct = r.record(i)[acct_idx]
+        if acct not in accounts:
+            continue
+        pts = r.shape(i).points
+        if not pts:
+            continue
+        # Vertex-average centroid is sufficient for a map pin.
+        x = sum(p[0] for p in pts) / len(pts)
+        y = sum(p[1] for p in pts) / len(pts)
+        lng, lat = t.transform(x, y)
+        # sanity: Dallas County bounds
+        if 32.4 < lat < 33.1 and -97.1 < lng < -96.3:
+            out[acct] = (round(lat, 7), round(lng, 7))
+    _log(f"geometry: matched {len(out):,}/{len(accounts):,} accounts to centroids")
+
+    # ── Condo fallback ────────────────────────────────────────────────────
+    # Condo-unit accounts embed the building's CondoID at chars [2:7]
+    # (e.g. '60C41260000000002' -> 'C4126'). PARCEL_GEOM has no polygons
+    # for individual units; CONDO.shp (DCAD GIS Products -> CONDO.zip) has
+    # the BUILDING footprints keyed by CondoID. Units take the building
+    # centroid — correct for a map pin.
+    condo_shp = os.path.join(os.path.dirname(os.path.dirname(GEOM_SHP)),
+                             "CONDO", "CONDO.shp")
+    pending = {a for a in accounts if a not in out}
+    condo_ids_needed = {}
+    for a in pending:
+        m = re.match(r"^\d{2}(C\d{4})", a)
+        if m:
+            condo_ids_needed.setdefault(m.group(1), []).append(a)
+    if condo_ids_needed and os.path.exists(condo_shp):
+        rc = shapefile.Reader(condo_shp)
+        cid_idx = [f[0] for f in rc.fields[1:]].index("CondoID")
+        added = 0
+        for i in range(rc.numRecords):
+            cid = rc.record(i)[cid_idx]
+            if cid not in condo_ids_needed:
+                continue
+            pts = rc.shape(i).points
+            if not pts:
+                continue
+            x = sum(p[0] for p in pts) / len(pts)
+            y = sum(p[1] for p in pts) / len(pts)
+            lng, lat = t.transform(x, y)
+            if 32.4 < lat < 33.1 and -97.1 < lng < -96.3:
+                for a in condo_ids_needed[cid]:
+                    out[a] = (round(lat, 7), round(lng, 7))
+                    added += 1
+        _log(f"geometry: condo fallback added {added:,} unit centroids "
+             f"({len(condo_ids_needed):,} buildings referenced)")
+    return out
+
+
 def main():
     if not TARGET_ZIP:
         _log("ERROR: set TARGET_ZIP"); sys.exit(2)
@@ -167,6 +247,7 @@ def main():
                 info[acct]["value"] = 0
 
     # ── 3. assemble output ──────────────────────────────────────────────────
+    centroids = _load_centroids(set(info.keys()))
     out = {}
     for acct, p in info.items():
         owner = p["owner_name"]
@@ -192,6 +273,9 @@ def main():
             "legal_description": p["legal_description"],
             "apn": p["apn"],
         }
+        c = centroids.get(acct)
+        if c:
+            out[acct]["lat"], out[acct]["lng"] = c
 
     # ── 4. address-coverage gate (May-10 bug guard) ─────────────────────────
     with_addr = sum(1 for v in out.values() if (v.get("address") or "").strip())
