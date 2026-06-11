@@ -636,6 +636,42 @@ def _dispatch_probate(row, owners_db, use_codes):
 
     candidates = []
 
+    # ── Layer 0: county-resolved parcel identity (2026-06-11) ──────────
+    # TX harvesters resolve decedents against the FULL county owner roll
+    # at harvest time (scripts/lib_county_resolve.py) and attach the
+    # resolved accounts as raw_data.resolved_parcels. When a resolved
+    # account exists in parcels_v3 (i.e. it's in a live ZIP), match by
+    # PARCEL IDENTITY — same precision class as the tax_foreclosure
+    # bypass. This fixes the coverage-math zero: county-wide signals were
+    # name-matched against only the ~1.2% parcel slice and never landed.
+    resolved = ((row.get('raw_data') or {}).get('resolved_parcels')) or []
+    for rp in resolved:
+        pin = rp.get('acct')
+        if not pin or pin not in owners_db:
+            continue
+        # Precision guard: a decedent with a common name can resolve to
+        # several different people county-wide (e.g. 4 distinct 'Matthew
+        # Gonzales' accounts). Identity is only STRICT when the resolution
+        # is unambiguous: estate-titled, 2+ given-name corroboration
+        # ('strong'), or a unique single hit. Multi-hit standard
+        # resolutions are WEAK — surfaced for agent review, not asserted.
+        unambiguous = (rp.get('est_of') or rp.get('strength') == 'strong'
+                       or len(resolved) == 1)
+        candidates.append({
+            "parcel_id":     pin,
+            "signal_family": "probate_pending",
+            "trigger_hint": {
+                "case_number":    row.get('document_ref'),
+                "filing_date":    (row.get('event_date') or ''),
+                "decedent":       decedent_raw,
+                "match_method":   "county_resolved_identity",
+                "est_of":         bool(rp.get('est_of')),
+                "match_strength": "strict" if unambiguous else "weak",
+            },
+        })
+    if candidates:
+        return candidates
+
     # Layer 1: decedent match
     for pin, info in owners_db.items():
         # Admit residential (R) + condominium (K). Reject anything

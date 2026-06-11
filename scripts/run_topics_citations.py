@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "backend", "harvesters"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import topics_citations as tc  # noqa: E402
 import requests  # noqa: E402
 
@@ -34,6 +35,10 @@ SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 WRITE = os.environ.get("WRITE", "0") == "1"
 SINCE_DAYS = int(os.environ.get("SINCE_DAYS", "7"))
 EDGE_HINT = int(os.environ.get("EDGE_HINT", "105000"))
+# County-wide decedent->parcel resolution (the inversion, 2026-06-11).
+# Point DCAD_ZIP at the bulk Data Products zip to enable; empty disables
+# (signals still write, just without resolved_parcels).
+DCAD_ZIP = os.environ.get("DCAD_ZIP", "")
 TABLE = "raw_signals_v3"
 SOURCE = "tx_topics_citations"
 POLITE = 0.35
@@ -74,6 +79,14 @@ def main():
     seen = existing_refs() if WRITE else set()
     s = requests.Session()
 
+    owner_index = None
+    if DCAD_ZIP and os.path.exists(DCAD_ZIP):
+        from lib_county_resolve import CountyOwnerIndex
+        owner_index = CountyOwnerIndex.from_dcad_zip(DCAD_ZIP)
+        print(f"[topics] county owner index: {owner_index.total:,} accounts")
+    else:
+        print("[topics] no DCAD_ZIP — skipping county-wide resolution")
+
     edge = tc.find_live_edge(s, start_hint=EDGE_HINT)
     print(f"[topics] live edge id={edge}  cutoff pub_start>={cutoff}  "
           f"write={WRITE} already_in_db={len(seen)}")
@@ -104,12 +117,36 @@ def main():
         pdf_text = tc.fetch_attachment_text(s, rec["topics_id"])
         applicant, filed = tc.extract_applicant(pdf_text)
         sig = tc.to_signal_row(rec, applicant, filed)
-        if sig and sig["document_ref"] not in seen:
-            rows.append(sig)
+        if not sig:
+            time.sleep(POLITE)
+            continue
+        # County-wide inversion: resolve the decedent against the FULL
+        # county roll and attach what they own. property_hint gets the best
+        # resolved address (used downstream); resolved_parcels carries the
+        # full list (live-ZIP hits power parcel-identity matching; non-live
+        # hits are expansion intel).
+        if owner_index:
+            resolved = owner_index.resolve(sig["raw_data"]["decedent"])
+            if resolved:
+                sig["raw_data"]["resolved_parcels"] = resolved
+                best = resolved[0]
+                sig["property_hint"] = (f"{best['address']}, {best['city']} "
+                                        f"{best['zip']}").strip(", ")
+        # NOTE: dedupe-skip removed for upsert semantics — re-writing an
+        # existing cause_number UPDATES it (merge-duplicates), which is how
+        # previously-written signals gain resolved_parcels on re-runs.
+        rows.append(sig)
         time.sleep(POLITE)
 
+    n_resolved = sum(1 for r in rows if (r.get("raw_data") or {}).get("resolved_parcels"))
+    n_live_hits = 0
     print(f"[topics] scanned={scanned} probate={probate_n} "
-          f"in_market={in_market} new_rows={len(rows)}")
+          f"in_market={in_market} new_rows={len(rows)} county_resolved={n_resolved}")
+    for r in rows:
+        for rp in (r.get("raw_data") or {}).get("resolved_parcels") or []:
+            print(f"  RESOLVED: {r['raw_data']['decedent'][:30]:30} -> "
+                  f"{rp['owner_name'][:36]:36} {rp['city'][:16]:16} {rp['zip']} "
+                  f"{rp['strength']}{' EST' if rp['est_of'] else ''}")
 
     if WRITE:
         if not (SUPABASE_URL and SERVICE_KEY):

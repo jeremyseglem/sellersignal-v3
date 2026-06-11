@@ -32,10 +32,17 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: pip install requests pypdf
+      - name: Download DCAD bulk roll (county-wide decedent resolution)
+        run: |
+          curl -sL --max-time 300 -A "Mozilla/5.0" \
+            "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5CDATA%20PRODUCTS%5CDCAD2026_CURRENT.ZIP" \
+            -o /tmp/dcad2026.zip
+          ls -la /tmp/dcad2026.zip
       - name: Run TOPICs citations harvester
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
           SINCE_DAYS: ${{ github.event.inputs.since_days || '7' }}
+          DCAD_ZIP: /tmp/dcad2026.zip
         run: python -u scripts/run_topics_citations.py
