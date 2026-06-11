@@ -572,6 +572,73 @@ def diag_scrape_attempts(
     }
 
 
+@router.get("/diag/match-trace")
+def diag_match_trace(
+    source_type: str,
+    document_ref: str,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Run the matcher on ONE signal with stage-by-stage tracing, no writes.
+    Added 2026-06-11: TX county-resolved signals produced 0 matches in
+    production while the identical dispatch succeeded locally; every
+    component checked out individually. This traces the real production
+    pipeline (real owners_db, real signal row) to expose which stage
+    zeroes the candidates."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    from backend.harvesters import matcher as M
+
+    rows = (supa.table('raw_signals_v3')
+            .select('*')
+            .eq('source_type', source_type)
+            .eq('document_ref', document_ref)
+            .limit(1).execute()).data or []
+    if not rows:
+        raise HTTPException(404, "signal not found")
+    row = rows[0]
+
+    allowed = M._allowed_markets_for(source_type)
+    owners_db, use_codes = M._load_owners_db(supa, None, market_keys=allowed)
+
+    trace: dict = {
+        "signal": {"document_ref": document_ref,
+                   "signal_type": row.get("signal_type"),
+                   "has_raw_data": bool(row.get("raw_data")),
+                   "marker": bool((row.get("raw_data") or {})
+                                  .get("county_resolution_ran")),
+                   "n_resolved": len((row.get("raw_data") or {})
+                                     .get("resolved_parcels") or []),
+                   "n_heir": len((row.get("raw_data") or {})
+                                 .get("resolved_heir_parcels") or [])},
+        "owners_db_size": len(owners_db),
+        "allowed_markets": sorted(allowed) if allowed else None,
+    }
+    heir_pins = [h.get("acct") for h in
+                 (row.get("raw_data") or {}).get("resolved_heir_parcels") or []]
+    trace["heir_pins_in_owners_db"] = [p for p in heir_pins if p in owners_db]
+
+    dispatcher = M._DISPATCH.get(row.get("signal_type"))
+    if not dispatcher:
+        trace["error"] = "no dispatcher"
+        return trace
+    candidates = dispatcher(row, owners_db, use_codes)
+    trace["candidates_after_dispatch"] = [
+        {"pin": c.get("parcel_id"),
+         "family": c.get("signal_family"),
+         "method": (c.get("trigger_hint") or {}).get("match_method"),
+         "strength": (c.get("trigger_hint") or {}).get("match_strength")}
+        for c in candidates]
+
+    if allowed is not None:
+        candidates = [c for c in candidates
+                      if owners_db.get(c.get("parcel_id"), {})
+                      .get("market_key", "WA_KING") in allowed]
+    trace["after_market_filter"] = len(candidates)
+    return trace
+
+
 @router.get("/diag/parcel-by-pin")
 def diag_parcel_by_pin(pin: str, x_admin_key: Optional[str] = Header(None)):
     """Read-only parcel inspection. Added 2026-06-11 to verify whether
