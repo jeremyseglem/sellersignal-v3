@@ -97,21 +97,25 @@ def _results_url(begin: date, end: date) -> str:
 def _click_next(page) -> bool:
     """Click neumo's 'next page' control. Returns True if a click happened.
 
-    The pager renders as `◀ 1 2 3 ... ▶`. The right-arrow is the reliable
-    next control; fall back to an aria-labelled Next button.
+    Confirmed control (probe 2026-06-11): <button aria-label="next page">▶</button>,
+    disabled on the last page. We check enabled-state to avoid a no-op click.
     """
-    for sel in [
-        "a[aria-label='Next']", "button[aria-label='Next']",
-        "[aria-label='Next page']", "a[rel='next']",
-    ]:
-        el = page.query_selector(sel)
-        if el and el.is_enabled():
+    el = page.query_selector("button[aria-label='next page']")
+    if el:
+        try:
+            if el.get_attribute("disabled") is not None or not el.is_enabled():
+                return False
+        except Exception:
+            pass
+        try:
             el.click()
             return True
+        except Exception:
+            pass
     # Fallback: the ▶ glyph
     try:
         el = page.query_selector("text=▶")
-        if el:
+        if el and el.is_enabled():
             el.click()
             return True
     except Exception:
