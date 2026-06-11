@@ -69,19 +69,18 @@ jobs:
                       if not first or first == prev_first:
                           break
                       prev_first = first
-                      # split table text into rows; the DOC TYPE is the 3rd tab cell
-                      for line in txt.split("\n"):
-                          cells = line.split("\t")
-                          if len(cells) >= 5 and _re.search(r"\b20\d{10}\b", line):
-                              # find which cell is the doctype (the one before the date)
-                              for ci,c in enumerate(cells):
-                                  if _re.match(r"\s*\d{1,2}/\d{1,2}/20\d{2}\s*$", c) and ci>=1:
-                                      dt = cells[ci-1].strip()
-                                      doctypes[dt]+=1
-                                      if len(sample_rows)<6:
-                                          sample_rows.append(" | ".join(x.strip() for x in cells[:ci+2]))
-                                      break
-                      # next page
+                      # Each result row, when split on tabs/newlines, contains the
+                      # sequence: ... DOCTYPE  M/D/YYYY  20########## ...
+                      # Find every date+docnum and take the token just before the date.
+                      cells = [c.strip() for c in _re.split(r"\t|\n", txt)]
+                      for idx in range(2, len(cells)):
+                          if _re.match(r"^\d{1,2}/\d{1,2}/20\d{2}$", cells[idx]) and \
+                             idx+1 < len(cells) and _re.match(r"^20\d{10}$", cells[idx+1]):
+                              dt = cells[idx-1]
+                              if dt and not _re.match(r"^20\d{10}$", dt):
+                                  doctypes[dt] += 1
+                                  if len(sample_rows) < 6:
+                                      sample_rows.append(" | ".join(cells[max(0,idx-3):idx+2]))
                       nb = page.query_selector("button[aria-label=\x27next page\x27]")
                       if not nb or nb.get_attribute("disabled") is not None:
                           break
@@ -89,8 +88,9 @@ jobs:
                       try: page.wait_for_load_state("networkidle", timeout=8000)
                       except Exception: pass
 
-                  print("=== DISTINCT DOC TYPES (06/02) ===")
-                  for dt,ct in doctypes.most_common(60):
+                  print("=== DISTINCT DOC TYPES (06/02, all pages walked) ===")
+                  print("total tallied:", sum(doctypes.values()))
+                  for dt,ct in doctypes.most_common(80):
                       print(f"{ct:4}  {dt}")
                   print("=== SAMPLE PARSED ROWS ===")
                   for s in sample_rows: print(s[:200])
