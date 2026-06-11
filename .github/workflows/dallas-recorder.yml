@@ -1,0 +1,51 @@
+name: Dallas Recorder
+
+# Harvests Dallas County recorded death/estate instruments (Affidavit of Death,
+# Executor's/PR/Administrator's Deed, Deed of Distribution, Transfer on Death)
+# from the neumo Official Records search and writes probate signals to
+# raw_signals_v3. Mirrors the Maricopa Recorder Action; uses a real browser
+# (Playwright) to clear the Cloudflare gate instead of OCR.
+#
+# Default is a DRY RUN. Set input write=1 (or the daily cron passes write=1)
+# to actually write. Secrets SUPABASE_URL + SUPABASE_SERVICE_KEY required to write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      days:
+        description: "lookback window in days"
+        required: false
+        default: "7"
+      chunk_days:
+        description: "sub-window size in days"
+        required: false
+        default: "2"
+  schedule:
+    # 7:30am America/Chicago (after overnight recordings post). 13:30 UTC.
+    - cron: "30 13 * * *"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Run Dallas recorder
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # cron runs write=1; manual dispatch uses the input (default 0)
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          DAYS: ${{ github.event.inputs.days || '7' }}
+          CHUNK_DAYS: ${{ github.event.inputs.chunk_days || '2' }}
+        run: python scripts/run_dallas_recorder.py
