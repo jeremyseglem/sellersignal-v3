@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-06-10 (AZ geometry backfill — 85254 now renders on territory + briefing maps; az.json ZCTA polygons for 20 AZ ZIPs)
+**Last updated:** 2026-06-11 (Dallas County TX live — 3rd state. Recorder harvester via headless browser clears Cloudflare; 75205/75225/75230 onboarded; 61 live ZIPs)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -14,7 +14,7 @@ These apply to every Claude session. Non-negotiable.
 2. Never assume; never invent data. Reference this manifesto and the build journal before proposing anything.
 3. Direct answers, no hedging, no emojis. When wrong, own it without spiraling.
 4. "Building" is jargon — use plain English ("in pipeline", "on watch list").
-5. Don't drift from the working code path. The 26 live ZIPs are the standard; match against them.
+5. Don't drift from the working code path. The 61 live ZIPs across 4 markets (WA_KING, AZ_MARICOPA, WA_SNOHOMISH, TX_DALLAS) are the standard; match against them.
 6. Skip-trace and Lob letter sending are NOT wired for beta (placeholder buttons).
 7. Brian is co-founder for product validation discussions.
 
@@ -28,7 +28,7 @@ An AI-powered intelligence platform for luxury real estate agents in defined ZIP
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
-**Geographic scope:** **26 King County, Washington ZIPs** seeded as of 2026-05-17 (was 21 yesterday). Bozeman MT (Jeremy's actual market) is on the post-launch roadmap.
+**Geographic scope:** **61 live ZIPs across 4 markets** as of 2026-06-11: King County WA (32), Maricopa County AZ (20), Snohomish County WA (6), Dallas County TX (3). Bozeman MT (Jeremy's actual market) is on the post-launch roadmap.
 
 ### Current 26 live ZIPs
 
@@ -46,20 +46,24 @@ Seattle:        98103, 98105, 98112, 98115, 98117, 98119, 98136, 98199
 Snohomish:      98290 (cross-county pilot, separate market_key WA_SNOHOMISH)
 ```
 
-### Live measurements (snapshot 2026-05-21)
+### Live measurements (snapshot 2026-06-11)
 ```
-total live ZIPs:    29  (26 KC + 2 Edmonds Snohomish + 1 AZ Maricopa/85254; 85254 geometry backfilled 2026-06-10)
-total parcels:      ~277,500  (98020 grew to 8,351 after today's reingest; see below)
-court signals harvested:   ~16,850  (~16,337 KC case_parties + 513 Snohomish raw_signals_v3)
-Snohomish probate matches: 93 strict+weak rows after today's matcher re-run
-                           (98020=20, 98026=3, 98290=70)
-Snohomish Call-Now buckets after today's coverage refresh:
-                           98020 probate=24, 98026 probate=15, 98290 probate=12
-                           98020 absentee=100 (was 0 — see today's reingest)
-Map geometry coverage (post-backfill):
-                           98020=100% (1602/1602 — Snohomish backfill newly wired)
-                           98053=90.9% (7349/8082 — rest are stuck PINs not in KC source)
-                           98074=91.6% (11173/12196 — same)
+total live ZIPs:    61
+  WA_KING:      32   (King County, WA — the original market)
+  AZ_MARICOPA:  20   (Scottsdale/Phoenix area; Recorder OCR harvester, Phase 2)
+  WA_SNOHOMISH:  6   (Edmonds + Lake Stevens; daily-report harvester)
+  TX_DALLAS:     3   (Park Cities + Preston Hollow — NEW 2026-06-11)
+                       75205 Highland Park (7,057 parcels, median $2.20M)
+                       75225 University Park (7,796 parcels, median $2.18M)
+                       75230 Preston Hollow  (10,112 parcels, median $1.13M)
+Dallas signal source: tx_dallas_recorder (Affidavit of Heirship = primary TX
+  death->title instrument; ~2% of daily recordings; first live write 80 signals
+  for 05/25–06/01 window). Matching queued behind the WA drain (rematch_autofill
+  scopes to the OLDEST unmatched signal's market; Dallas signals are newest so
+  they match once the WA backlog clears — no intervention needed).
+
+NOTE: an earlier snapshot in this file said "29 live" — stale. 61 is correct
+  (verified against GET /api/coverage?include_in_development=true 2026-06-11).
 ```
 
 ---
@@ -500,6 +504,46 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-06-11 — Dallas County, TX live (3rd state). Recorder harvester via headless browser.
+
+**The headline:** Texas is now a third market alongside WA and AZ. Built a complete Dallas County recorder harvester end-to-end and onboarded the first three luxury ZIPs (Highland Park / University Park / Preston Hollow). 61 live ZIPs total.
+
+**The access lesson that unlocked it.** Spent the prior session wrongly declaring TX portals "blocked" after raw curl from the sandbox (datacenter IP) hit 403 / Cloudflare challenges. The correction (Jeremy's): the KC scraper works by *rendering like a real browser and reading rendered data*. Re-applied here — a headless Chromium (Playwright) running in a GitHub Actions runner clears the Cloudflare managed challenge where datacenter curl gets 403. **Rule reinforced: portal friction is portal-specific, not market-specific; the public data is in every county. Escalation rungs: (1) form-mechanics-respecting requests, (2) headless browser.**
+
+**Portal recon (GitHub Actions, real browser):**
+- Dallas recorder `dallas.tx.publicsearch.us` (vendor: neumo) — real browser CLEARS Cloudflare; renders the Official Records grid as HTML text (no OCR). THE BUILD TARGET.
+- Travis `tccsearch.org` — Cloudflare challenge persists even with a real browser (needs stealth/residential IP). Banked as harder.
+- Dallas Courts Portal (Tyler) and Travis JP Odyssey — lookup-keyed, no date-filed discovery. The RECORDER is the discovery surface (same as Maricopa).
+
+**neumo query contract (captured live):**
+- Results URL: `/results?department=RP&recordedDateRange=YYYYMMDD,YYYYMMDD&searchType=quickSearch&keywordSearch=false&searchOcrText=false`
+- Grid columns: GRANTOR | GRANTEE | DOC TYPE | RECORDED DATE | DOC NUMBER (12-digit 20##########) | BOOK/VOL/PAGE | TOWN | LEGAL DESCRIPTION (incl Subdivision/Lot/Block).
+- **Pagination: the URL `page=N` param is IGNORED.** Must CLICK the in-DOM control `button[aria-label='next page']` (▶, disabled on last page). 50 rows/page, ~800-900 recordings/day. Verified click advances the grid.
+- **Certification lag ~5-7 days** — windows ending at today return 0 rows for the most recent days. Runner trails by `LAG_DAYS=10`.
+- **DOC TYPE taxonomy is TX-specific.** The death->property signal is **AFFIDAVIT OF HEIRSHIP** (~2% of daily recordings), NOT "Affidavit of Death"/"PR Deed" (those are AZ/WA names). Confirmed against a 250-row distinct-doctype tally. The decedent is tagged `DECD` and lands in EITHER grantor or grantee column — parser matches the DECD-tagged party as decedent regardless of column.
+
+**Code shipped (all on main):**
+- `backend/harvesters/dallas_recorder.py` — render → click-paginate → parse grid text → classify doc type (DEATH_DOCTYPE_SIGNALS, Affidavit of Heirship primary) → DECD-aware `to_signal_row` emitting `raw_signals_v3` (source_type=`tx_dallas_recorder`, jurisdiction=`TX_DALLAS`, party_names[0]=decedent matchable, legal_description as property_hint, doc_number as document_ref).
+- `scripts/run_dallas_recorder.py` — Playwright runner: clears Cloudflare once on root, iterates 1-day chunks, click-paginates each, dedupes on doc_number, dry-run default, trails certification lag. ENV: WRITE / DAYS / CHUNK_DAYS / LAG_DAYS.
+- `.github/workflows/dallas-recorder.yml` — installs playwright+chromium, dry-run default, daily cron 13:30 UTC (passes write=1), dispatch inputs.
+- `scripts/build_dallas_owners.py` — DCAD seed builder. Joins `ACCOUNT_INFO.CSV` + `ACCOUNT_APPRL_YEAR.CSV` on ACCOUNT_NUM; filters DIVISION_CD=RES + PROPERTY_ZIPCODE; same classify_owner_type + 80% address-coverage gate as build_kc_owners.py. **TX is non-disclosure: value = appraised TOT_VAL, tenure = DEED_TXFR_DATE, NO sale_price.** Emits owner_state/city/zip + is_absentee/is_out_of_state + prop_type so the absentee bucket populates without a later reingest.
+- `backend/harvesters/matcher.py` — registered `'tx_dallas_recorder': {'TX_DALLAS'}` in SOURCE_MARKET_SCOPE.
+- `backend/ingest/seed_from_json.py` — `_MARKET_STATE['TX_DALLAS'] = 'TX'`.
+- `backend/api/admin.py` — `DALLAS_ZIP_TO_CITY` map; Dallas auto-detect + seed-prefix `tx-dallas` in register / onboard-zip / seed-path / `_load_seed_names` (5 spots, matching the Maricopa pattern).
+
+**DCAD bulk source:** `https://www.dallascad.org/dataproducts.aspx` → `DCAD2026_CURRENT.ZIP` (207MB, comma-delimited, latin-1). URL-encode the backslashes in the `id=` param or the shell mangles it to a 0-byte download. Key files: ACCOUNT_INFO.CSV (owner/address/legal/deed-date/GIS_PARCEL_ID), ACCOUNT_APPRL_YEAR.CSV (TOT_VAL).
+
+**Value screen (median TOT_VAL):** 75205 Highland Park $2.20M ✓ · 75225 University Park $2.18M ✓ · 75230 Preston Hollow $1.13M ✓ · 75209 $1.03M (borderline, deferred) · 75229 $702K, 75220 $532K (below luxury floor, skipped).
+
+**Onboarding outcome:** all 3 ZIPs live (register→seed→classify→band→publish→refresh_counts all `ok`). Canonicalize deferred/failed on transient Supabase HTTP/2 disconnect — non-blocking (Build Now reads raw structural fields; matcher's `_load_owners_db` reads `parcels_v3.owner_name` directly, not a canonical join). Seed batches hit the same transient `RemoteProtocolError: Server disconnected` (1000-2000 parcels dropped per run); idempotent re-seed to failed=0 fixed it. Band 3 (active prospect): 75205=10, 75225=16, 75230=21. aging_trust contact-now bucket confirmed populating (75205=119 eligible, 75225=129, 75230=137).
+
+**Signal write:** first live recorder run wrote 80 Affidavit-of-Heirship probate signals (window 05/25–06/01, 4,099 grid rows scanned, 0 errors). Matching is QUEUED behind the WA drain — `rematch_autofill` scopes each tick to the market of the OLDEST unmatched signal, and the Dallas signals are newest, so they auto-match once the ~6,500 WA backlog clears. No intervention needed; verify probate buckets after the drain reaches TX.
+
+**Dry-run discipline paid off (caught before any write):** wrong doc-type needles (Affidavit of Death → Heirship), broken URL pagination (→ click-based), the certification-lag date gap, and reversed decedent/heir columns — all surfaced in dry runs.
+
+**Pending for Dallas:** (1) confirm probate match yield into the 3 luxury ZIPs after the WA drain clears; (2) Harris/Houston is the next TX target — find the correct `*.tx.publicsearch.us` recorder host and repeat this pattern; (3) diagnostic workflows (`tx-portal-probe`, `tx-browser-probe`, `dallas-recorder-map`, `dallas-search-capture`) can be removed later.
+
 
 ### 2026-06-10 (cont.) — Enriched seed pipeline, batch canonicalization, all 19 AZ ZIPs staged
 
