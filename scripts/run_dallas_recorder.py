@@ -77,7 +77,12 @@ def daterange_chunks(begin, end, chunk_days):
 
 
 def main():
-    end = datetime.now().date()
+    # Dallas recordings post with a lag — the index is typically "certified
+    # through" ~5-7 days behind today, so windows ending at today return 0 rows
+    # for the most recent days. Trail the end of the window by LAG_DAYS so we
+    # harvest days that have actually posted. Window = [end-LAG-DAYS, end-LAG].
+    lag = int(os.environ.get("LAG_DAYS", "10"))
+    end = datetime.now().date() - timedelta(days=lag)
     begin = end - timedelta(days=DAYS)
     seen = existing_refs() if WRITE else set()
     print(f"[dallas_recorder] window {begin}..{end} chunk={CHUNK_DAYS}d "
