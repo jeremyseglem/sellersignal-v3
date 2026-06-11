@@ -55,14 +55,18 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
 # DOC TYPE (as rendered in the grid, uppercased) -> signal_type.
-# Matched by substring against the row's DOC TYPE cell, so variants like
-# "EXECUTORS DEED" / "EXECUTOR'S DEED" / "DEED EXECUTOR" all catch on "EXECUTOR".
+# Matched by substring against the row's DOC TYPE cell. Calibrated to the ACTUAL
+# Dallas County recording taxonomy observed 2026-06-11 (250-row sample, 06/02):
+# Texas names its death->property instruments differently from AZ/WA. The
+# workhorse is AFFIDAVIT OF HEIRSHIP (filed when an owner dies and heirs
+# establish title without full probate) — names decedent + heirs + the parcel.
 DEATH_DOCTYPE_SIGNALS = [
+    ("AFFIDAVIT OF HEIRSHIP",     "probate"),   # primary TX death->title signal
     ("AFFIDAVIT OF DEATH",        "probate"),
+    ("EXECUTOR",                  "probate"),    # EXECUTOR'S DEED
+    ("ADMINISTRATOR",             "probate"),    # ADMINISTRATOR'S DEED
     ("PERSONAL REPRESENTATIVE",   "probate"),
-    ("EXECUTOR",                  "probate"),
-    ("ADMINISTRATOR",             "probate"),
-    ("DISTRIBUTION",              "probate"),   # DEED OF DISTRIBUTION
+    ("DISTRIBUTION",              "probate"),     # DEED OF DISTRIBUTION
     ("TRANSFER ON DEATH",         "transfer_on_death"),
     ("TODD",                      "transfer_on_death"),
     ("DEATH CERTIFICATE",         "death"),
