@@ -1,0 +1,97 @@
+name: Dallas Recorder Map
+
+# Map the neumo Official Records Advanced Search: capture the document-type
+# list (probate / PR deed / affidavit of death codes) and the XHR the search
+# fires, so we can drive it directly. Read-only. Saves DOM + network log + shots.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Map advanced search
+        run: |
+          cat > map.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import time, json
+
+          URL = "https://dallas.tx.publicsearch.us/"
+          xhr_log = []
+
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = b.new_context(
+                  user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width": 1366, "height": 1100}, locale="en-US")
+              page = ctx.new_page()
+
+              def on_req(req):
+                  u = req.url
+                  if any(k in u for k in ["api", "search", "document", "graphql", "query", "neumo"]) and "publicsearch.us" not in u.split("/")[2:3]:
+                      pass
+                  if any(k in u.lower() for k in ["/api", "search", "document", "graphql", "doctype", "query"]):
+                      xhr_log.append({"method": req.method, "url": u, "post": (req.post_data or "")[:600]})
+              page.on("request", on_req)
+
+              page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+              time.sleep(8)
+              page.screenshot(path="01_landing.png")
+
+              # Click "Advanced Search"
+              try:
+                  page.click("text=Advanced Search", timeout=8000)
+                  time.sleep(5)
+                  page.screenshot(path="02_advanced.png", full_page=True)
+              except Exception as e:
+                  print("advanced click err:", e)
+
+              # Dump any <select>/<option> (doc type list) and labeled inputs
+              dump = page.evaluate("""() => {
+                  const out = {selects: [], inputs: []};
+                  document.querySelectorAll('select').forEach(s => {
+                      out.selects.push({
+                          name: s.name || s.id || '',
+                          options: Array.from(s.options).slice(0,400).map(o => ({v:o.value, t:o.textContent.trim()}))
+                      });
+                  });
+                  document.querySelectorAll('input,textarea').forEach(i => {
+                      out.inputs.push({name:i.name||i.id||'', ph:i.placeholder||'', type:i.type||''});
+                  });
+                  return out;
+              }""")
+              print("=== SELECTS ===")
+              print(json.dumps(dump["selects"], indent=1)[:6000])
+              print("=== INPUTS ===")
+              print(json.dumps(dump["inputs"], indent=1)[:2000])
+
+              # Look specifically for a doc-type picker that may be a custom combobox
+              # by searching page text for probate-ish terms
+              body = page.content()
+              for term in ["Personal Representative", "Affidavit of Death", "Probate", "Letters Testamentary", "Death Certificate", "Executor"]:
+                  print(f"TERM '{term}': {'FOUND' if term.lower() in body.lower() else 'absent'}")
+
+              b.close()
+
+          print("=== XHR LOG ===")
+          for x in xhr_log[-40:]:
+              print(x["method"], x["url"][:160])
+              if x["post"]:
+                  print("   POST:", x["post"][:300])
+          PYEOF
+          python map.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dallas-map
+          path: "*.png"
+          if-no-files-found: ignore
