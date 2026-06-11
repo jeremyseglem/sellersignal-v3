@@ -1,0 +1,82 @@
+name: TX Browser Probe
+
+# Rung 2 test: does a REAL headless browser (Playwright Chromium) clear the
+# Cloudflare managed challenge / conditional captcha that raw curl could not?
+# This mirrors the KC approach: render like a browser, let the page resolve its
+# own challenge, then read the rendered DOM. Screenshots saved as artifacts.
+# Read-only: navigates and screenshots, writes nothing to any database.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  browserprobe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Probe portals with a real browser
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import time
+
+          TARGETS = [
+              ("travis_tccsearch", "https://www.tccsearch.org/"),
+              ("dallas_recorder",  "https://dallas.tx.publicsearch.us/"),
+              ("harris_recorder",  "https://harris.tx.publicsearch.us/"),
+          ]
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = browser.new_context(
+                  user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width": 1366, "height": 900},
+                  locale="en-US",
+              )
+              page = ctx.new_page()
+              for name, url in TARGETS:
+                  print("=" * 60)
+                  print(f"PROBE: {name}  {url}")
+                  try:
+                      page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                      # Give Cloudflare's managed challenge time to auto-resolve
+                      time.sleep(12)
+                      try:
+                          page.wait_for_load_state("networkidle", timeout=15000)
+                      except Exception:
+                          pass
+                      title = page.title()
+                      body = page.content()
+                      cf = any(m in body for m in ["Just a moment", "cf-mitigated", "challenge-platform", "Checking your browser"])
+                      print(f"TITLE: {title}")
+                      print(f"BODY_LEN: {len(body)}")
+                      print(f"CF_STILL_PRESENT: {cf}")
+                      if cf:
+                          print(f"VERDICT: STILL CHALLENGED after browser render")
+                      else:
+                          print(f"VERDICT: CLEARED — rendered real content")
+                      page.screenshot(path=f"{name}.png", full_page=False)
+                  except Exception as e:
+                      print(f"ERROR: {e}")
+              browser.close()
+          PYEOF
+          python probe.py
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-screenshots
+          path: "*.png"
+          if-no-files-found: ignore
