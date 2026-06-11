@@ -122,6 +122,13 @@ async def lifespan(app: FastAPI):
     from backend.tasks import letter_scheduler
     letter_scheduler.start()
 
+    # Geometry autofill — incrementally fills missing parcel lat/lng per
+    # live ZIP against each market's ArcGIS layer (small chunks, never
+    # monopolizes the worker). Replaces hand-fed POST /admin/geometry/{zip}
+    # chunking for new-ZIP onboarding. See backend/tasks/geometry_autofill.py.
+    from backend.tasks.geometry_autofill import geometry_autofill_loop
+    geometry_autofill_task = asyncio.create_task(geometry_autofill_loop())
+
     yield
 
     # Shutdown: cancel background tasks cleanly
@@ -134,6 +141,7 @@ async def lifespan(app: FastAPI):
     snohomish_daily_autofill_task.cancel()
     renewal_notifier_task.cancel()
     letter_digest_task.cancel()
+    geometry_autofill_task.cancel()
     # letter_scheduler manages its own task internally — pause for clean shutdown
     letter_scheduler.pause()
     try:
@@ -162,6 +170,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await snohomish_daily_autofill_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await geometry_autofill_task
     except asyncio.CancelledError:
         pass
 

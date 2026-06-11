@@ -1975,6 +1975,35 @@ def obit_autofill_resume(x_admin_key: Optional[str] = Header(None)):
     return {"enabled": True, "message": "Obit autofill resumed."}
 
 
+@router.get("/geometry-autofill-status")
+def geometry_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """State of the geometry autofill task — last tick (zip, updated counts),
+    totals, error/backoff state, config."""
+    _require_admin(x_admin_key)
+    from backend.tasks.geometry_autofill import state
+    return dict(state)
+
+
+@router.post("/geometry-autofill-pause")
+def geometry_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause geometry autofill — loop keeps running but skips ticks."""
+    _require_admin(x_admin_key)
+    from backend.tasks.geometry_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "Geometry autofill paused."}
+
+
+@router.post("/geometry-autofill-resume")
+def geometry_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume geometry autofill and clear any active backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.geometry_autofill import state
+    state["enabled"]            = True
+    state["backoff_until"]      = None
+    state["consecutive_errors"] = 0
+    return {"enabled": True, "message": "Geometry autofill resumed."}
+
+
 @router.post("/obit-autofill-trigger")
 def obit_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
     """
