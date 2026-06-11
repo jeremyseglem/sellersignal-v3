@@ -1,0 +1,41 @@
+name: TOPICs Citations
+
+# Harvests Texas statewide probate citations from the OCA's TOPICs feed
+# (topics.txcourts.gov/CitationsPublic) and writes probate signals to
+# raw_signals_v3 for counties with live markets (COUNTY_MARKETS in
+# backend/harvesters/topics_citations.py). Plain HTTP + pypdf — no browser.
+#
+# Default is a DRY RUN. The daily cron passes write=1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      since_days:
+        description: "lookback window in days"
+        required: false
+        default: "7"
+  schedule:
+    # 8:00am America/Chicago, after the prior day's citations post. 14:00 UTC.
+    - cron: "0 14 * * *"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install requests pypdf
+      - name: Run TOPICs citations harvester
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          SINCE_DAYS: ${{ github.event.inputs.since_days || '7' }}
+        run: python -u scripts/run_topics_citations.py

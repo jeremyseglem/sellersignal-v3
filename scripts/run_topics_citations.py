@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""
+Scheduled runner for the TOPICs statewide probate-citation harvester.
+
+Cursor-free design: each run finds the live edge of the sequential ID space
+(binary probe), then walks BACKWARD collecting records until publication
+dates fall older than SINCE_DAYS (with tolerance for slight out-of-order
+posting). Dedupe on (source_type, document_ref=cause_number) makes re-scans
+idempotent, so no cursor persistence is needed and overlapping windows are
+harmless.
+
+Plain HTTP (requests + pypdf) — no browser. txcourts.gov has no edge gate.
+
+ENV:
+  SUPABASE_URL / SUPABASE_SERVICE_KEY   (write creds — GitHub secrets)
+  WRITE        "1" to write; default dry run
+  SINCE_DAYS   lookback window (default 7)
+  EDGE_HINT    starting hint for live-edge probe (default 105000; harmless
+               if stale — the probe walks from wherever it lands)
+"""
+import json
+import os
+import sys
+import time
+from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "backend", "harvesters"))
+import topics_citations as tc  # noqa: E402
+import requests  # noqa: E402
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+WRITE = os.environ.get("WRITE", "0") == "1"
+SINCE_DAYS = int(os.environ.get("SINCE_DAYS", "7"))
+EDGE_HINT = int(os.environ.get("EDGE_HINT", "105000"))
+TABLE = "raw_signals_v3"
+SOURCE = "tx_topics_citations"
+POLITE = 0.35
+OLD_STREAK_STOP = 40  # stop after this many consecutive too-old records
+
+
+def _headers():
+    return {"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}",
+            "Content-Type": "application/json"}
+
+
+def existing_refs() -> set:
+    if not (SUPABASE_URL and SERVICE_KEY):
+        return set()
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABLE}", headers=_headers(),
+                     params={"source_type": f"eq.{SOURCE}",
+                             "select": "document_ref"}, timeout=90)
+    r.raise_for_status()
+    return {row["document_ref"] for row in r.json()}
+
+
+def write_rows(rows: list) -> int:
+    if not rows:
+        return 0
+    r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLE}",
+                      headers={**_headers(),
+                               "Prefer": "resolution=merge-duplicates,return=minimal"},
+                      params={"on_conflict": "source_type,document_ref"},
+                      json=rows, timeout=180)
+    if not r.ok:
+        print(f"  WRITE ERROR {r.status_code}: {r.text[:300]}")
+        r.raise_for_status()
+    return len(rows)
+
+
+def main():
+    cutoff = (datetime.now().date() - timedelta(days=SINCE_DAYS)).isoformat()
+    seen = existing_refs() if WRITE else set()
+    s = requests.Session()
+
+    edge = tc.find_live_edge(s, start_hint=EDGE_HINT)
+    print(f"[topics] live edge id={edge}  cutoff pub_start>={cutoff}  "
+          f"write={WRITE} already_in_db={len(seen)}")
+
+    scanned = probate_n = in_market = 0
+    rows, old_streak, gaps = [], 0, 0
+    tid = edge
+    while tid > 0 and old_streak < OLD_STREAK_STOP and gaps < 60:
+        rec = tc.fetch_detail(s, tid)
+        tid -= 1
+        time.sleep(POLITE)
+        if rec is None:
+            gaps += 1
+            continue
+        gaps = 0
+        scanned += 1
+        ps = rec.get("pub_start")
+        if ps and ps < cutoff:
+            old_streak += 1
+            continue
+        old_streak = 0
+        if not tc.is_probate(rec):
+            continue
+        probate_n += 1
+        if rec.get("county") not in tc.COUNTY_MARKETS:
+            continue
+        in_market += 1
+        pdf_text = tc.fetch_attachment_text(s, rec["topics_id"])
+        applicant, filed = tc.extract_applicant(pdf_text)
+        sig = tc.to_signal_row(rec, applicant, filed)
+        if sig and sig["document_ref"] not in seen:
+            rows.append(sig)
+        time.sleep(POLITE)
+
+    print(f"[topics] scanned={scanned} probate={probate_n} "
+          f"in_market={in_market} new_rows={len(rows)}")
+
+    if WRITE:
+        if not (SUPABASE_URL and SERVICE_KEY):
+            print("  WRITE requested but creds missing — aborting.")
+            sys.exit(1)
+        n = 0
+        for i in range(0, len(rows), 100):
+            n += write_rows(rows[i:i + 100])
+        print(f"[topics] WROTE {n} signals to {TABLE}")
+    else:
+        print("[topics] DRY RUN — sample rows:")
+        for row in rows[:4]:
+            print(json.dumps(row, indent=1)[:600])
+        print(f"(total {len(rows)} rows would be written)")
+
+
+if __name__ == "__main__":
+    main()
