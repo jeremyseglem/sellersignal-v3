@@ -69,6 +69,22 @@ MARKET_CONFIGS = {
         'pin_field': 'APN',
         'coords_from_attributes': True,
     },
+    'TX_DALLAS': {
+        # City of Dallas GIS "DallasTaxParcels" layer (sourced from DCAD +
+        # neighboring CADs; covers all of Dallas County + 1-mi buffer). The
+        # ACCT field is the 17-char DCAD account number and matches
+        # parcels_v3.pin exactly (verified 2026-06-11 — ACCT '60221500020010000'
+        # → 3445 Haynie Ave, Highland Park). Native SR is TX State Plane
+        # (102738, feet); we request outSR=4326 so the query returns WGS84
+        # polygon rings, and _extract_lat_lng takes the ring centroid (the
+        # layer does NOT expose per-parcel lat/lng attributes, so polygon
+        # centroid — not coords_from_attributes — is correct here).
+        'url': (
+            'https://gis.dallascityhall.com/arcgis/rest/services/'
+            'Basemap/DallasTaxParcels/FeatureServer/0/query'
+        ),
+        'pin_field': 'ACCT',
+    },
 }
 
 BATCH_SIZE = 50        # PINs per ArcGIS IN clause. 200 was too large —
