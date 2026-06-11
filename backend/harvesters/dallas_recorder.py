@@ -81,13 +81,15 @@ def classify_doc_type(doc_type: str):
 # ── 1. render ────────────────────────────────────────────────────────────────
 
 def _results_url(begin: date, end: date, page_num: int = 1) -> str:
+    # Param set proven to paginate (probe 2026-06-10): the original five params
+    # plus &page=N. Do NOT add recordedDateRangeStart or other params — they
+    # alter/﻿break the query and collapse results to a single page.
     qs = urllib.parse.urlencode({
         "department": "RP",
         "recordedDateRange": f"{begin.strftime('%Y%m%d')},{end.strftime('%Y%m%d')}",
         "searchType": "quickSearch",
         "keywordSearch": "false",
         "searchOcrText": "false",
-        "recordedDateRangeStart": begin.strftime("%Y%m%d"),
         "page": str(page_num),
     })
     return f"{RESULTS_URL}?{qs}"
