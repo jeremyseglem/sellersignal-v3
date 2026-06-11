@@ -35,6 +35,16 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 # ── Configuration (tunable via env) ───────────────────────────────────────
+# INCIDENT 2026-06-11: first deployment of this task saturated the single
+# Railway worker (production unreachable for hours — even /api/health timed
+# out after TLS connect). Root cause: backfill_geometry_zip_async contains
+# SYNC Supabase calls (_fetch_pins_missing_geometry + the lat/lng upserts)
+# that run directly on the event loop, and _pick_target_zip counts missing
+# geometry across every live ZIP (62 queries) each tick. Under load the event
+# loop never freed. The task is now OFF by default; set
+# GEOM_AUTOFILL_ENABLED=1 only after the blocking calls are wrapped in
+# asyncio.to_thread and the per-tick ZIP scan is cached.
+ENABLED_AT_BOOT = os.environ.get("GEOM_AUTOFILL_ENABLED", "0") == "1"
 TICK_INTERVAL   = int(os.environ.get("GEOM_AUTOFILL_TICK_SECONDS", "90"))
 IDLE_INTERVAL   = int(os.environ.get("GEOM_AUTOFILL_IDLE_SECONDS", "3600"))
 GEOM_CHUNK      = int(os.environ.get("GEOM_AUTOFILL_CHUNK", "300"))
@@ -43,7 +53,7 @@ MAX_BACKOFF     = 1800
 
 # ── Shared state ──────────────────────────────────────────────────────────
 state: dict = {
-    "enabled":            True,
+    "enabled":            ENABLED_AT_BOOT,
     "started_at":         None,
     "last_tick_at":       None,
     "last_tick_result":   None,
@@ -102,7 +112,6 @@ def _pick_target_zip(supa) -> Optional[tuple]:
 async def geometry_autofill_loop() -> None:
     """Main task body. Runs until cancelled."""
     from backend.api.db import get_supabase_client
-    from backend.ingest.geometry_backfill import backfill_geometry_zip_async
 
     state["started_at"] = datetime.now(timezone.utc).isoformat()
     log.info(f"geometry_autofill: tick every {TICK_INTERVAL}s, "
@@ -139,7 +148,16 @@ async def geometry_autofill_loop() -> None:
                 continue
 
             zip_code, market_key, missing = target
-            stats = await backfill_geometry_zip_async(
+            # Run the SYNC wrapper on a worker thread. It creates its own
+            # event loop there (asyncio.run), so every blocking call inside —
+            # the sync Supabase reads/upserts AND the ArcGIS fetches — is
+            # confined to that thread. The main event loop stays free to
+            # serve API requests. (Calling backfill_geometry_zip_async
+            # directly here was the 2026-06-11 outage: its sync Supabase
+            # calls ran ON the main loop and starved it.)
+            from backend.ingest.geometry_backfill import backfill_geometry_zip
+            stats = await asyncio.to_thread(
+                backfill_geometry_zip,
                 zip_code, market_key=market_key,
                 dry_run=False, limit=GEOM_CHUNK, verbose=False,
             )
