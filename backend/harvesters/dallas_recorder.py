@@ -80,27 +80,67 @@ def classify_doc_type(doc_type: str):
 
 # ── 1. render ────────────────────────────────────────────────────────────────
 
-def render_results(page, begin: date, end: date, settle_seconds: float = 10.0) -> str:
-    """Navigate the neumo results page for a recorded-date window; return DOM HTML.
-
-    `page` is a live Playwright page on a context that has already cleared the
-    Cloudflare gate (first navigation to the site root). The managed challenge
-    re-clears transparently on subsequent same-origin navigations.
-    """
+def _results_url(begin: date, end: date, page_num: int = 1) -> str:
     qs = urllib.parse.urlencode({
         "department": "RP",
         "recordedDateRange": f"{begin.strftime('%Y%m%d')},{end.strftime('%Y%m%d')}",
         "searchType": "quickSearch",
         "keywordSearch": "false",
         "searchOcrText": "false",
+        "recordedDateRangeStart": begin.strftime("%Y%m%d"),
+        "page": str(page_num),
     })
-    page.goto(f"{RESULTS_URL}?{qs}", wait_until="domcontentloaded", timeout=60000)
+    return f"{RESULTS_URL}?{qs}"
+
+
+def render_page(page, begin: date, end: date, page_num: int,
+                settle_seconds: float = 7.0) -> str:
+    """Navigate to one results page (1-indexed) and return the table inner_text.
+
+    `page` is a live Playwright page on a context that has already cleared the
+    Cloudflare gate (first navigation to the site root). The managed challenge
+    re-clears transparently on subsequent same-origin navigations.
+    """
+    page.goto(_results_url(begin, end, page_num), wait_until="domcontentloaded",
+              timeout=60000)
     time.sleep(settle_seconds)
     try:
-        page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_load_state("networkidle", timeout=12000)
     except Exception:
         pass
-    return page.content()
+    return extract_grid_text(page)
+
+
+def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
+                     polite_delay: float = 1.2):
+    """Yield parsed rows across all pages of a recorded-date window.
+
+    neumo paginates via &page=N at 50 rows/page. We advance pages until a page
+    yields no new doc numbers (or repeats the previous page's first doc number),
+    which marks the end — robust against neumo clamping page beyond the last.
+    """
+    prev_first = None
+    seen_docs: set[str] = set()
+    for pnum in range(1, max_pages + 1):
+        grid_text = render_page(page, begin, end, pnum)
+        rows = parse_rows_from_text(grid_text)
+        if not rows:
+            break
+        first_doc = rows[0].get("doc_number")
+        if first_doc and first_doc == prev_first:
+            # page didn't advance (clamped at last page) — stop
+            break
+        prev_first = first_doc
+        new_in_page = 0
+        for r in rows:
+            dn = r.get("doc_number")
+            if dn and dn not in seen_docs:
+                seen_docs.add(dn)
+                new_in_page += 1
+                yield r
+        if new_in_page == 0:
+            break
+        time.sleep(polite_delay)
 
 
 # ── 2. parse ─────────────────────────────────────────────────────────────────

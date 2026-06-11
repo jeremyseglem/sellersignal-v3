@@ -34,7 +34,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 WRITE = os.environ.get("WRITE", "0") == "1"
 DAYS = int(os.environ.get("DAYS", "7"))
-CHUNK_DAYS = int(os.environ.get("CHUNK_DAYS", "2"))
+CHUNK_DAYS = int(os.environ.get("CHUNK_DAYS", "1"))
 TABLE = "raw_signals_v3"
 SOURCE = "tx_dallas_recorder"
 
@@ -97,18 +97,18 @@ def main():
 
         for cstart, cend in daterange_chunks(begin, end, CHUNK_DAYS):
             try:
-                dr.render_results(page, cstart, cend)
-                grid_text = dr.extract_grid_text(page)
-                rows = dr.parse_rows_from_text(grid_text)
-                total_grid_rows += len(rows)
-                for row in rows:
+                grid_rows = 0
+                estate_in_chunk = 0
+                for row in dr.iter_window_rows(page, cstart, cend):
+                    grid_rows += 1
+                    total_grid_rows += 1
                     sig = dr.to_signal_row(row)
                     if sig:
+                        estate_in_chunk += 1
                         estate_rows += 1
                         if sig["document_ref"] not in seen:
                             all_rows.append(sig)
-                print(f"  {cstart}..{cend}: {len(rows)} grid rows, "
-                      f"{sum(1 for r in rows if dr.classify_doc_type(r['doc_type']))} estate")
+                print(f"  {cstart}..{cend}: {grid_rows} grid rows, {estate_in_chunk} estate")
             except Exception as e:
                 err += 1
                 print(f"  {cstart}..{cend} ERR {type(e).__name__}: {e}")
