@@ -505,6 +505,18 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-06-11 (later) — Geometry incident + the correct geometry pattern
+
+**INCIDENT: geometry_autofill background task took production down for ~8 hours.** First deployment of a new background task (built to automate per-ZIP lat/lng backfill) starved the single Railway worker's event loop — `backfill_geometry_zip_async` contains sync Supabase calls that ran ON the loop, plus the task's target-picker ran 62 counting queries per tick. Even `/api/health` stopped answering (TLS connected, zero bytes). Recovery: push that default-disables the task (`GEOM_AUTOFILL_ENABLED=0`) + wraps the backfill in `asyncio.to_thread` with an isolated event loop. **Lesson (hard): any new background task must be audited for sync IO on the event loop before deploy, and should ship behind an env gate, default off.** The task is now redundant (see below) — delete in a cleanup pass.
+
+**The correct pattern (Jeremy's call: "why not use the same ingest method as King County"):** coordinates should come from the proven ingest paths, not a parallel backfill machine.
+
+- **Dallas:** the City of Dallas ArcGIS layer has NO situs-ZIP field, so by-ZIP reingest can't work there. Instead: DCAD publishes parcel polygons (`GIS PRODUCTS/PARCEL_GEOM.zip`, EPSG:2276) + condo building footprints (`CONDO.zip`). `build_dallas_owners.py` now computes WGS84 centroids (pyshp + pyproj) and writes `lat`/`lng` INTO the seed; condo-unit accounts (`\d\dC\d{4}...`) take their building's centroid from CONDO.shp. `seed-from-json` already accepts lat/lng (line ~150). Re-seeded all 4 Dallas ZIPs → coverage 75205=92%, 75225=86%, 75230=82%, 75209=96% in one pass, zero new machinery. **Future Dallas ZIPs get coordinates at seed time automatically.**
+- **Snohomish gap ZIPs** (recently onboarded, 0% geom): `reingest-property-details?market_key=WA_SNOHOMISH` — the proven endpoint; its parser has always written lat/lng. 98021/98275/98026 → 100%; 98012 → 73% (true ceiling — the Snohomish FeatureServer excludes condos/sub-units, known limitation). Counts refreshed.
+- **KC gap ZIPs — PENDING, blocked on KC server outage.** ~20 recently-onboarded KC ZIPs sit at 0-30% geometry (~120K parcels): 98115 98117 98034 98038 98029 98011 98028 98008 98177 98109 98102 98065 98103 98119 98027 98072 98075 98136 98074 98053(partial). The fix is one `reingest-property-details/{zip}` per ZIP — but `gisdata.kingcounty.gov` was DOWN during this session (TLS handshake failure from two networks; Snohomish control worked perfectly, proving the endpoint is fine). **Re-run the KC reingest list when the server returns.** AZ ZIPs have no gap.
+
+Also this session: onboarded **75209** (4th Dallas ZIP, 5,945 parcels, median $1.03M, 350 contact-now leads) → **62 live territories**. Note the recurring onboard bug: register defaulted city to "Bellevue" on 3 of 4 Dallas ZIPs despite the map lookup — repaired each time via `coverage-meta`; root cause in the register path needs a look (active issue).
+
 ### 2026-06-11 — Dallas County, TX live (3rd state). Recorder harvester via headless browser.
 
 **The headline:** Texas is now a third market alongside WA and AZ. Built a complete Dallas County recorder harvester end-to-end and onboarded the first three luxury ZIPs (Highland Park / University Park / Preston Hollow). 61 live ZIPs total.
