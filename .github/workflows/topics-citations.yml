@@ -32,9 +32,20 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: pip install requests pypdf
+      - name: Week key for DCAD cache
+        id: wk
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache DCAD bulk roll (refreshed weekly)
+        id: dcad-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/dcad2026.zip
+          key: dcad-current-${{ steps.wk.outputs.week }}
       - name: Download DCAD bulk roll (county-wide decedent resolution)
+        if: steps.dcad-cache.outputs.cache-hit != 'true'
         run: |
-          curl -sL --max-time 300 -A "Mozilla/5.0" \
+          curl -sL --max-time 1500 --retry 3 --retry-delay 10 -C - \
+            -A "Mozilla/5.0" \
             "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5CDATA%20PRODUCTS%5CDCAD2026_CURRENT.ZIP" \
             -o /tmp/dcad2026.zip
           ls -la /tmp/dcad2026.zip
