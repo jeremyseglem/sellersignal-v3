@@ -45,24 +45,41 @@ jobs:
               page.goto(URL, wait_until="domcontentloaded", timeout=45000)
               time.sleep(8)
 
-              # Type a doc-type term into the quick search box and submit.
-              # The placeholder box accepts "grantor/grantee, subdivision, doc type, or doc#"
+              # Go straight to a results page for a recent window, then read the
+              # Document Type facet links to capture their exact URL param values.
               try:
-                  box = page.query_selector("input[type='text']") or page.query_selector("input:not([type='hidden'])")
-                  if box:
-                      box.click(); box.fill("Affidavit of Death")
-                      time.sleep(1)
-                      page.keyboard.press("Enter")
-                      time.sleep(10)
-                      try: page.wait_for_load_state("networkidle", timeout=15000)
-                      except Exception: pass
-                      page.screenshot(path="results.png", full_page=True)
-                      print("RESULTS_URL:", page.url)
-                      # capture any result row text
-                      txt = page.inner_text("body")[:1500]
-                      print("BODY_SNIPPET:", txt.replace("\n"," ")[:800])
-                  else:
-                      print("no search box found")
+                  page.goto("https://dallas.tx.publicsearch.us/results?department=RP&recordedDateRange=20260601,20260610&searchType=quickSearch&keywordSearch=false&searchOcrText=false",
+                            wait_until="domcontentloaded", timeout=45000)
+                  time.sleep(10)
+                  try: page.wait_for_load_state("networkidle", timeout=15000)
+                  except Exception: pass
+                  page.screenshot(path="results.png", full_page=True)
+                  print("RESULTS_URL:", page.url)
+
+                  # Enumerate every link href on the results page that carries a
+                  # documentTypes / docType param — that reveals the facet codes.
+                  hrefs = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
+                      .map(a => a.getAttribute('href') || '')
+                      .filter(h => /documentType|docType|doc_type/i.test(h))""")
+                  print("=== DOCTYPE FACET HREFS ===")
+                  for h in hrefs[:60]:
+                      print(h)
+
+                  # Also dump the visible Document Type facet labels + the full
+                  # left-rail text so we can map label -> code.
+                  facet = page.evaluate("""() => {
+                      const out = [];
+                      document.querySelectorAll('*').forEach(el => {
+                          const t = (el.getAttribute && (el.getAttribute('data-doc-type') || el.getAttribute('data-value'))) || '';
+                          if (t) out.push(t + ' :: ' + (el.textContent||'').trim().slice(0,40));
+                      });
+                      return out.slice(0,80);
+                  }""")
+                  print("=== DATA-ATTR FACETS ===")
+                  for f in facet: print(f)
+
+                  txt = page.inner_text("body")[:2000]
+                  print("BODY_SNIPPET:", txt.replace("\n"," ")[:1200])
               except Exception as e:
                   print("search err:", e)
 
