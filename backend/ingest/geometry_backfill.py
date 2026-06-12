@@ -37,11 +37,16 @@ from backend.api.db import get_supabase_client
 # ──────────────────────────────────────────────────────────────────────
 MARKET_CONFIGS = {
     'WA_KING': {
-        # Geometry-only layer from KC GIS. Note: this is a DIFFERENT endpoint
-        # than the owner/value ingest source — this service exposes only
-        # OBJECTID, MAJOR, MINOR, PIN, and Shape. The PIN field here is a
-        # 10-char string that matches parcels_v3.pin.
-        'url':       'https://gismaps.kingcounty.gov/arcgis/rest/services/Property/KingCo_Parcels/MapServer/0/query',
+        # MIGRATION 2026-06-11: KC retired its legacy self-hosted GIS
+        # (gismaps/gisdata.kingcounty.gov, "RETIRING JUNE 1st, 2026" —
+        # post-retirement both hosts 503 datacenter clients). Successor is
+        # the ESRI-hosted PARCEL_ADDRESS_PUB_AREA_3069 layer on KC's AGOL
+        # org. PIN is the same 10-char string matching parcels_v3.pin;
+        # polygon geometry returned with outSR=4326 like the other markets.
+        'url': (
+            'https://services.arcgis.com/Ej0PsM5Aw677QF1W/arcgis/rest/'
+            'services/PARCEL_ADDRESS_PUB_AREA_3069/FeatureServer/0/query'
+        ),
         'pin_field': 'PIN',
     },
     'WA_SNOHOMISH': {

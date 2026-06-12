@@ -71,9 +71,20 @@ MARKET_CONFIGS = {
         # is_out_of_state. Owner name and full taxpayer mailing street
         # come from the separate eReal Property harvester (see Fix 3 —
         # ereal_property.py).
+        # MIGRATION 2026-06-11: KC RETIRED its legacy self-hosted GIS stack
+        # (gisdata.kingcounty.gov) on June 1, 2026 — every OpenDataPortal
+        # layer page carried a "RETIRING JUNE 1st, 2026" notice we missed.
+        # Post-retirement the old endpoint answers datacenter clients with
+        # 503s (and TLS resets), which masqueraded as a multi-day outage
+        # until challenged. The successor is KC's ESRI-HOSTED feature
+        # service (ArcGIS Online org Ej0PsM5Aw677QF1W), found via the AGOL
+        # sharing search API. Same schema (PIN, ADDR_FULL, ZIP5, KCTP_*,
+        # LAT/LON, APPR*), queryable by ZIP5, reachable from datacenter
+        # IPs (verified: 98115 -> 16,735 parcels from a cloud sandbox).
+        # maxRecordCount is 1000 (was 2000) — the pager handles it.
         'url': (
-            'https://gisdata.kingcounty.gov/arcgis/rest/services/'
-            'OpenDataPortal/property__parcel_address_area/MapServer/1722/query'
+            'https://services.arcgis.com/Ej0PsM5Aw677QF1W/arcgis/rest/'
+            'services/PARCEL_ADDRESS_PUB_AREA_3069/FeatureServer/0/query'
         ),
         'zip_field': 'ZIP5',
         'out_fields': (
