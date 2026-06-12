@@ -362,13 +362,11 @@ export default function TerritoryMap({
   }, [selected]);
 
   return (
-    <div style={STYLES.wrap}>
-      {/* Inline styles for Leaflet label and hover transitions. Component
-          is self-scoped via the `ts-` prefix. */}
-      <style>{INLINE_CSS}</style>
-
-      <div ref={mapEl} style={STYLES.map} />
-
+    <div>
+      {/* Metro switcher lives in normal flow ABOVE the map — as a map
+          overlay it collided with the legend + zoom control once metro
+          count hit 5 on phone widths (pills wrapped into a blob).
+          A scrollable flow bar scales to any number of metros. 2026-06-12. */}
       {metros.length > 1 && selectedMetro && (
         <MetroTabs
           metros={metros}
@@ -376,6 +374,13 @@ export default function TerritoryMap({
           onSelect={setSelectedMetro}
         />
       )}
+
+    <div style={STYLES.wrap}>
+      {/* Inline styles for Leaflet label and hover transitions. Component
+          is self-scoped via the `ts-` prefix. */}
+      <style>{INLINE_CSS}</style>
+
+      <div ref={mapEl} style={STYLES.map} />
 
       {polyError && (
         <div style={STYLES.errorBanner}>{polyError}</div>
@@ -408,6 +413,7 @@ export default function TerritoryMap({
           }}
         />
       )}
+    </div>
     </div>
   );
 }
@@ -709,12 +715,13 @@ const STYLES = {
 
   // ── Metro switcher pills (top-center, clear of Leaflet's top-left zoom) ──
   metroTabs: {
-    position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
-    display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 4,
-    zIndex: 600, padding: 4, borderRadius: 999,
+    display: 'flex', flexWrap: 'nowrap', gap: 4,
+    overflowX: 'auto', WebkitOverflowScrolling: 'touch',
+    padding: 4, marginBottom: 10, borderRadius: 999,
     background: 'var(--bg-card)', border: '1px solid var(--border)',
-    boxShadow: '0 4px 16px rgba(44,36,24,0.12)',
-    maxWidth: 'calc(100% - 24px)',
+    boxShadow: '0 2px 8px rgba(44,36,24,0.06)',
+    maxWidth: '100%', width: 'fit-content',
+    scrollbarWidth: 'none',
   },
   metroTab: {
     display: 'inline-flex', alignItems: 'center', gap: 7,
@@ -867,7 +874,7 @@ const STYLES = {
 
   // ── Legend ──
   legend: {
-    position: 'absolute', top: 16, left: 16, zIndex: 600,
+    position: 'absolute', bottom: 16, left: 16, zIndex: 600,
     display: 'flex', gap: 16, padding: '10px 14px',
     background: 'rgba(245,240,235,0.94)',
     border: '1px solid var(--border)', borderRadius: 4,
