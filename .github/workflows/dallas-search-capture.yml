@@ -233,8 +233,8 @@ jobs:
           print("=== API CALLS ===")
           for c in api_calls[-60:]:
               print(c["status"], c.get("method",""), c["url"])
-    if c.get("post"):
-        print("   POST:", c["post"][:400])
+              if c.get("post"):
+                  print("   POST:", c["post"][:400])
               if c["body"] and c["body"] != "<binary>":
                   print("   BODY:", c["body"][:400].replace("\n"," "))
           PYEOF
