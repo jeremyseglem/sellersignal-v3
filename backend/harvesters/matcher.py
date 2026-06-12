@@ -442,6 +442,7 @@ SOURCE_MARKET_SCOPE: dict = {
     'tx_dallas_recorder':   {'TX_DALLAS'},
     'tx_travis_recorder':   {'TX_TRAVIS'},
     'tx_collin_recorder':   {'TX_COLLIN'},
+    'ct_greenwich_recorder': {'CT_FAIRFIELD'},
     'tx_topics_citations':  {'TX_DALLAS', 'TX_TRAVIS', 'TX_COLLIN'},  # statewide feed; one entry per live TX market
 }
 
