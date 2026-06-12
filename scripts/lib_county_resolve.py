@@ -103,6 +103,55 @@ class CountyOwnerIndex:
                 idx._by_surname[t].append(rec)
         return idx
 
+    @classmethod
+    def from_tcad_roll(cls, roll_zip_path: str) -> "CountyOwnerIndex":
+        """Travis County loader — streams PROP.TXT (TrueProdigy Legacy
+        8.0.32 fixed-width) from the TCAD appraisal-roll export zip.
+        Same record shape as from_dcad_zip; acct = prop_id with leading
+        zeros stripped (matches parcels_v3.pin for TX_TRAVIS and the
+        EXTERNAL_tcad_parcel layer's PROP_ID). division='RES' for A* state
+        codes so resolve()'s RES-first ordering keeps working."""
+        F = {"prop_id": (1, 12), "owner": (609, 678),
+             "s_prefix": (1040, 1049), "s_street": (1050, 1099),
+             "s_suffix": (1100, 1109), "s_city": (1110, 1139),
+             "s_zip": (1140, 1149), "state_cd": (2732, 2741),
+             "s_num": (4460, 4474)}
+
+        def fx(line, k):
+            s, e = F[k]
+            return line[s - 1:e].strip()
+
+        idx = cls()
+        seen = set()
+        zf = zipfile.ZipFile(roll_zip_path)
+        with zf.open("PROP.TXT") as fh:
+            for raw in fh:
+                line = raw.decode("latin-1", "ignore")
+                owner = fx(line, "owner")
+                if not owner:
+                    continue
+                pid = fx(line, "prop_id").lstrip("0") or "0"
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                cd = fx(line, "state_cd").upper()
+                rec = {
+                    "acct": pid,
+                    "owner_name": owner,
+                    "address": " ".join(p for p in [fx(line, "s_num"),
+                                                    fx(line, "s_prefix"),
+                                                    fx(line, "s_street"),
+                                                    fx(line, "s_suffix")] if p),
+                    "city": fx(line, "s_city"),
+                    "zip": fx(line, "s_zip")[:5],
+                    "division": "RES" if cd.startswith("A") else (cd or "OTH"),
+                    "est_of": bool(re.search(r"\bEST(ATE)?\s+OF\b", owner.upper())),
+                }
+                idx.total += 1
+                for tok in set(_tokens(owner)):
+                    idx._by_surname[tok].append(rec)
+        return idx
+
     def resolve(self, decedent: str, max_hits: int = 5,
                 order: str = "first_last") -> list[dict]:
         """Return county parcels whose owner plausibly IS this decedent.

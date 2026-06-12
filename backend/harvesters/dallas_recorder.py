@@ -51,6 +51,9 @@ import urllib.parse
 from datetime import datetime, date, timedelta
 
 RESULTS_URL = "https://dallas.tx.publicsearch.us/results"
+# Overridable by county runners that reuse this platform-generic module
+# (e.g. run_travis_recorder.py sets RESULTS_URL + SOURCE_TYPE for Travis).
+SOURCE_TYPE = "tx_dallas_recorder"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
@@ -263,7 +266,7 @@ def to_signal_row(row: dict) -> dict | None:
                         "role": "personal_representative", "matchable": False})
 
     return {
-        "source_type": "tx_dallas_recorder",
+        "source_type": SOURCE_TYPE,
         "signal_type": sig,
         "trust_level": "high",
         "party_names": parties,

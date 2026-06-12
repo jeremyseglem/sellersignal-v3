@@ -1,0 +1,69 @@
+name: Travis Recorder
+
+# Harvests Dallas County recorded death/estate instruments (Affidavit of Death,
+# Executor's/PR/Administrator's Deed, Deed of Distribution, Transfer on Death)
+# from the neumo Official Records search and writes probate signals to
+# raw_signals_v3. Mirrors the Maricopa Recorder Action; uses a real browser
+# (Playwright) to clear the Cloudflare gate instead of OCR.
+#
+# Default is a DRY RUN. Set input write=1 (or the daily cron passes write=1)
+# to actually write. Secrets SUPABASE_URL + SUPABASE_SERVICE_KEY required to write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      days:
+        description: "lookback window in days"
+        required: false
+        default: "7"
+      chunk_days:
+        description: "sub-window size in days"
+        required: false
+        default: "2"
+  schedule:
+    # 7:30am America/Chicago (after overnight recordings post). 13:30 UTC.
+    - cron: "30 13 * * *"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Week key for DCAD cache
+        id: wk
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache TCAD appraisal roll (refreshed weekly)
+        id: dcad-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/tcad-roll.zip
+          key: tcad-roll-${{ steps.wk.outputs.week }}
+      - name: Download TCAD appraisal roll (county-wide decedent resolution)
+        if: steps.dcad-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sL --max-time 1500 --retry 3 --retry-delay 10 -C - \
+            -A "Mozilla/5.0" \
+            "https://traviscad.org/wp-content/largefiles/2026%20Preliminary%20Appraisal%20Export%20Supp%200_05262026.zip" \
+            -o /tmp/tcad-roll.zip
+          ls -la /tmp/tcad-roll.zip
+      - name: Run Dallas recorder
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # cron runs write=1; manual dispatch uses the input (default 0)
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          TCAD_ROLL: /tmp/tcad-roll.zip
+          DAYS: ${{ github.event.inputs.days || '7' }}
+          CHUNK_DAYS: ${{ github.event.inputs.chunk_days || '1' }}
+        run: python scripts/run_travis_recorder.py

@@ -79,13 +79,22 @@ def main():
     seen = existing_refs() if WRITE else set()
     s = requests.Session()
 
-    owner_index = None
+    # Per-county owner indexes. TOPICs is statewide — a citation must be
+    # resolved against ITS OWN county's roll, never another's (resolving a
+    # Travis decedent against the Dallas roll = guaranteed false positives).
+    # Counties without a loaded roll get no marker, so the matcher's fuzzy
+    # fallback still applies to them.
+    from lib_county_resolve import CountyOwnerIndex
+    owner_indexes = {}
     if DCAD_ZIP and os.path.exists(DCAD_ZIP):
-        from lib_county_resolve import CountyOwnerIndex
-        owner_index = CountyOwnerIndex.from_dcad_zip(DCAD_ZIP)
-        print(f"[topics] county owner index: {owner_index.total:,} accounts")
-    else:
-        print("[topics] no DCAD_ZIP — skipping county-wide resolution")
+        owner_indexes["Dallas"] = CountyOwnerIndex.from_dcad_zip(DCAD_ZIP)
+        print(f"[topics] Dallas owner index: {owner_indexes['Dallas'].total:,} accounts")
+    TCAD_ROLL = os.environ.get("TCAD_ROLL", "")
+    if TCAD_ROLL and os.path.exists(TCAD_ROLL):
+        owner_indexes["Travis"] = CountyOwnerIndex.from_tcad_roll(TCAD_ROLL)
+        print(f"[topics] Travis owner index: {owner_indexes['Travis'].total:,} accounts")
+    if not owner_indexes:
+        print("[topics] no county rolls — skipping county-wide resolution")
 
     edge = tc.find_live_edge(s, start_hint=EDGE_HINT)
     print(f"[topics] live edge id={edge}  cutoff pub_start>={cutoff}  "
@@ -125,6 +134,7 @@ def main():
         # resolved address (used downstream); resolved_parcels carries the
         # full list (live-ZIP hits power parcel-identity matching; non-live
         # hits are expansion intel).
+        owner_index = owner_indexes.get(rec.get("county") or "")
         if owner_index:
             sig["raw_data"]["county_resolution_ran"] = True
             resolved = owner_index.resolve(sig["raw_data"]["decedent"])

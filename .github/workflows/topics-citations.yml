@@ -49,6 +49,20 @@ jobs:
             "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5CDATA%20PRODUCTS%5CDCAD2026_CURRENT.ZIP" \
             -o /tmp/dcad2026.zip
           ls -la /tmp/dcad2026.zip
+      - name: Cache TCAD appraisal roll (refreshed weekly)
+        id: tcad-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/tcad-roll.zip
+          key: tcad-roll-${{ steps.wk.outputs.week }}
+      - name: Download TCAD appraisal roll (Travis county-wide resolution)
+        if: steps.tcad-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sL --max-time 1500 --retry 3 --retry-delay 10 -C - \
+            -A "Mozilla/5.0" \
+            "https://traviscad.org/wp-content/largefiles/2026%20Preliminary%20Appraisal%20Export%20Supp%200_05262026.zip" \
+            -o /tmp/tcad-roll.zip
+          ls -la /tmp/tcad-roll.zip
       - name: Run TOPICs citations harvester
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -56,4 +70,5 @@ jobs:
           WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
           SINCE_DAYS: ${{ github.event.inputs.since_days || '7' }}
           DCAD_ZIP: /tmp/dcad2026.zip
+          TCAD_ROLL: /tmp/tcad-roll.zip
         run: python -u scripts/run_topics_citations.py

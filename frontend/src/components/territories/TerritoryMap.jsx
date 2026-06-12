@@ -102,9 +102,16 @@ const POLY_HOVER_BOOST = {
 // polygons, so a metro view stays tight as long as its ZIPs are co-located.
 // If a future market adds a far-flung same-state cluster (e.g. Spokane), switch
 // this to key off market_key / county instead.
-const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix', TX: 'Dallas' };
+const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix' };
+// Texas spans two far-flung metros (Dallas + Austin, ~180 mi apart), so TX
+// groups by market_key instead of state — the failure mode the original
+// comment predicted ("if a future market adds a far-flung same-state
+// cluster, switch...").
+const MARKET_METRO_LABELS = { TX_DALLAS: 'Dallas', TX_TRAVIS: 'Austin' };
 
 function metroOf(z) {
+  const mk = z?.market_key || '';
+  if (MARKET_METRO_LABELS[mk]) return { key: mk, label: MARKET_METRO_LABELS[mk] };
   const st = z?.state || 'other';
   return { key: st, label: STATE_METRO_LABELS[st] || st };
 }

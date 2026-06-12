@@ -894,12 +894,17 @@ async def register_zip(
         market_key = "TX_DALLAS"
         if city is None:
             city = DALLAS_ZIP_TO_CITY[zip_code]
+    if zip_code in TRAVIS_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "TX_TRAVIS"
+        if city is None:
+            city = TRAVIS_ZIP_TO_CITY[zip_code]
 
     # Default city from the KC map for known KC ZIPs
     if city is None:
         city = (KC_ZIP_TO_CITY.get(zip_code)
                 or MARICOPA_ZIP_TO_CITY.get(zip_code)
-                or DALLAS_ZIP_TO_CITY.get(zip_code))
+                or DALLAS_ZIP_TO_CITY.get(zip_code)
+                or TRAVIS_ZIP_TO_CITY.get(zip_code))
         if city is None and market_key == "WA_KING":
             raise HTTPException(
                 400,
@@ -1158,6 +1163,13 @@ async def onboard_zip(
         if state == "WA":
             state = "TX"
 
+    # Travis County, TX — same auto-detect/opt-out shape.
+    is_travis = zip_code in TRAVIS_ZIP_TO_CITY
+    if is_travis and market_key == "WA_KING":
+        market_key = "TX_TRAVIS"
+        if state == "WA":
+            state = "TX"
+
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
     #   KC:        wa-king-{zip}-owners.json
@@ -1166,6 +1178,8 @@ async def onboard_zip(
     #   Dallas:    tx-dallas-{zip}-owners.json
     if is_maricopa:
         seed_prefix = "az-maricopa"
+    elif is_travis:
+        seed_prefix = "tx-travis"
     elif is_snohomish:
         seed_prefix = "wa-snohomish"
     elif is_dallas:
@@ -1552,6 +1566,15 @@ DALLAS_ZIP_TO_CITY = {
     "75201": "Dallas",      # Downtown/Uptown — polygon staged, not yet seeded
     "75220": "Dallas",
     "75229": "Dallas",
+}
+
+TRAVIS_ZIP_TO_CITY = {
+    "78746": "West Lake Hills",   # Westlake / Rob Roy
+    "78703": "Austin",            # Tarrytown / Pemberton Heights
+    "78730": "Austin",            # River Place
+    "78733": "Austin",            # Eanes / Cuernavaca
+    "78731": "Austin",            # Northwest Hills
+    "78735": "Austin",            # Barton Creek
 }
 
 

@@ -440,7 +440,8 @@ SOURCE_MARKET_SCOPE: dict = {
     'obituary_rss':         {'WA_KING', 'WA_SNOHOMISH'},  # WA-region obit sources
     'az_maricopa_recorder': {'AZ_MARICOPA'},
     'tx_dallas_recorder':   {'TX_DALLAS'},
-    'tx_topics_citations':  {'TX_DALLAS'},  # statewide feed; extend with TX markets
+    'tx_travis_recorder':   {'TX_TRAVIS'},
+    'tx_topics_citations':  {'TX_DALLAS', 'TX_TRAVIS'},  # statewide feed; one entry per live TX market
 }
 
 

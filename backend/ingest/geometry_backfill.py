@@ -49,6 +49,17 @@ MARKET_CONFIGS = {
         ),
         'pin_field': 'PIN',
     },
+    'TX_TRAVIS': {
+        # ESRI-hosted TCAD parcel layer (City of Austin publishes it). PROP_ID
+        # is the roll's prop_id with leading zeros stripped == parcels_v3.pin
+        # for Travis. Seed-time geometry covers ~74-97%; this config chases
+        # stragglers.
+        'url': (
+            'https://services.arcgis.com/0L95CJ0VTaxqcmED/arcgis/rest/'
+            'services/EXTERNAL_tcad_parcel/FeatureServer/0/query'
+        ),
+        'pin_field': 'PROP_ID',
+    },
     'WA_SNOHOMISH': {
         # Snohomish County public Parcels FeatureServer — same layer used
         # by backend/ingest/arcgis.py for the full Snohomish ingest. Returns
