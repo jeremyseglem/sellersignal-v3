@@ -166,6 +166,20 @@ jobs:
                       time.sleep(10)
                       try: page.wait_for_load_state("networkidle", timeout=12000)
                       except Exception: pass
+                  # SPA-router trick: if the form is degraded, push the
+                  # results URL through the client-side router instead.
+                  if "/results" not in page.url:
+                      target = ("/results?department=RP&keywordSearch=false"
+                                "&recordedDateRange=20260602%2C20260602"
+                                "&searchOcrText=false&searchType=quickSearch")
+                      page.evaluate("""u => {
+                          history.pushState({}, '', u);
+                          window.dispatchEvent(new PopStateEvent('popstate', {state: {}}));
+                      }""", target)
+                      print("pushState ->", target)
+                      time.sleep(10)
+                      try: page.wait_for_load_state("networkidle", timeout=12000)
+                      except Exception: pass
                   print("FINAL URL:", page.url)
                   body_txt = page.inner_text("body")[:600].replace("\n", " | ")
                   print("PAGE TEXT HEAD:", body_txt)
