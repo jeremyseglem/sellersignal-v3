@@ -96,6 +96,7 @@ def _to_int(v) -> int | None:
 
 
 _MARKET_STATE = {
+    "TX_COLLIN": "TX",
     'WA_KING':      'WA',
     'WA_SNOHOMISH': 'WA',
     'AZ_MARICOPA':  'AZ',

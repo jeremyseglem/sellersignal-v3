@@ -465,7 +465,7 @@ async def get_briefing(
                 parties_by_case = {}
 
         # Apply contact_status to each match in every overlay
-        _TX_SOURCES = {'tx_topics_citations', 'tx_dallas_recorder', 'tx_travis_recorder'}
+        _TX_SOURCES = {'tx_topics_citations', 'tx_dallas_recorder', 'tx_travis_recorder', 'tx_collin_recorder'}
         _CORP_PR_RE = _re.compile(
             r'\b(LLC|INC|CORP|CO|TRUST|BANK|INVESTMENTS?|PROPERTIES|HOLDINGS|'
             r'LLP|PLLC|PC|LAW|ATTORNEY|ESQ|GROUP|PARTNERS|CAPITAL)\b', _re.I)

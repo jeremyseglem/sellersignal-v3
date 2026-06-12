@@ -107,7 +107,7 @@ const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix' };
 // groups by market_key instead of state — the failure mode the original
 // comment predicted ("if a future market adds a far-flung same-state
 // cluster, switch...").
-const MARKET_METRO_LABELS = { TX_DALLAS: 'Dallas', TX_TRAVIS: 'Austin' };
+const MARKET_METRO_LABELS = { TX_DALLAS: 'Dallas', TX_TRAVIS: 'Austin', TX_COLLIN: 'Dallas' };
 
 function metroOf(z) {
   const mk = z?.market_key || '';

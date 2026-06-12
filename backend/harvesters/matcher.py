@@ -441,7 +441,8 @@ SOURCE_MARKET_SCOPE: dict = {
     'az_maricopa_recorder': {'AZ_MARICOPA'},
     'tx_dallas_recorder':   {'TX_DALLAS'},
     'tx_travis_recorder':   {'TX_TRAVIS'},
-    'tx_topics_citations':  {'TX_DALLAS', 'TX_TRAVIS'},  # statewide feed; one entry per live TX market
+    'tx_collin_recorder':   {'TX_COLLIN'},
+    'tx_topics_citations':  {'TX_DALLAS', 'TX_TRAVIS', 'TX_COLLIN'},  # statewide feed; one entry per live TX market
 }
 
 

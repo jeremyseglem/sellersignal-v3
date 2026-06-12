@@ -49,6 +49,16 @@ MARKET_CONFIGS = {
         ),
         'pin_field': 'PIN',
     },
+    'TX_COLLIN': {
+        # CCAD public Parcels FeatureServer (open-data hub). propID ==
+        # parcels_v3.pin for Collin. Seeds carry centroids (100%), so this
+        # config exists only for stragglers/repair.
+        'url': (
+            'https://services2.arcgis.com/uXyoacYrZTPTKD3R/arcgis/rest/'
+            'services/CCAD_Parcel_Feature_Set/FeatureServer/4/query'
+        ),
+        'pin_field': 'propID',
+    },
     'TX_TRAVIS': {
         # ESRI-hosted TCAD parcel layer (City of Austin publishes it). PROP_ID
         # is the roll's prop_id with leading zeros stripped == parcels_v3.pin
