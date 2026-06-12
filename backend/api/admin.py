@@ -1684,6 +1684,18 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "TX_DALLAS"
         city = DALLAS_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"tx-dallas-{zip_code}-owners.json"
+    elif zip_code in TRAVIS_ZIP_TO_CITY:
+        market_key = "TX_TRAVIS"
+        city = TRAVIS_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"tx-travis-{zip_code}-owners.json"
+    elif zip_code in COLLIN_ZIP_TO_CITY:
+        market_key = "TX_COLLIN"
+        city = COLLIN_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"tx-collin-{zip_code}-owners.json"
+    elif zip_code in CT_ZIP_TO_CITY:
+        market_key = "CT_FAIRFIELD"
+        city = CT_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"ct-fairfield-{zip_code}-owners.json"
     elif zip_code in SNO_ZIP_TO_CITY:
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
