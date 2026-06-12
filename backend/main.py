@@ -244,9 +244,14 @@ if os.path.isdir(FRONTEND_DIST):
 
     _INDEX_HTML = os.path.join(FRONTEND_DIST, "index.html")
 
+    # index.html must never be cached: it carries the hashed bundle name.
+    # A cached shell pins users to a stale bundle after deploys (bit us on
+    # mobile Safari 2026-06-12). Hashed /assets/* stay cacheable.
+    _NO_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
     @app.get("/")
     async def serve_root():
-        return FileResponse(_INDEX_HTML)
+        return FileResponse(_INDEX_HTML, headers=_NO_CACHE)
 
     # SPA catch-all: anything that isn't /api/*, /docs, /redoc, /openapi.json,
     # or a static asset falls through to here and gets the React entry point.
@@ -261,7 +266,7 @@ if os.path.isdir(FRONTEND_DIST):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         # For everything else (SPA routes like /zip/98004, /coverage, etc.)
         # serve the React app and let client-side routing take over.
-        return FileResponse(_INDEX_HTML)
+        return FileResponse(_INDEX_HTML, headers=_NO_CACHE)
 else:
     @app.get("/")
     async def root():

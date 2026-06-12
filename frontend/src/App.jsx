@@ -1,3 +1,4 @@
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { Routes, Route, Navigate } from 'react-router-dom';
 
 import HomePage            from './pages/HomePage.jsx';
@@ -43,6 +44,7 @@ import { useAuth } from './lib/AuthContext.jsx';
 // these as explicit props — the context is the source of truth.
 export default function App() {
   return (
+    <ErrorBoundary>
     <Routes>
       {/* Public marketing + auth */}
       <Route path="/"                element={<HomePage           />} />
@@ -109,6 +111,7 @@ export default function App() {
       {/* Catch-all */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </ErrorBoundary>
   );
 }
 
