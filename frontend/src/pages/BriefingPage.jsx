@@ -187,6 +187,9 @@ function BriefingBody() {
   const [mapData, setMapData]   = useState(null);
   const [selectedPin, setSelectedPin] = useState(null);
   const [dossier, setDossier]   = useState(null);
+  const [dossierLoading, setDossierLoading] = useState(false);
+  const [dossierError, setDossierError]     = useState(null);
+  const [dossierRetryNonce, setDossierRetryNonce] = useState(0);
   const [error, setError]       = useState(null);
 
   // UI state for left panel controls
@@ -289,11 +292,22 @@ function BriefingBody() {
 
   // Load dossier when a pin is selected
   useEffect(() => {
-    if (!selectedPin) { setDossier(null); return; }
+    if (!selectedPin) { setDossier(null); setDossierError(null); return; }
+    let stale = false;
+    setDossier(null); setDossierError(null); setDossierLoading(true);
     parcelsApi.get(selectedPin)
-      .then(setDossier)
-      .catch((e) => console.error('Failed to load dossier:', e));
-  }, [selectedPin]);
+      .then((d) => { if (!stale) setDossier(d); })
+      .catch((e) => {
+        // 2026-06-12: this used to console.error only — a failed fetch
+        // (e.g. transient 500s under worker contention) left the agent on
+        // a silently blank screen after the mobile tab auto-switch. Always
+        // render a visible state instead.
+        console.error('Failed to load dossier:', e);
+        if (!stale) setDossierError('Could not load this lead. Tap to retry.');
+      })
+      .finally(() => { if (!stale) setDossierLoading(false); });
+    return () => { stale = true; };
+  }, [selectedPin, dossierRetryNonce]);
 
   const handlePickLead = (pin) => {
     setSelectedPin(pin);
@@ -767,6 +781,22 @@ function BriefingBody() {
             selectedTags={selectedTags}
             onToggleTag={handleToggleTag}
           />
+        )}
+
+        {selectedPin && !dossier && (dossierLoading || dossierError) && (
+          <div
+            onClick={() => dossierError && setDossierRetryNonce((n) => n + 1)}
+            style={{
+              padding: '48px 24px', textAlign: 'center',
+              fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+              fontSize: 15, color: 'var(--text-secondary)',
+              cursor: dossierError ? 'pointer' : 'default',
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-md)', marginTop: 12,
+            }}
+          >
+            {dossierError || 'Opening the lead\u2026'}
+          </div>
         )}
 
         {selectedPin && dossier && (
