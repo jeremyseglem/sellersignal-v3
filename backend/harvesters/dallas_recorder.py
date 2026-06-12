@@ -299,7 +299,9 @@ def _clean(s: str) -> str:
 _ROW_RE = re.compile(
     r"(?P<grantor>.+?)\t(?P<grantee>.+?)\t(?P<doctype>[A-Z][A-Z '/&.-]+?)\t"
     r"(?P<recorded>\d{1,2}/\d{1,2}/20\d{2})\t(?P<docnum>\d{10,14})\t"
-    r"(?P<bvp>[^\t]*)\t(?P<town>[A-Z .]+?)\t(?P<legal>[^\n]*)"
+    # TOWN column exists on Dallas but NOT Collin (2026-06-12: Collin rows go
+    # bvp -> legal directly). Optional group keeps both tenants parseable.
+    r"(?P<bvp>[^\t]*)\t(?:(?P<town>[A-Z .]+?)\t)?(?P<legal>[^\n]*)"
 )
 
 
