@@ -112,6 +112,42 @@ jobs:
                           date_inputs = page.query_selector_all(
                               "input[placeholder*='date' i], input[aria-label*='date' i], input[type='date']")
                           print(f"date inputs after toggle: {len(date_inputs)}")
+                          # The popup likely holds PRESET options (no inputs).
+                          # Dump its full text + every clickable inside it.
+                          pop = page.query_selector("[class*='popup']")
+                          if pop:
+                              print("=== POPUP TEXT ===")
+                              print(pop.inner_text()[:500].replace("\n", " | "))
+                              clickables = pop.query_selector_all("button, li, label, a, [role=option], [role=radio]")
+                              print(f"popup clickables: {len(clickables)}")
+                              for c in clickables[:20]:
+                                  try:
+                                      print("  ", c.evaluate("e => e.tagName"), "|",
+                                            (c.inner_text() or "")[:40], "|",
+                                            c.get_attribute("class") or "")
+                                  except Exception:
+                                      pass
+                              # Try selecting a custom-range option if present
+                              for needle in ("Custom", "custom", "Date Range", "Specific"):
+                                  cand = pop.query_selector(f"text={needle}")
+                                  if cand:
+                                      try:
+                                          cand.click(force=True)
+                                          print("clicked popup option:", needle)
+                                          time.sleep(2)
+                                          break
+                                      except Exception as ex:
+                                          print("popup option click failed:", str(ex)[:60])
+                              date_inputs = page.query_selector_all(
+                                  "input[placeholder*='date' i], input[aria-label*='date' i], input[type='date']")
+                              print(f"date inputs after popup option: {len(date_inputs)}")
+                              allinp = page.eval_on_selector_all("input", """els => els.map(e => ({
+                                  id: e.id || '', ph: e.placeholder || '',
+                                  aria: e.getAttribute('aria-label') || '', val: (e.value||'').slice(0,12),
+                                  vis: !!(e.offsetWidth || e.offsetHeight)}))""")
+                              print("ALL INPUTS NOW:")
+                              for e in allinp:
+                                  if e.get("vis"): print("  ", _json.dumps(e))
                   if len(date_inputs) >= 2:
                       date_inputs[0].fill("06/02/2026")
                       date_inputs[1].fill("06/02/2026")
