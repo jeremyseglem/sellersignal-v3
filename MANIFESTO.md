@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-06-11 (Dallas County TX live — 3rd state. Recorder harvester via headless browser clears Cloudflare; 75205/75225/75230 onboarded; 61 live ZIPs)
+**Last updated:** 2026-06-12 evening (85 live territories / 6 markets. Collin County TX launched + recorder live; 9-ZIP expansion wave; canon worker-saturation root-caused and fixed; blank-lead-page resolved; Maricopa county inversion shipped)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -14,7 +14,7 @@ These apply to every Claude session. Non-negotiable.
 2. Never assume; never invent data. Reference this manifesto and the build journal before proposing anything.
 3. Direct answers, no hedging, no emojis. When wrong, own it without spiraling.
 4. "Building" is jargon — use plain English ("in pipeline", "on watch list").
-5. Don't drift from the working code path. The 61 live ZIPs across 4 markets (WA_KING, AZ_MARICOPA, WA_SNOHOMISH, TX_DALLAS) are the standard; match against them.
+5. Don't drift from the working code path. The 85 live territories across 6 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN) are the standard; match against them.
 6. Skip-trace and Lob letter sending are NOT wired for beta (placeholder buttons).
 7. Brian is co-founder for product validation discussions.
 
@@ -28,9 +28,9 @@ An AI-powered intelligence platform for luxury real estate agents in defined ZIP
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
-**Geographic scope:** **61 live ZIPs across 4 markets** as of 2026-06-11: King County WA (32), Maricopa County AZ (20), Snohomish County WA (6), Dallas County TX (3). Bozeman MT (Jeremy's actual market) is on the post-launch roadmap.
+**Geographic scope:** **85 live territories across 6 markets** as of 2026-06-12: King County WA (32), Snohomish County WA (6), Maricopa County AZ (24), Dallas County TX (9), Travis County TX (9), Collin County TX (5). Bozeman MT (Jeremy's actual market) is on the post-launch roadmap.
 
-### Current 26 live ZIPs
+### WA_KING live ZIPs (32; other markets listed in Live measurements below)
 
 ```
 Bellevue:       98004, 98005, 98006, 98007
@@ -46,24 +46,26 @@ Seattle:        98103, 98105, 98112, 98115, 98117, 98119, 98136, 98199
 Snohomish:      98290 (cross-county pilot, separate market_key WA_SNOHOMISH)
 ```
 
-### Live measurements (snapshot 2026-06-11)
+### Live measurements (snapshot 2026-06-12 evening)
 ```
-total live ZIPs:    61
+total live territories: 85
   WA_KING:      32   (King County, WA — the original market)
-  AZ_MARICOPA:  20   (Scottsdale/Phoenix area; Recorder OCR harvester, Phase 2)
   WA_SNOHOMISH:  6   (Edmonds + Lake Stevens; daily-report harvester)
-  TX_DALLAS:     3   (Park Cities + Preston Hollow — NEW 2026-06-11)
-                       75205 Highland Park (7,057 parcels, median $2.20M)
-                       75225 University Park (7,796 parcels, median $2.18M)
-                       75230 Preston Hollow  (10,112 parcels, median $1.13M)
-Dallas signal source: tx_dallas_recorder (Affidavit of Heirship = primary TX
-  death->title instrument; ~2% of daily recordings; first live write 80 signals
-  for 05/25–06/01 window). Matching queued behind the WA drain (rematch_autofill
-  scopes to the OLDEST unmatched signal's market; Dallas signals are newest so
-  they match once the WA backlog clears — no intervention needed).
+  AZ_MARICOPA:  24   (Scottsdale/Phoenix; Recorder OCR harvester + county inversion;
+                      today's adds: 85016 Biltmore, 85251 Old Town Scottsdale,
+                      85012 Central Corridor, 85250 McCormick Ranch)
+  TX_DALLAS:     9   (Park Cities/Preston Hollow cluster; today's adds: 75244, 75206 M Streets)
+  TX_TRAVIS:     9   (Austin; today's adds: 78738 Lakeway, 78732 Steiner Ranch, 78704 Travis Heights)
+  TX_COLLIN:     5   (NEW today: 75093 Plano West, 75034 Frisco SW, 75078 Prosper,
+                      75069 McKinney, 75013 Allen — 53,332 parcels, 1,647 leads,
+                      100% geometry at seed time via CCAD centroids)
 
-NOTE: an earlier snapshot in this file said "29 live" — stale. 61 is correct
-  (verified against GET /api/coverage?include_in_development=true 2026-06-11).
+Today's expansion wave totals: 14 ZIPs, ~4,668 structural Contact Now leads
+(wave 1: 9 ZIPs / 3,021 leads; wave 2 Collin: 5 ZIPs / 1,647 leads).
+TX signal sources: tx_dallas_recorder (live, daily cron), tx_travis_recorder
+(blocked on UI panel-open, TOPICs covers Travis daily), tx_collin_recorder
+(LIVE 2026-06-12 — first run 5,417 grid rows / 34 estate instruments / 13
+county-resolved / 34 signals written; daily cron 7:50am CT).
 ```
 
 ---
@@ -504,6 +506,30 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-06-12 (cont.) — Expansion wave, Collin County launch, canon root-cause fix, blank-page saga, Maricopa inversion, Collin recorder live
+
+**Canon worker saturation — ROOT-CAUSED AND PERMANENTLY FIXED (commit `ae7b05a`).** The two site-wide outage-like slowdowns traced to `_fetch_existing_pins` in `backend/ingest/backfill_owner_canonical.py`: it pulled the ENTIRE `owner_canonical_v3` table (600K+ rows = 600+ sequential 1000-row queries) on EVERY canon tick — including idle sweeps — because the original was written when one 6K-parcel ZIP existed ("For a 6K-parcel ZIP this is trivial," said the comment). Rewritten to per-ZIP pin-membership `.in_()` queries (400/chunk; the caller already holds the ZIP's pin list). Proven under maximum load: canon actively canonicalizing 75013's 14,924 parcels while production health held at 0.13–0.8s (vs 21–30s timeouts that morning). **Canon stays ON permanently — no env gate, no pause-during-onboarding needed.** En route: a broken push (`403c26a`) briefly shipped a corrupted file — reverted within ~90s (`5814dc8`), prod stayed up. Sandbox lesson logged: a failed python heredoc inside a multi-line bash block does NOT stop subsequent separate-line commands; verify syntax before commit lands in the same block.
+
+**Blank-lead-page saga — RESOLVED (commits `e19137d`, `90cf2a4`, `182c13e`).** Root cause via the new ErrorBoundary screenshot + source-map resolution: Leaflet initialized inside the hidden mobile map tab (zero-size container) → NaN map transform → the first flyTo on lead-click threw `Invalid LatLng (NaN,NaN)` and blanked the React tree. Fixed: MapPanel calls `invalidateSize()` before flyTo, try/catch with setView fallback, guarded fitBounds. Permanent infrastructure added en route: top-level `ErrorBoundary.jsx` (blank screens now show the error + reload button), `Cache-Control: no-cache` on index.html in backend/main.py (kills stale-shell pinning — the class of "works after hard refresh" reports), and dossier-fetch loading/"tap to retry" states in BriefingPage.
+
+**Maricopa county inversion shipped (commits `0ea9644`, `1c4dc27`, `13b93ba`).** Mirrors the TX pattern: `scripts/build_maricopa_county_roll.py` pulls the full Assessor MapServer county-wide (1,758,095 parcels → gzip CSV: apn/owner_name/address/zip/city/puc), `CountyOwnerIndex.from_maricopa_roll` loads it (acct=APN_DASH; RES = puc startswith '01' — Maricopa residential PUC is 01xx, fixed in `13b93ba`), `run_maricopa_recorder.py` gained a resolution post-pass + `RESOLVE_BACKFILL=1` mode to re-resolve historical signals, weekly roll cache in maricopa-recorder.yml (timeout 110min). Pre-inversion truth: only 4 real AZ probate Contact Now leads platform-wide; AZ/TX divorce=0 is structural (no court divorce source in those markets). **Backfill run still in flight at session close** — close-out when it lands: `rematch-reset-scoped?source_type=az_maricopa_recorder&signal_type=probate&confirm=true` → `/rematch-autofill-trigger` → refresh all 24 AZ counts → report real probate numbers.
+
+**Territory map fixes (commits `76cebdf`, `d9ef74e`).** territory-status endpoint omitted `market_key` from both record dicts — the frontend grouped ALL TX ZIPs into one zoomed-out "Texas" tab. Fixed + TX_COLLIN groups under the 'Dallas' metro tab (MARKET_METRO_LABELS). Mobile: metro pills moved from an absolute overlay to a normal-flow horizontally-scrollable bar above the map; legend bottom-left.
+
+**Expansion wave 1 — 9 ZIPs, 3,021 leads.** All value-screened from local rolls before onboarding. Travis: 78738 Lakeway (331), 78732 Steiner Ranch (307), 78704 Travis Heights (396 — seed geometry only 55.4%, urban condos missing from EXTERNAL_tcad_parcel; geometry-backfill candidate). Dallas: 75244 (172), 75206 M Streets (332). Maricopa: 85016 Biltmore (386), 85251 Old Town Scottsdale (400 — all caps maxed), 85012 Central Corridor (316), 85250 McCormick Ranch (381). Maricopa ArcGIS screen gotchas worth keeping: FCV_CUR is a STRING (CAST(FCV_CUR AS INTEGER) in where clauses), PHYSICAL_ZIP needs quotes, residential = PUC LIKE '01%'. Next-up candidates banked: Maricopa central-corridor cluster 85020/85021/85013/85014; Collin 75002 Allen East (3,546 $1M+ parcels).
+
+**Collin County (TX) — 6th market launched. 5 ZIPs, 53,332 parcels, 1,647 leads.** Seeds from the CCAD public FeatureServer (`scripts/build_collin_owners.py`; services2.arcgis.com/uXyoacYrZTPTKD3R/.../CCAD_Parcel_Feature_Set/FeatureServer/4; pin = propID; res filter propCategoryCode LIKE 'A%'; **returnCentroid=true rides geometry in the seed — 100% map coverage at seed time, no backfill step**, a first). Query gotcha: CCAD's layer silently returns 0 rows for LIKE+AND combos — use equality `situsZip = 'X'`. Scaffolding: COLLIN_ZIP_TO_CITY + auto-detect (admin.py), `_MARKET_STATE` TX_COLLIN→TX, geometry config (pin_field propID), matcher SOURCE_MARKET_SCOPE tx_collin_recorder→{TX_COLLIN} + tx_topics_citations += TX_COLLIN, briefings `_TX_SOURCES` += tx_collin_recorder, TOPICs COUNTY_MARKETS "Collin"→TX_COLLIN + COLLIN_ROLL index in the runner, TIGERweb polygons (use tigerWMS_Current/MapServer/2 — the PUMA/TAD/TAZ service's layer 2 became an ACS group and no longer works). `scripts/build_collin_county_roll.py` deliberately emits the MARICOPA CSV SCHEMA so `from_maricopa_roll` serves both counties — one loader, two markets. Onboarding note: biggest ZIPs needed up to ~8 orchestrator re-fires through transient httpx disconnects (each retry advances one step; expected behavior).
+
+**Collin recorder LIVE — the UI_DRIVE saga (commits `5cbfe67`→`54fdd0f`).** collin.tx.publicsearch.us and travis.tx.publicsearch.us run a NEWER frontend generation that does NOT auto-execute /results URL-param searches on direct page load (Dallas still does — 7,371 grid rows on yesterday's cron). Solution: **UI_DRIVE mode** in the shared dallas_recorder module (flag default False; Travis/Collin runners set `dr.UI_DRIVE=True` + `dr.HOME_URL`) — `_ui_drive_search` goes to the home page, dismisses the announcement banner, fills the aria-labeled Starting/Ending Recorded Date inputs (M/D/YYYY), and clicks the Search submit; the existing grid-read + pagination takes over. Three distinct bugs found en route, all proven by an instrumented interactive-capture workflow (dallas-search-capture.yml gained host + keyword inputs, control dumps, and post-click URL/body diagnostics):
+  1. `extract_grid_text` grabbed the FIRST `<table>` (Collin has an earlier empty utility table) — now selects the table containing the GRANTOR header, longest-table fallback, body fallback.
+  2. Virtualized grids split header and data tables — added a parse-body-text fallback in iter_window_rows when the table parse yields 0.
+  3. **The decisive one, found by running the real parser LOCALLY on the capture's exact body text instead of iterating workflow runs:** `_ROW_RE` required a TOWN column between BOOK/VOLUME/PAGE and LEGAL that Dallas has but Collin doesn't. Made the town group optional; proven locally against both tenant shapes before dispatch (`54fdd0f`).
+First full run (days=14, write=1): **5,417 grid rows, 34 estate instruments with NAMED PERSONAL REPRESENTATIVES** (e.g. decedent HODGES KENNETH E → PR HODGES BETTY S), 13/34 county-resolved against the 429,742-account CCAD index, 34 signals written. Daily cron 7:50am CT. Empty keyword = full grid (968 docs/day observed); 05/23-24 zero rows = Memorial Day weekend, legit. **METHODOLOGY LESSON (standing): when a remote parse/extract fails and a ground-truth sample exists in captured output, run the real function on it locally FIRST — the regex bug was findable locally all along and cost 4 workflow iterations before the local test found it in one.**
+
+**The pre-canon race consumed the Collin signals (open at session close).** The rematch task processed all 34 Collin signals at 16:26 against a market whose canonicalization hadn't run yet (75093 canon=0%) → matched_at set, match_count=0, signals consumed. Third occurrence of the "matched once pre-canon = permanently consumed" pattern (Snohomish 2026-05-19, Travis 2026-06-11). Close-out once canon clears all 5 Collin ZIPs (in flight, ~hours): `rematch-reset-scoped?source_type=tx_collin_recorder&signal_type=probate&confirm=true` → `/rematch-autofill-trigger` → refresh 5 Collin counts. Worth a structural fix eventually (e.g., matcher skips markets with canon < threshold instead of consuming); scoped reset handles it operationally. Also observed: one transient ReadError made the rematch task LOOK frozen for 30+ min (it had actually completed server-side and gone idle on its 1-hour interval); `/match-only` is no longer usable at 85 territories (global owner load — predates multi-market scoping).
+
+**Still open from today:** Travis recorder panel-open (date inputs collapsed behind `#date-range-select`; click chain incl. JS dispatch not expanding it — interactive capture iteration in flight; non-blocking, TOPICs covers Travis daily). Maricopa backfill close-out (above). Travis parcels carry state='WA' internally (cosmetic repair pass queued). 78704 geometry backfill. PAT rotation (exposed in chat again). `/api/parcels` returns 200 unauthenticated (noticed, unaddressed). 85260 lead flapping (may be moot post-canon-fix).
 
 ### 2026-06-12 — KC GIS migration, Dallas build-out, Travis County (Austin) launch
 
