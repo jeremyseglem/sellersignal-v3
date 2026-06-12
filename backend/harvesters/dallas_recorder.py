@@ -51,6 +51,15 @@ import urllib.parse
 from datetime import datetime, date, timedelta
 
 RESULTS_URL = "https://dallas.tx.publicsearch.us/results"
+# Newer neumo tenants (Travis, Collin — 2026-06-12) do NOT auto-execute a
+# search from /results URL params on direct page load; the search only fires
+# via client-side navigation. UI_DRIVE=True makes iter_window_rows drive the
+# real search form (aria-labeled date inputs + Search submit) instead of a
+# direct URL load. Confirmed working via interactive capture on Collin:
+# fill Starting/Ending Recorded Date, click Search -> grid renders with the
+# same column structure the Dallas parser reads. Dallas keeps URL mode.
+UI_DRIVE = False
+HOME_URL = "https://dallas.tx.publicsearch.us/"
 # Overridable by county runners that reuse this platform-generic module
 # (e.g. run_travis_recorder.py sets RESULTS_URL + SOURCE_TYPE for Travis).
 SOURCE_TYPE = "tx_dallas_recorder"
@@ -130,13 +139,36 @@ def _click_next(page) -> bool:
     return False
 
 
+def _ui_drive_search(page, begin: date, end: date):
+    """Drive the real search UI for tenants that don't auto-execute URL
+    searches. Fills the recorded-date range and clicks Search; leaves the
+    keyword box empty so the full grid (all doc types) comes back, exactly
+    like Dallas's keyword-less URL search."""
+    page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60000)
+    time.sleep(6)
+    start_el = page.query_selector("input[aria-label='Starting Recorded Date']")
+    end_el = page.query_selector("input[aria-label='Ending Recorded Date']")
+    if not (start_el and end_el):
+        raise RuntimeError("UI_DRIVE: date inputs not found on search page")
+    start_el.fill(begin.strftime("%m/%d/%Y"))
+    end_el.fill(end.strftime("%m/%d/%Y"))
+    btn = page.query_selector("button[aria-label='Search']")
+    if not btn:
+        raise RuntimeError("UI_DRIVE: Search button not found")
+    btn.click()
+    time.sleep(8)
+
+
 def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
                      polite_delay: float = 1.2):
     """Yield parsed rows across all pages of a recorded-date window by clicking
     neumo's next-page control until the first doc number stops changing.
     """
-    page.goto(_results_url(begin, end), wait_until="domcontentloaded", timeout=60000)
-    time.sleep(8)
+    if UI_DRIVE:
+        _ui_drive_search(page, begin, end)
+    else:
+        page.goto(_results_url(begin, end), wait_until="domcontentloaded", timeout=60000)
+        time.sleep(8)
     try:
         page.wait_for_load_state("networkidle", timeout=12000)
     except Exception:

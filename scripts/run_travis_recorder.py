@@ -19,6 +19,8 @@ import dallas_recorder as dr  # noqa: E402
 # Point the shared neumo-platform module at the Travis subdomain. Everything
 # else (grid iteration, doc-type needles, to_signal_row) is platform-generic.
 dr.RESULTS_URL = "https://travis.tx.publicsearch.us/results"
+dr.HOME_URL = "https://travis.tx.publicsearch.us/"
+dr.UI_DRIVE = True  # this tenant does not auto-execute URL searches
 dr.SOURCE_TYPE = "tx_travis_recorder"
 
 import requests  # noqa: E402
