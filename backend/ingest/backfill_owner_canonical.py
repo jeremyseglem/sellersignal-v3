@@ -59,24 +59,41 @@ def _fetch_all_parcels(supa, zip_code: str, page: int = 1000) -> list[dict]:
     return out
 
 
-def _fetch_existing_pins(supa, zip_code: str, page: int = 1000) -> set[str]:
-    """Return the set of PINs that already have a canonical row."""
+def _fetch_existing_pins(supa, zip_code: str, page: int = 1000,
+                         zip_pins: list[str] | None = None) -> set[str]:
+    """Return the set of this ZIP's PINs that already have a canonical row.
+
+    2026-06-12 rewrite: the original pulled the ENTIRE owner_canonical_v3
+    table (600K+ rows at 85 territories = 600+ sequential queries) on every
+    call — including the canon-autofill idle sweep's per-tick call — and was
+    the root cause of the single-worker saturation that took the site down
+    for users twice today. owner_canonical_v3 has no zip_code column, but
+    the caller already holds this ZIP's pin list — query membership for
+    just those pins in chunks instead.
+    """
     out: set[str] = set()
-    offset = 0
-    while True:
-        # We don't have zip_code on owner_canonical_v3, so we have to
-        # filter by PINs present in parcels_v3 for this ZIP. Simplest:
-        # just pull all canonical rows and intersect. For a 6K-parcel
-        # ZIP this is trivial.
+    if zip_pins is None:
+        # Legacy fallback (no pin list provided): full-table scan as before.
+        offset = 0
+        while True:
+            res = (supa.table('owner_canonical_v3')
+                   .select('pin')
+                   .range(offset, offset + page - 1)
+                   .execute())
+            batch = res.data or []
+            out.update(r['pin'] for r in batch)
+            if len(batch) < page:
+                break
+            offset += page
+        return out
+    CHUNK = 400  # keeps the in_() URL well under request-size limits
+    for i in range(0, len(zip_pins), CHUNK):
+        chunk = zip_pins[i:i + CHUNK]
         res = (supa.table('owner_canonical_v3')
                .select('pin')
-               .range(offset, offset + page - 1)
+               .in_('pin', chunk)
                .execute())
-        batch = res.data or []
-        out.update(r['pin'] for r in batch)
-        if len(batch) < page:
-            break
-        offset += page
+        out.update(r['pin'] for r in (res.data or []))
     return out
 
 
@@ -129,7 +146,8 @@ def backfill_zip(zip_code: str, dry_run: bool = False,
         return stats
 
     if not force:
-        existing = _fetch_existing_pins(supa, zip_code)
+        existing = _fetch_existing_pins(
+            supa, zip_code, zip_pins=[p['pin'] for p in parcels])
         before = len(parcels)
         parcels = [p for p in parcels if p['pin'] not in existing]
         stats['already_done'] = before - len(parcels)
