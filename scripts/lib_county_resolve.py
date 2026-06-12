@@ -181,7 +181,7 @@ class CountyOwnerIndex:
                     "address": address,
                     "city": city,
                     "zip": zc,
-                    "division": "RES" if puc.startswith("1") else (puc or "OTH"),
+                    "division": "RES" if puc.startswith(("01", "1")) else (puc or "OTH"),  # Maricopa res PUC is 01xx
                     "est_of": bool(re.search(r"\bEST(ATE)?\s+OF\b", owner.upper())),
                 }
                 idx.total += 1
