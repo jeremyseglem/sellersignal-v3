@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       host:
-        description: "publicsearch subdomain (dallas | travis)"
+        description: "publicsearch subdomain (dallas | travis | collin)"
         required: false
         default: "dallas"
+      keyword:
+        description: "search keyword to type (empty = leave box blank)"
+        required: false
+        default: ""
 
 jobs:
   cap:
@@ -82,9 +86,11 @@ jobs:
                   elif len(date_inputs) == 1:
                       date_inputs[0].fill("06/02/2026")
                   # main search box may be required — type a wildcard-ish term
+                  kw = "${{ github.event.inputs.keyword }}"
                   main = page.query_selector("input[type='search'], input[placeholder*='search' i]")
-                  if main:
-                      main.fill("deed")
+                  print("keyword box:", bool(main), "| filling:", repr(kw))
+                  if main and kw:
+                      main.fill(kw)
                   btn = page.query_selector("button:has-text('Search'), [role=button]:has-text('Search')")
                   print("search button:", bool(btn))
                   if btn:
