@@ -60,9 +60,11 @@ jobs:
         run: |
           curl -sL --max-time 1500 --retry 3 --retry-delay 10 -C - \
             -A "Mozilla/5.0" \
-            "https://traviscad.org/wp-content/largefiles/2026%20Preliminary%20Appraisal%20Export%20Supp%200_05262026.zip" \
+            "https://github.com/jeremyseglem/sellersignal-v3/releases/download/data-tcad-2026/tcad-roll-2026.zip" \
             -o /tmp/tcad-roll.zip
           ls -la /tmp/tcad-roll.zip
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/tcad-roll.zip').namelist()" \
+            || { echo "::error::TCAD roll download is not a valid zip"; rm -f /tmp/tcad-roll.zip; exit 1; }
       - name: Run TOPICs citations harvester
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
