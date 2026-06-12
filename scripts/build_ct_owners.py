@@ -96,11 +96,20 @@ def point_in_geom(x, y, geom) -> bool:
 
 
 def classify_owner_type(name: str) -> str:
+    """Four-way taxonomy the bucket selector keys on: trust / llc /
+    company / individual. Greenwich is trust country — CT deeds carry
+    TRUST / TRUSTEE(S) / TR / REV TRUST / LIVING TRUST markers heavily."""
     n = f" {(name or '').upper()} "
-    company_markers = (" LLC", " L L C", " INC", " CORP", " TRUST", " TR ",
-                       " TRS ", " TRUSTEE", " LP ", " LLP", " LTD", " CO ",
-                       " COMPANY", " PARTNERS", " ASSOCIATES", " HOLDINGS",
-                       " BANK", " CHURCH", " TOWN OF ", " STATE OF ")
+    if any(m in n for m in (" TRUST", " TRUSTEE", " TRUSTEES", " TRS ",
+                            " TR ", " REVOCABLE", " IRREVOCABLE",
+                            " LIVING TR", " FAMILY TR")):
+        return "trust"
+    if any(m in n for m in (" LLC", " L L C", " LP ", " LLP", " LTD")):
+        return "llc"
+    company_markers = (" INC", " CORP", " CO ", " COMPANY", " PARTNERS",
+                       " ASSOCIATES", " HOLDINGS", " BANK", " CHURCH",
+                       " TOWN OF ", " STATE OF ", " CONDOMINIUM", " ASSN",
+                       " ASSOCIATION")
     return "company" if any(m in n for m in company_markers) else "individual"
 
 
