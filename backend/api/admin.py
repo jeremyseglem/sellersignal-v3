@@ -1135,6 +1135,8 @@ async def onboard_zip(
             KC_ZIP_TO_CITY.get(zip_code)
             or SNO_ZIP_TO_CITY.get(zip_code)
             or MARICOPA_ZIP_TO_CITY.get(zip_code)
+            or DALLAS_ZIP_TO_CITY.get(zip_code)
+            or TRAVIS_ZIP_TO_CITY.get(zip_code)
             or "Bellevue"
         )
 
@@ -1153,21 +1155,21 @@ async def onboard_zip(
     is_maricopa = zip_code in MARICOPA_ZIP_TO_CITY
     if is_maricopa and market_key == "WA_KING":
         market_key = "AZ_MARICOPA"
-        if state == "WA":
+        if state in (None, "WA"):
             state = "AZ"
 
     # Dallas County, TX — same auto-detect/opt-out shape.
     is_dallas = zip_code in DALLAS_ZIP_TO_CITY
     if is_dallas and market_key == "WA_KING":
         market_key = "TX_DALLAS"
-        if state == "WA":
+        if state in (None, "WA"):
             state = "TX"
 
     # Travis County, TX — same auto-detect/opt-out shape.
     is_travis = zip_code in TRAVIS_ZIP_TO_CITY
     if is_travis and market_key == "WA_KING":
         market_key = "TX_TRAVIS"
-        if state == "WA":
+        if state in (None, "WA"):
             state = "TX"
 
     # Verify the seed JSON is in place — fail-fast before kicking off.

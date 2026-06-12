@@ -29,11 +29,23 @@ from pathlib import Path
 def _derive_flags(parcel: dict) -> dict:
     """Compute is_absentee, is_out_of_state from parcel data where possible.
 
+    2026-06-12: when the SEED itself carries explicit is_absentee /
+    is_out_of_state (Dallas + Travis builders compute them against the real
+    situs state), trust the seed — deriving here against row['state'] burned
+    us when a missing ?state= param defaulted the row to WA and flagged
+    7,573 of 8,536 Travis parcels (every TX-resident owner) absentee.
+
     When the seed carries owner_state (mailing state — AZ seeds do as of
     2026-06-10), is_out_of_state is computed against the parcel's own
     situs state. Seeds without owner_state (legacy KC/SNO shape) keep the
     bootstrap False defaults; reingest-property-details sets them later.
     """
+    if parcel.get('_seed_is_absentee') is not None:
+        return {
+            'is_absentee':     bool(parcel.get('_seed_is_absentee')),
+            'is_out_of_state': bool(parcel.get('_seed_is_out_of_state')),
+            'is_vacant_land':  False,
+        }
     owner_state = (parcel.get('owner_state') or '').strip().upper()
     home_state = (parcel.get('state') or '').strip().upper()
     if owner_state and home_state:
@@ -147,6 +159,9 @@ def load_parcels_from_json(
         owner_city = (p.get('owner_city') or '').strip()
         if owner_city:
             row['owner_city'] = owner_city
+        if p.get('is_absentee') is not None:
+            row['_seed_is_absentee'] = p.get('is_absentee')
+            row['_seed_is_out_of_state'] = p.get('is_out_of_state')
         if p.get('lat') is not None and p.get('lng') is not None:
             try:
                 row['lat'] = float(p['lat'])
@@ -154,6 +169,8 @@ def load_parcels_from_json(
             except (TypeError, ValueError):
                 pass
         row.update(_derive_flags(row))
+        row.pop('_seed_is_absentee', None)
+        row.pop('_seed_is_out_of_state', None)
         rows.append(row)
 
     return rows
