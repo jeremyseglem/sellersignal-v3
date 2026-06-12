@@ -41,14 +41,24 @@ jobs:
               page = ctx.new_page()
 
               def on_resp(resp):
-                  u = resp.url
-                  if "/api/" in u or "search" in u.lower() or "document" in u.lower() or "graphql" in u.lower():
-                      if "publicsearch.us/" in u and not any(u.endswith(e) for e in [".css",".js",".svg",".png",".jpg",".woff",".woff2"]):
-                          try:
-                              body = resp.text()[:1200]
-                          except Exception:
-                              body = "<binary>"
-                          api_calls.append({"status":resp.status,"url":u[:300],"body":body})
+                  # Capture real API traffic only: xhr/fetch resource types.
+                  # (The old substring filter matched "search" in the HOSTNAME
+                  # publicsearch.us, flooding the buffer with assets and
+                  # pushing the actual search XHR out of the tail window.)
+                  try:
+                      rt = resp.request.resource_type
+                  except Exception:
+                      rt = ""
+                  if rt in ("xhr", "fetch"):
+                      try:
+                          body = resp.text()[:1500]
+                      except Exception:
+                          body = "<binary>"
+                      api_calls.append({"status": resp.status,
+                                        "method": resp.request.method,
+                                        "url": resp.url[:300],
+                                        "post": (resp.request.post_data or "")[:500],
+                                        "body": body})
               page.on("response", on_resp)
 
               page.goto(URL, wait_until="domcontentloaded", timeout=45000)
@@ -221,8 +231,10 @@ jobs:
               b.close()
 
           print("=== API CALLS ===")
-          for c in api_calls[-25:]:
-              print(c["status"], c["url"])
+          for c in api_calls[-60:]:
+              print(c["status"], c.get("method",""), c["url"])
+    if c.get("post"):
+        print("   POST:", c["post"][:400])
               if c["body"] and c["body"] != "<binary>":
                   print("   BODY:", c["body"][:400].replace("\n"," "))
           PYEOF
