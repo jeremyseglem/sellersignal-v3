@@ -108,12 +108,19 @@ const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix' };
 // comment predicted ("if a future market adds a far-flung same-state
 // cluster, switch...").
 const MARKET_METRO_LABELS = { TX_DALLAS: 'Dallas', TX_TRAVIS: 'Austin', TX_COLLIN: 'Dallas' };
+// Human names for the state-level pills above the metro tabs.
+const STATE_NAMES = { WA: 'Washington', AZ: 'Arizona', TX: 'Texas' };
 
 function metroOf(z) {
+  // The LABEL is the metro's identity — markets that share a metro label
+  // (TX_DALLAS + TX_COLLIN -> 'Dallas') merge into ONE tab. Keying off
+  // market_key here rendered two tabs both named "Dallas" (2026-06-12).
   const mk = z?.market_key || '';
-  if (MARKET_METRO_LABELS[mk]) return { key: mk, label: MARKET_METRO_LABELS[mk] };
   const st = z?.state || 'other';
-  return { key: st, label: STATE_METRO_LABELS[st] || st };
+  if (MARKET_METRO_LABELS[mk]) {
+    return { key: MARKET_METRO_LABELS[mk], label: MARKET_METRO_LABELS[mk], state: st };
+  }
+  return { key: st, label: STATE_METRO_LABELS[st] || st, state: st };
 }
 
 // ─── Component ───────────────────────────────────────────────────────────
@@ -156,9 +163,27 @@ export default function TerritoryMap({
     return order.map((k) => byKey[k]).sort((a, b) => b.count - a.count);
   }, [zips]);
 
+  // State-level grouping for the pill row above the metro tabs. Ordered by
+  // total territory count desc. Hidden when only one state has territories.
+  const states = useMemo(() => {
+    const byState = {};
+    for (const m of metros) {
+      if (!byState[m.state]) byState[m.state] = { key: m.state, label: STATE_NAMES[m.state] || m.state, count: 0, metroCount: 0 };
+      byState[m.state].count += m.count;
+      byState[m.state].metroCount += 1;
+    }
+    return Object.values(byState).sort((a, b) => b.count - a.count);
+  }, [metros]);
+
+  const visibleMetros = useMemo(
+    () => (selectedState ? metros.filter((m) => m.state === selectedState) : metros),
+    [metros, selectedState],
+  );
+
   // Which metro the map is currently showing. Defaults below (after metros
   // and myZip are known) to the agent's own metro, else the largest.
   const [selectedMetro, setSelectedMetro] = useState(null);
+  const [selectedState, setSelectedState] = useState(null);
 
   // Stats card state (the only thing that drives re-renders)
   const [selected, setSelected]     = useState(null);   // zip_code or null
@@ -229,17 +254,27 @@ export default function TerritoryMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Pick the initial metro once metros are known: the agent's own metro if
-  // they hold a territory there, otherwise the largest metro.
+  // Pick the initial state + metro once metros are known: the agent's own
+  // metro/state if they hold a territory, otherwise the largest.
   useEffect(() => {
     if (selectedMetro || !metros.length) return;
-    let initial = metros[0].key;
+    let initial = metros[0];
     if (myZip && zipIndex[myZip]) {
       const m = metroOf(zipIndex[myZip]);
-      if (metros.some((x) => x.key === m.key)) initial = m.key;
+      const hit = metros.find((x) => x.key === m.key);
+      if (hit) initial = hit;
     }
-    setSelectedMetro(initial);
+    setSelectedState(initial.state);
+    setSelectedMetro(initial.key);
   }, [metros, myZip, zipIndex, selectedMetro]);
+
+  // Switching state selects that state's largest metro.
+  const handleStateSelect = (st) => {
+    if (st === selectedState) return;
+    setSelectedState(st);
+    const first = metros.find((m) => m.state === st);
+    if (first) setSelectedMetro(first.key);
+  };
 
   // Draw (and redraw) the polygons for the selected metro. Fires on metro
   // switch and once polygons finish loading. Clears any open stats card so a
@@ -367,9 +402,16 @@ export default function TerritoryMap({
           overlay it collided with the legend + zoom control once metro
           count hit 5 on phone widths (pills wrapped into a blob).
           A scrollable flow bar scales to any number of metros. 2026-06-12. */}
-      {metros.length > 1 && selectedMetro && (
+      {states.length > 1 && selectedState && (
+        <StatePills
+          states={states}
+          selected={selectedState}
+          onSelect={handleStateSelect}
+        />
+      )}
+      {visibleMetros.length > 1 && selectedMetro && (
         <MetroTabs
-          metros={metros}
+          metros={visibleMetros}
           selected={selectedMetro}
           onSelect={setSelectedMetro}
         />
@@ -671,6 +713,34 @@ function LegendItem({ swatch, label, muted, tint }) {
 }
 
 // ─── Metro switcher (pill tabs over the map; one tight metro at a time) ──
+function StatePills({ states, selected, onSelect }) {
+  return (
+    <div style={STYLES.statePills} role="tablist" aria-label="States">
+      {states.map((s) => {
+        const active = s.key === selected;
+        return (
+          <button
+            key={s.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onSelect(s.key)}
+            style={{ ...STYLES.statePill, ...(active ? STYLES.statePillActive : null) }}
+          >
+            {s.label}
+            <span style={{
+              ...STYLES.metroTabCount,
+              ...(active ? STYLES.metroTabCountActive : null),
+            }}>
+              {s.count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function MetroTabs({ metros, selected, onSelect }) {
   return (
     <div style={STYLES.metroTabs} role="tablist" aria-label="Metro areas">
@@ -714,6 +784,25 @@ const STYLES = {
   map: { width: '100%', height: '100%' },
 
   // ── Metro switcher pills (top-center, clear of Leaflet's top-left zoom) ──
+  statePills: {
+    display: 'flex', flexWrap: 'nowrap', gap: 10,
+    overflowX: 'auto', WebkitOverflowScrolling: 'touch',
+    padding: '0 2px', marginBottom: 8,
+    maxWidth: '100%', scrollbarWidth: 'none',
+  },
+  statePill: {
+    display: 'inline-flex', alignItems: 'center', gap: 7,
+    padding: '5px 10px', borderRadius: 8, border: '1px solid transparent',
+    background: 'transparent', cursor: 'pointer', whiteSpace: 'nowrap',
+    fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700,
+    letterSpacing: '0.04em', textTransform: 'uppercase',
+    color: 'var(--text-tertiary)',
+    transition: 'color 140ms ease, border-color 140ms ease',
+  },
+  statePillActive: {
+    color: 'var(--accent)', borderColor: 'var(--border)',
+    background: 'var(--bg-card)',
+  },
   metroTabs: {
     display: 'flex', flexWrap: 'nowrap', gap: 4,
     overflowX: 'auto', WebkitOverflowScrolling: 'touch',
