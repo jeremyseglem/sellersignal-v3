@@ -163,6 +163,11 @@ export default function TerritoryMap({
     return order.map((k) => byKey[k]).sort((a, b) => b.count - a.count);
   }, [zips]);
 
+
+  // Which metro the map is currently showing. Defaults below (after metros
+  // and myZip are known) to the agent's own metro, else the largest.
+  const [selectedMetro, setSelectedMetro] = useState(null);
+  const [selectedState, setSelectedState] = useState(null);
   // State-level grouping for the pill row above the metro tabs. Ordered by
   // total territory count desc. Hidden when only one state has territories.
   const states = useMemo(() => {
@@ -179,11 +184,6 @@ export default function TerritoryMap({
     () => (selectedState ? metros.filter((m) => m.state === selectedState) : metros),
     [metros, selectedState],
   );
-
-  // Which metro the map is currently showing. Defaults below (after metros
-  // and myZip are known) to the agent's own metro, else the largest.
-  const [selectedMetro, setSelectedMetro] = useState(null);
-  const [selectedState, setSelectedState] = useState(null);
 
   // Stats card state (the only thing that drives re-renders)
   const [selected, setSelected]     = useState(null);   // zip_code or null
