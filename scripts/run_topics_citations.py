@@ -93,6 +93,12 @@ def main():
     if TCAD_ROLL and os.path.exists(TCAD_ROLL):
         owner_indexes["Travis"] = CountyOwnerIndex.from_tcad_roll(TCAD_ROLL)
         print(f"[topics] Travis owner index: {owner_indexes['Travis'].total:,} accounts")
+    COLLIN_ROLL = os.environ.get("COLLIN_ROLL", "")
+    if COLLIN_ROLL and os.path.exists(COLLIN_ROLL):
+        # Collin roll builder emits the Maricopa CSV schema deliberately —
+        # one loader serves both counties.
+        owner_indexes["Collin"] = CountyOwnerIndex.from_maricopa_roll(COLLIN_ROLL)
+        print(f"[topics] Collin owner index: {owner_indexes['Collin'].total:,} accounts")
     if not owner_indexes:
         print("[topics] no county rolls — skipping county-wide resolution")
 

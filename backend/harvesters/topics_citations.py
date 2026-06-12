@@ -58,6 +58,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 COUNTY_MARKETS = {
     "Dallas": "TX_DALLAS",
     "Travis": "TX_TRAVIS",
+    "Collin": "TX_COLLIN",
 }
 
 # Probate detection across cause number / court / party text.

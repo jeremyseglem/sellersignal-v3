@@ -65,6 +65,15 @@ jobs:
           ls -la /tmp/tcad-roll.zip
           python3 -c "import zipfile; zipfile.ZipFile('/tmp/tcad-roll.zip').namelist()" \
             || { echo "::error::TCAD roll download is not a valid zip"; rm -f /tmp/tcad-roll.zip; exit 1; }
+      - name: Cache Collin county owner roll (refreshed weekly)
+        id: collin-roll-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/collin-roll.csv.gz
+          key: collin-roll-${{ steps.wk.outputs.week }}
+      - name: Build Collin county owner roll
+        if: steps.collin-roll-cache.outputs.cache-hit != 'true'
+        run: OUT=/tmp/collin-roll.csv.gz python3 scripts/build_collin_county_roll.py
       - name: Run TOPICs citations harvester
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -73,4 +82,5 @@ jobs:
           SINCE_DAYS: ${{ github.event.inputs.since_days || '7' }}
           DCAD_ZIP: /tmp/dcad2026.zip
           TCAD_ROLL: /tmp/tcad-roll.zip
+          COLLIN_ROLL: /tmp/collin-roll.csv.gz
         run: python -u scripts/run_topics_citations.py
