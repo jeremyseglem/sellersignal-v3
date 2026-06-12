@@ -169,20 +169,34 @@ jobs:
                           except Exception: pass
                       except Exception as ex:
                           print("search click failed (continuing):", str(ex)[:70])
-                  # SPA-router trick: if the form is degraded, push the
-                  # results URL through the client-side router instead.
+                  # SPA-router trick: push candidate /results URLs through the
+                  # client-side router and report each verdict. Travis rejected
+                  # the Dallas shape with "Error with search query" — hunt the
+                  # accepted param shape.
                   if "/results" not in page.url:
-                      target = ("/results?department=RP&keywordSearch=false"
-                                "&recordedDateRange=20260602%2C20260602"
-                                "&searchOcrText=false&searchType=quickSearch")
-                      page.evaluate("""u => {
-                          history.pushState({}, '', u);
-                          window.dispatchEvent(new PopStateEvent('popstate', {state: {}}));
-                      }""", target)
-                      print("pushState ->", target)
-                      time.sleep(10)
-                      try: page.wait_for_load_state("networkidle", timeout=12000)
-                      except Exception: pass
+                      candidates = [
+                          "/results?department=RP&keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch",
+                          "/results?department=RP&keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch&searchValue=",
+                          "/results?department=RP&recordedDateRange=20260602%2C20260602&searchType=quickSearch&searchValue=deed&keywordSearch=true&searchOcrText=false",
+                          "/results?keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch",
+                          "/results?department=RP&keywordSearch=false&recordedDateRange=20260601%2C20260602&searchOcrText=false&searchType=quickSearch",
+                      ]
+                      for target in candidates:
+                          page.evaluate("""u => {
+                              history.pushState({}, '', u);
+                              window.dispatchEvent(new PopStateEvent('popstate', {state: {}}));
+                          }""", target)
+                          time.sleep(9)
+                          try: page.wait_for_load_state("networkidle", timeout=10000)
+                          except Exception: pass
+                          body = page.inner_text("body")
+                          verdict = ("ERROR" if "Error" in body
+                                     else "NO_RESULTS" if "No Results Found" in body
+                                     else "ROWS" if "GRANTOR" in body else "UNKNOWN")
+                          print(f"CANDIDATE {verdict} :: {target[:120]}")
+                          if verdict == "ROWS":
+                              print("WINNING BODY:", body[:400].replace("\n", " | "))
+                              break
                   print("FINAL URL:", page.url)
                   body_txt = page.inner_text("body")[:600].replace("\n", " | ")
                   print("PAGE TEXT HEAD:", body_txt)
