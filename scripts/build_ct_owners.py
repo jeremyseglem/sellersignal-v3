@@ -126,7 +126,7 @@ def main():
             break
 
     now = datetime.now(timezone.utc)
-    by_zip: dict[str, list] = {z: [] for z in ZIP_CITY}
+    by_zip: dict[str, dict] = {z: {} for z in ZIP_CITY}
     unzoned = no_owner = 0
     for f in rows:
         a = f.get("attributes") or {}
@@ -158,27 +158,28 @@ def main():
         use = (a.get("State_Use") or "").strip()
         mail_city = (a.get("Mailing_City") or "").strip().upper()
         mail_state = (a.get("Mailing_State") or "").strip().upper()
-        by_zip[zip_code].append({
-            "pin": str(a.get("Link") or "").strip(),
+        pin = str(a.get("Link") or "").strip()
+        by_zip[zip_code][pin] = {
+            "apn": pin,
             "owner_name": owner,
             "owner_type": classify_owner_type(owner),
             "address": (a.get("Location") or "").strip(),
-            "city": ZIP_CITY[zip_code],
-            "zip": zip_code,
             "value": int(appraised or 0),
             "tenure_years": tenure,
             "last_transfer_date": (datetime.fromtimestamp(sale_ms / 1000, tz=timezone.utc).date().isoformat() if sale_ms else None),
             "prop_type": "R" if use.startswith("1") else (use or "R"),
             "owner_state": mail_state or None,
             "owner_city": (a.get("Mailing_City") or "").strip() or None,
+            "is_out_of_state": bool(mail_state and mail_state != "CT"),
             "is_absentee": bool(mail_state and mail_state != "CT") or bool(mail_city and mail_city not in LOCAL_MAIL_CITIES),
+            "legal_description": "",
             "lat": y, "lng": x,
-        })
+        }
 
     print(f"[seed] town rows={len(rows):,} no_owner={no_owner} outside_zctas={unzoned}")
     for z, items in by_zip.items():
         path = f"data/seeds/ct-fairfield-{z}-owners.json"
-        with_addr = sum(1 for i in items if i["address"])
+        with_addr = sum(1 for i in items.values() if i["address"])
         cov = (with_addr / len(items) * 100) if items else 0
         if items and cov < 80:
             raise SystemExit(f"{z}: address coverage {cov:.0f}% < 80% — refusing to write")

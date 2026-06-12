@@ -604,7 +604,8 @@ def cmd_seed(zip_code: str, json_path: str) -> int:
     #      should never actually fire for an onboarded ZIP).
     from backend.api.admin import (KC_ZIP_TO_CITY, SNO_ZIP_TO_CITY,
                                    MARICOPA_ZIP_TO_CITY, DALLAS_ZIP_TO_CITY,
-                                   TRAVIS_ZIP_TO_CITY)
+                                   TRAVIS_ZIP_TO_CITY, COLLIN_ZIP_TO_CITY,
+                                   CT_ZIP_TO_CITY)
     cov_city = cov.data.get('city')
     # A stored "Bellevue" on a non-KC ZIP is the known register-default bug,
     # not truth — fall through to the county maps in that case.
@@ -617,6 +618,8 @@ def cmd_seed(zip_code: str, json_path: str) -> int:
         or MARICOPA_ZIP_TO_CITY.get(zip_code)
         or DALLAS_ZIP_TO_CITY.get(zip_code)
         or TRAVIS_ZIP_TO_CITY.get(zip_code)
+        or COLLIN_ZIP_TO_CITY.get(zip_code)
+        or CT_ZIP_TO_CITY.get(zip_code)
         or "Bellevue"
     )
 
