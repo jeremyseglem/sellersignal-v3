@@ -143,11 +143,38 @@ def _ui_drive_search(page, begin: date, end: date):
     """Drive the real search UI for tenants that don't auto-execute URL
     searches. Fills the recorded-date range and clicks Search; leaves the
     keyword box empty so the full grid (all doc types) comes back, exactly
-    like Dallas's keyword-less URL search."""
+    like Dallas's keyword-less URL search.
+
+    Two tenant layouts observed (2026-06-12 captures):
+      - Collin: Starting/Ending Recorded Date inputs render INLINE.
+      - Travis: inputs collapsed behind a #date-range-select button
+        (aria 'Recorded Date'); click to expand first.
+    """
     page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60000)
     time.sleep(6)
-    start_el = page.query_selector("input[aria-label='Starting Recorded Date']")
-    end_el = page.query_selector("input[aria-label='Ending Recorded Date']")
+    # dismiss any announcement banner that can cover controls
+    try:
+        dis = page.query_selector("button[aria-label='Dismiss announcement']")
+        if dis:
+            dis.click()
+            time.sleep(1)
+    except Exception:
+        pass
+
+    def _find_dates():
+        return (page.query_selector("input[aria-label='Starting Recorded Date']"),
+                page.query_selector("input[aria-label='Ending Recorded Date']"))
+
+    start_el, end_el = _find_dates()
+    if not (start_el and end_el):
+        # Travis layout: expand the collapsed date-range panel first.
+        toggle = (page.query_selector("#date-range-select")
+                  or page.query_selector("button[aria-label='Recorded Date']")
+                  or page.query_selector("button[aria-label='select date range']"))
+        if toggle:
+            toggle.click()
+            time.sleep(2)
+            start_el, end_el = _find_dates()
     if not (start_el and end_el):
         raise RuntimeError("UI_DRIVE: date inputs not found on search page")
     start_el.fill(begin.strftime("%m/%d/%Y"))
@@ -157,6 +184,17 @@ def _ui_drive_search(page, begin: date, end: date):
         raise RuntimeError("UI_DRIVE: Search button not found")
     btn.click()
     time.sleep(8)
+    try:
+        page.wait_for_load_state("networkidle", timeout=12000)
+    except Exception:
+        pass
+    # diagnostics: prove the search actually navigated + grid presence
+    try:
+        head = page.inner_text("body")[:240].replace("\n", " ")
+        print(f"    [ui_drive] url={page.url[:110]}")
+        print(f"    [ui_drive] body_head={head[:200]}")
+    except Exception:
+        pass
 
 
 def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
