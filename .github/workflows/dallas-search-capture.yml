@@ -80,6 +80,38 @@ jobs:
                   date_inputs = page.query_selector_all(
                       "input[placeholder*='date' i], input[aria-label*='date' i], input[type='date']")
                   print(f"date inputs found: {len(date_inputs)}")
+                  # Travis layout: inputs collapsed behind #date-range-select.
+                  # Click it (JS dispatch if needed), then dump what appears.
+                  if len(date_inputs) == 0:
+                      tog = page.query_selector("#date-range-select")
+                      print("toggle present:", bool(tog))
+                      if tog:
+                          for how in ("click", "force", "js"):
+                              try:
+                                  if how == "click": tog.click(timeout=5000)
+                                  elif how == "force": tog.click(force=True, timeout=5000)
+                                  else: page.evaluate("el => el.click()", tog)
+                                  print("toggle clicked via:", how)
+                                  break
+                              except Exception as ex:
+                                  print(f"toggle {how} failed: {str(ex)[:80]}")
+                          time.sleep(3)
+                          post = page.eval_on_selector_all(
+                              "input, [role=dialog] *, .popover *",
+                              """els => els.slice(0, 40).map(e => ({
+                                  tag: e.tagName, type: e.type || '',
+                                  id: e.id || '', ph: e.placeholder || '',
+                                  aria: e.getAttribute && e.getAttribute('aria-label') || '',
+                                  cls: (e.className || '').toString().slice(0, 40),
+                                  vis: !!(e.offsetWidth || e.offsetHeight)
+                              }))""")
+                          print("=== POST-TOGGLE CONTROLS ===")
+                          for e in post:
+                              if e.get("tag") == "INPUT" or e.get("aria"):
+                                  print("  ", _json.dumps(e))
+                          date_inputs = page.query_selector_all(
+                              "input[placeholder*='date' i], input[aria-label*='date' i], input[type='date']")
+                          print(f"date inputs after toggle: {len(date_inputs)}")
                   if len(date_inputs) >= 2:
                       date_inputs[0].fill("06/02/2026")
                       date_inputs[1].fill("06/02/2026")
