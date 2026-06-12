@@ -160,10 +160,15 @@ export default function MapPanel({ mapData, playbook, selectedPin, onPickPin }) 
       // long-thin shape, this gives enough headroom that the action
       // pins don't smear into a single blob while still keeping the
       // full ZIP boundary visible.
-      map.fitBounds([
-        [bounds.min_lat, bounds.min_lng],
-        [bounds.max_lat, bounds.max_lng],
-      ], { padding: [40, 40], maxZoom: 14 });
+      try {
+        map.fitBounds([
+          [bounds.min_lat, bounds.min_lng],
+          [bounds.max_lat, bounds.max_lng],
+        ], { padding: [40, 40], maxZoom: 14 });
+      } catch (err) {
+        console.warn('fitBounds failed:', err);
+        map.setView([bounds.min_lat || 47.61, bounds.min_lng || -122.2], 13);
+      }
     } else {
       map.setView([47.6101, -122.2015], 14);  // Default: Bellevue
     }
@@ -370,7 +375,19 @@ export default function MapPanel({ mapData, playbook, selectedPin, onPickPin }) 
     if (!marker) return;
 
     const latlng = marker.getLatLng();
-    map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.8 });
+    // 2026-06-12: on mobile the map tab is hidden until the agent picks a
+    // lead, so Leaflet initialized in a zero-size container and its center
+    // transform is NaN — the first flyTo then throws "Invalid LatLng
+    // object: (NaN, NaN)" and blanked the whole screen (pre-ErrorBoundary).
+    // invalidateSize() recomputes dimensions now that the tab is visible;
+    // the catch covers any residual NaN state with a hard setView.
+    map.invalidateSize();
+    try {
+      map.flyTo(latlng, Math.max(map.getZoom() || 14, 17), { duration: 0.8 });
+    } catch (err) {
+      console.warn('flyTo failed, falling back to setView:', err);
+      map.setView(latlng, 17);
+    }
 
     // Emphasize: thick selection ring, original fill color preserved
     // for identity, radius bumped above the zoom-scaled baseline.
