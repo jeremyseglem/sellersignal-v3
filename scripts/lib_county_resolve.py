@@ -152,6 +152,43 @@ class CountyOwnerIndex:
                     idx._by_surname[tok].append(rec)
         return idx
 
+    @classmethod
+    def from_maricopa_roll(cls, roll_csv_gz_path: str) -> "CountyOwnerIndex":
+        """Maricopa County loader — reads the gzipped CSV produced by
+        build_maricopa_county_roll.py (Assessor MapServer county-wide pull).
+        acct = APN_DASH (matches parcels_v3.pin for AZ_MARICOPA). Assessor
+        OWNER_NAME is typically 'LAST FIRST M' or entity names; resolve()
+        callers should use order='last_first' for decedents parsed from
+        'Estate of First Last' affidavit text (the resolver tokenizes both
+        orders, so this mainly affects the surname/given anchoring).
+        division='RES' for PUC codes starting with '1' (Maricopa residential
+        class prefix) — used only for RES-first result ordering."""
+        import gzip as _gzip
+        import csv as _csv
+        idx = cls()
+        with _gzip.open(roll_csv_gz_path, "rt", newline="") as fh:
+            r = _csv.reader(fh)
+            next(r, None)
+            for row in r:
+                if len(row) < 6:
+                    continue
+                apn, owner, address, zc, city, puc = row[:6]
+                if not owner:
+                    continue
+                rec = {
+                    "acct": apn,
+                    "owner_name": owner,
+                    "address": address,
+                    "city": city,
+                    "zip": zc,
+                    "division": "RES" if puc.startswith("1") else (puc or "OTH"),
+                    "est_of": bool(re.search(r"\bEST(ATE)?\s+OF\b", owner.upper())),
+                }
+                idx.total += 1
+                for tok in set(_tokens(owner)):
+                    idx._by_surname[tok].append(rec)
+        return idx
+
     def resolve(self, decedent: str, max_hits: int = 5,
                 order: str = "first_last") -> list[dict]:
         """Return county parcels whose owner plausibly IS this decedent.

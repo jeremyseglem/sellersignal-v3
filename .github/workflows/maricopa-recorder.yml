@@ -19,6 +19,10 @@ on:
         description: "Comma list of doc codes"
         required: false
         default: "PD"
+      resolve_backfill:
+        description: "1 = re-OCR existing recordings to backfill resolved_parcels"
+        required: false
+        default: "0"
 
 jobs:
   harvest:
@@ -39,6 +43,18 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests
 
+      - name: Week key for roll cache
+        id: wk
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache Maricopa county owner roll (refreshed weekly)
+        id: roll-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/maricopa-roll.csv.gz
+          key: maricopa-roll-${{ steps.wk.outputs.week }}
+      - name: Build Maricopa county owner roll (county-wide inversion)
+        if: steps.roll-cache.outputs.cache-hit != 'true'
+        run: OUT=/tmp/maricopa-roll.csv.gz python3 scripts/build_maricopa_county_roll.py
       - name: Run harvester
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -46,4 +62,6 @@ jobs:
           WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
           DAYS: ${{ github.event_name == 'schedule' && '14' || github.event.inputs.days }}
           CODES: ${{ github.event_name == 'schedule' && 'PD' || github.event.inputs.codes }}
+          MARICOPA_ROLL: /tmp/maricopa-roll.csv.gz
+          RESOLVE_BACKFILL: ${{ github.event.inputs.resolve_backfill || '0' }}
         run: python3 scripts/run_maricopa_recorder.py

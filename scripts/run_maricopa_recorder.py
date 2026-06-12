@@ -82,7 +82,11 @@ def main():
             print(f"  skip {code}: no parser")
             continue
         dated = mr.discover_dated(op, code, bstr, estr)
-        dated = [(rec, dt) for rec, dt in dated if rec not in seen]
+        if os.environ.get("RESOLVE_BACKFILL", "0") != "1":
+            # Normal daily mode: skip recordings already in DB. Set
+            # RESOLVE_BACKFILL=1 to re-OCR + upsert (merge-duplicates)
+            # existing signals so they gain resolved_parcels retroactively.
+            dated = [(rec, dt) for rec, dt in dated if rec not in seen]
         print(f"  {code}: {len(dated)} new recordings to OCR")
         for rec, rec_date in dated:
             try:
@@ -99,6 +103,42 @@ def main():
             time.sleep(0.7)
 
     print(f"[maricopa_recorder] OCR'd={ocr_ct} errors={err_ct} mappable_signals={len(rows)}")
+
+    # ── County-wide inversion (2026-06-12, Dallas/Travis pattern) ──────────
+    # Resolve every decedent (and the PR as heir-channel) against the FULL
+    # Maricopa Assessor roll, attaching resolved parcels to raw_data. The
+    # matcher's Layer 0 / 0.5 turn live-ZIP hits into identity matches;
+    # everything else is expansion intel. Without this, AZ probate matching
+    # was fuzzy-in-ZIP only — ~9% county coverage = near-zero leads (the
+    # exact failure Dallas had pre-inversion).
+    MARICOPA_ROLL = os.environ.get("MARICOPA_ROLL", "")
+    if MARICOPA_ROLL and os.path.exists(MARICOPA_ROLL) and rows:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from lib_county_resolve import CountyOwnerIndex
+        idx = CountyOwnerIndex.from_maricopa_roll(MARICOPA_ROLL)
+        print(f"[recorder] county owner index: {idx.total:,} parcels")
+        n_res = 0
+        for sig in rows:
+            rd = sig.setdefault("raw_data", {})
+            rd["county_resolution_ran"] = True
+            dec = rd.get("decedent")
+            if dec:
+                resolved = idx.resolve(dec)  # 'Estate of First Last' order
+                if resolved:
+                    rd["resolved_parcels"] = resolved
+                    n_res += 1
+                    best = resolved[0]
+                    if not sig.get("property_hint"):
+                        sig["property_hint"] = (f"{best['address']}, "
+                                                f"{best['city']} {best['zip']}").strip(", ")
+            pr = rd.get("pr_name")
+            if pr:
+                heir_hits = idx.resolve(pr)
+                if heir_hits:
+                    rd["resolved_heir_parcels"] = heir_hits
+        print(f"[recorder] county_resolved={n_res}/{len(rows)}")
+    elif rows:
+        print("[recorder] no MARICOPA_ROLL — skipping county-wide resolution")
 
     if WRITE:
         if not (SUPABASE_URL and SERVICE_KEY):
