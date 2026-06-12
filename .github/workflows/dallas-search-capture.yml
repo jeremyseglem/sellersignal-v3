@@ -162,10 +162,13 @@ jobs:
                   btn = page.query_selector("button:has-text('Search'), [role=button]:has-text('Search')")
                   print("search button:", bool(btn))
                   if btn:
-                      btn.click()
-                      time.sleep(10)
-                      try: page.wait_for_load_state("networkidle", timeout=12000)
-                      except Exception: pass
+                      try:
+                          btn.click(timeout=8000)
+                          time.sleep(10)
+                          try: page.wait_for_load_state("networkidle", timeout=12000)
+                          except Exception: pass
+                      except Exception as ex:
+                          print("search click failed (continuing):", str(ex)[:70])
                   # SPA-router trick: if the form is degraded, push the
                   # results URL through the client-side router instead.
                   if "/results" not in page.url:
