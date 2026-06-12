@@ -1532,6 +1532,10 @@ SNO_ZIP_TO_CITY = {
 # scripts/build_maricopa_owners.py from the Assessor Parcels MapServer).
 # market_key = AZ_MARICOPA, state = AZ.
 MARICOPA_ZIP_TO_CITY = {
+    "85016": "Phoenix",
+    "85251": "Scottsdale",
+    "85012": "Phoenix",
+    "85250": "Scottsdale",
     "85253": "Paradise Valley",
     "85331": "Cave Creek",
     "85262": "Scottsdale",
@@ -1560,6 +1564,8 @@ MARICOPA_ZIP_TO_CITY = {
 # market_key = TX_DALLAS, state = TX. Signals come from the Dallas County
 # recorder (tx_dallas_recorder, via the Dallas Recorder GitHub Action).
 DALLAS_ZIP_TO_CITY = {
+    "75244": "Dallas",
+    "75206": "Dallas",
     "75205": "Highland Park",
     "75225": "University Park",
     "75230": "Preston Hollow",
@@ -1571,6 +1577,9 @@ DALLAS_ZIP_TO_CITY = {
 }
 
 TRAVIS_ZIP_TO_CITY = {
+    "78738": "Lakeway",
+    "78732": "Austin",
+    "78704": "Austin",
     "78746": "West Lake Hills",   # Westlake / Rob Roy
     "78703": "Austin",            # Tarrytown / Pemberton Heights
     "78730": "Austin",            # River Place
