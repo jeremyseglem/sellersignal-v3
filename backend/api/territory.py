@@ -302,6 +302,11 @@ async def territory_status_endpoint(
                 'zip_code':                zip_code,
                 'city':                    z.get('city'),
                 'state':                   z.get('state'),
+                # market_key drives the metro-tab grouping on the territory
+                # map (TX splits into Dallas/Austin by market_key, not state
+                # — without this field the map lumped all TX into one tab
+                # with a 180-mile zoomed-out bounds fit). 2026-06-12.
+                'market_key':              z.get('market_key'),
                 'parcel_count':            z.get('parcel_count'),
                 'current_call_now_count':  z.get('current_call_now_count') or 0,
                 'status':                  status,
@@ -322,6 +327,11 @@ async def territory_status_endpoint(
                 'zip_code':                zip_code,
                 'city':                    z.get('city'),
                 'state':                   z.get('state'),
+                # market_key drives the metro-tab grouping on the territory
+                # map (TX splits into Dallas/Austin by market_key, not state
+                # — without this field the map lumped all TX into one tab
+                # with a 180-mile zoomed-out bounds fit). 2026-06-12.
+                'market_key':              z.get('market_key'),
                 'parcel_count':            z.get('parcel_count'),
                 'current_call_now_count':  z.get('current_call_now_count') or 0,
                 'status':                  status,
