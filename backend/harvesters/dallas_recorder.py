@@ -179,10 +179,33 @@ def _ui_drive_search(page, begin: date, end: date):
         raise RuntimeError("UI_DRIVE: date inputs not found on search page")
     start_el.fill(begin.strftime("%m/%d/%Y"))
     end_el.fill(end.strftime("%m/%d/%Y"))
+    # If the date panel was a popover (Travis), it can overlay the Search
+    # button — close it first; then submit with a resilient chain.
+    try:
+        page.keyboard.press("Escape")
+        time.sleep(1)
+    except Exception:
+        pass
+    submitted = False
     btn = page.query_selector("button[aria-label='Search']")
-    if not btn:
-        raise RuntimeError("UI_DRIVE: Search button not found")
-    btn.click()
+    if btn:
+        try:
+            btn.click(timeout=8000)
+            submitted = True
+        except Exception:
+            try:
+                btn.click(force=True, timeout=8000)
+                submitted = True
+            except Exception:
+                pass
+    if not submitted:
+        try:
+            end_el.press("Enter")
+            submitted = True
+        except Exception:
+            pass
+    if not submitted:
+        raise RuntimeError("UI_DRIVE: could not submit search")
     time.sleep(8)
     try:
         page.wait_for_load_state("networkidle", timeout=12000)
@@ -362,11 +385,27 @@ def to_signal_row(row: dict) -> dict | None:
 # ── orchestration helper (used by the runner) ─────────────────────────────────
 
 def extract_grid_text(page) -> str:
-    """Return the inner_text of the results table (or whole body as fallback)."""
+    """Return the inner_text of the RESULTS table (or whole body as fallback).
+
+    2026-06-12: Collin's page carries an earlier empty utility <table> before
+    the results grid; grabbing the first <table> read empty text and the body
+    fallback never fired (element matched). Pick the table that actually
+    contains the grid header (GRANTOR/GRANTEE), else the longest table text,
+    else body."""
     try:
-        el = page.query_selector("table") or page.query_selector("[role='table']")
-        if el:
-            return el.inner_text()
+        els = page.query_selector_all("table, [role='table']")
+        best = ""
+        for el in els:
+            try:
+                txt = el.inner_text()
+            except Exception:
+                continue
+            if "GRANTOR" in txt.upper():
+                return txt
+            if len(txt) > len(best):
+                best = txt
+        if len(best) > 200:
+            return best
     except Exception:
         pass
     return page.inner_text("body")
