@@ -78,7 +78,11 @@ STARTUP_DELAY = int(os.environ.get(
 ))
 
 # Master enable. Set to "false" in Railway env to disable on boot.
-ENABLED_DEFAULT = os.environ.get(
+ENABLED_DEFAULT = os.environ.get("CANON_AUTOFILL_ENABLED", "1") != "0"
+# 2026-06-12: pause state was process-memory only, so every Railway deploy
+# resurrected the task mid-pause and re-saturated the single worker (two
+# site-wide slowdowns today). Set CANON_AUTOFILL_ENABLED=0 in Railway env
+# to keep it off across restarts until the idle-sweep optimization ships.
     "CANONICALIZE_AUTOFILL_ENABLED", "true"
 ).lower() == "true"
 
