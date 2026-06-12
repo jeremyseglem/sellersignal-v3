@@ -169,19 +169,33 @@ jobs:
                           except Exception: pass
                       except Exception as ex:
                           print("search click failed (continuing):", str(ex)[:70])
-                  # SPA-router trick: push candidate /results URLs through the
-                  # client-side router and report each verdict. Travis rejected
-                  # the Dallas shape with "Error with search query" — hunt the
-                  # accepted param shape.
+                  # Param hunt v2: full home reload between candidates (SPA
+                  # state pollution made identical shapes give different
+                  # verdicts), body head printed for EVERY candidate, and
+                  # Travis-likely department codes (OPR = Official Public
+                  # Records) included. Also dump the department options.
+                  try:
+                      dep = page.query_selector("input[aria-label='Change department']")
+                      if dep:
+                          dep.click(force=True)
+                          time.sleep(2)
+                          opts = page.eval_on_selector_all(
+                              "[class*='option'], [role='option']",
+                              "els => els.slice(0,15).map(e => e.innerText)")
+                          print("DEPARTMENT OPTIONS:", opts)
+                          page.keyboard.press("Escape")
+                  except Exception as ex:
+                      print("dept dump failed:", str(ex)[:60])
                   if "/results" not in page.url:
                       candidates = [
+                          "/results?department=OPR&keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch",
                           "/results?department=RP&keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch",
-                          "/results?department=RP&keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch&searchValue=",
-                          "/results?department=RP&recordedDateRange=20260602%2C20260602&searchType=quickSearch&searchValue=deed&keywordSearch=true&searchOcrText=false",
                           "/results?keywordSearch=false&recordedDateRange=20260602%2C20260602&searchOcrText=false&searchType=quickSearch",
-                          "/results?department=RP&keywordSearch=false&recordedDateRange=20260601%2C20260602&searchOcrText=false&searchType=quickSearch",
+                          "/results?department=OPR&recordedDateRange=20260602%2C20260602&searchType=quickSearch&searchValue=deed&keywordSearch=true&searchOcrText=false",
                       ]
                       for target in candidates:
+                          page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+                          time.sleep(5)
                           page.evaluate("""u => {
                               history.pushState({}, '', u);
                               window.dispatchEvent(new PopStateEvent('popstate', {state: {}}));
@@ -190,12 +204,13 @@ jobs:
                           try: page.wait_for_load_state("networkidle", timeout=10000)
                           except Exception: pass
                           body = page.inner_text("body")
-                          verdict = ("ERROR" if "Error" in body
+                          verdict = ("ROWS" if "GRANTOR" in body
+                                     else "ERROR" if "Error" in body
                                      else "NO_RESULTS" if "No Results Found" in body
-                                     else "ROWS" if "GRANTOR" in body else "UNKNOWN")
-                          print(f"CANDIDATE {verdict} :: {target[:120]}")
+                                     else "UNKNOWN")
+                          print(f"CANDIDATE {verdict} :: {target[:110]}")
+                          print("  BODY:", body[:330].replace("\n", " | "))
                           if verdict == "ROWS":
-                              print("WINNING BODY:", body[:400].replace("\n", " | "))
                               break
                   print("FINAL URL:", page.url)
                   body_txt = page.inner_text("body")[:600].replace("\n", " | ")
