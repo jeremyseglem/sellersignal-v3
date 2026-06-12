@@ -172,7 +172,14 @@ def _ui_drive_search(page, begin: date, end: date):
                   or page.query_selector("button[aria-label='Recorded Date']")
                   or page.query_selector("button[aria-label='select date range']"))
         if toggle:
-            toggle.click()
+            try:
+                toggle.click(timeout=6000)
+            except Exception:
+                try:
+                    toggle.click(force=True, timeout=6000)
+                except Exception:
+                    # JS dispatch bypasses hit-testing (overlay/banner cases)
+                    page.evaluate("el => el.click()", toggle)
             time.sleep(2)
             start_el, end_el = _find_dates()
     if not (start_el and end_el):
@@ -240,6 +247,15 @@ def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
     for _ in range(max_pages):
         grid_text = extract_grid_text(page)
         rows = parse_rows_from_text(grid_text)
+        if not rows:
+            # Virtualized grids (Collin) split header and data into separate
+            # table elements; the header table matches GRANTOR but holds no
+            # rows. The full body inner_text carries the data rows with the
+            # same tab structure — parse that before concluding empty.
+            try:
+                rows = parse_rows_from_text(page.inner_text("body"))
+            except Exception:
+                pass
         if not rows:
             # one retry: SPA may still be rendering
             time.sleep(3)
