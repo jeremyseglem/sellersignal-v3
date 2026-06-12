@@ -1548,6 +1548,8 @@ DALLAS_ZIP_TO_CITY = {
     "75225": "University Park",
     "75230": "Preston Hollow",
     "75209": "Dallas",
+    "75214": "Dallas",      # Lakewood / M Streets — onboarded 2026-06-11
+    "75201": "Dallas",      # Downtown/Uptown — polygon staged, not yet seeded
     "75220": "Dallas",
     "75229": "Dallas",
 }
