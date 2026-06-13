@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-06-12 evening (85 live territories / 6 markets. Collin County TX launched + recorder live; 9-ZIP expansion wave; canon worker-saturation root-caused and fixed; blank-lead-page resolved; Maricopa county inversion shipped)
+**Last updated:** 2026-06-12 night (90 live territories / 7 markets — CONNECTICUT live: Greenwich 5 ZIPs, 1,808 leads day one. Collin County TX launched + recorder live; 9-ZIP expansion wave; canon worker-saturation root-caused and fixed; blank-lead-page resolved; Maricopa county inversion shipped)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -506,6 +506,20 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-06-12 (night) — CONNECTICUT LIVE: Greenwich 5-ZIP launch (7th state-market, 90 territories)
+
+**CT_FAIRFIELD market launched same-day from discovery to live.** Discovery verified all four legs: (1) CT OPM statewide parcel+CAMA FeatureServer (services3.arcgis.com/3FL1kr7L4LvwA2Kb/.../Connecticut_State_Parcel_Layer_2023/FeatureServer/0) with Owner/Co_Owner/mailing/values/Sale_Date — one integration covers all 169 towns; per-town CAMA schema variance is real (Wilton/Westport State_Use anomalies). (2) Value screen: Greenwich 3,706 res parcels assessed >$2M (~$2.85M+ market at CT's 70% ratio) — richest territory ever screened. (3) Statewide probate Case Lookup (apps.ctprobate.gov/caselookup) — NO captcha, name+district POST works programmatically; empty-name browse 500s, so it's a verification tool (obit→lookup enrichment is the Phase 2 path, like Snohomish PR enrichment). Districts: PD54 Greenwich, PD52 Darien-New Canaan, PD50 Westport. (4) greenwich.ct.publicsearch.us — our recorder platform; other Gold Coast towns are NOT on it (CT records at town level).
+
+**Launch (commits `180a30e`→`4c082e1`):** `scripts/build_ct_owners.py` — statewide layer filtered Town_Name='Greenwich', ZCTA point-in-polygon spatial join (layer has no ZIP column; ray-casting against data/zip_polygons/ct.json), pin=Link, value=Appraised_Land+Building, tenure from Sale_Date, four-way owner_type classifier (trust/llc/company/individual — first cut lumped trusts into company; Greenwich = 1,561 trusts + 2,225 LLCs), USPS locality cities (Old Greenwich/Riverside/Cos Cob matter for letter copy), centroids ride in seeds = 100% geometry. Seeds are pin-keyed dicts (loader contract). 17,506 parcels / 100% addresses. Scaffolding: CT_ZIP_TO_CITY + onboard auto-detect + ct-fairfield prefix, _MARKET_STATE, matcher `ct_greenwich_recorder`→{CT_FAIRFIELD}, briefings PR-in-signal branch, CT state pill + Greenwich metro tab, seed-from-json repair endpoint gained Travis/Collin/CT dispatch branches (pre-existing gap), zip_builder city chain gained COLLIN/CT.
+
+**Result: 5 ZIPs LIVE, 1,808 structural leads day one** — 06830: 400 (all caps maxed), 06831: 400 (maxed), 06870 Old Greenwich: 332, 06878 Riverside: 352, 06807 Cos Cob: 324.
+
+**Greenwich recorder LIVE (one capture iteration, the Collin method):** grid columns differ from BOTH TX tenants — DOC#/BOOK/PAGE-first, short per-volume doc numbers (composite document_ref GW-{book}-{page}-{num}), and a PROPERTY ADDRESS column (direct parcel resolution, lands in legal_description). Tenant row-regex override in the runner, proven locally against the captured sample before dispatch. CT estate doc types added (Certificate of Devise, Probate Certificate, Fiduciary Deed). First full run: 552 grid rows / 4 estate instruments / 3 of 4 town-resolved (17,513-account inversion) / 4 signals written. Daily cron 9:40am ET. Capture workflow host input now takes the state segment (greenwich.ct).
+
+**Collin close-out executed:** canon cleared all 5 Collin ZIPs → scoped reset (34 signals) → rematch (5 matches) → 75013 has Collin's first probate Contact Now lead; Collin total ~1,648. Greenwich's 4 recorder signals await the same close-out once CT canon completes (canon was on 06807 at session close).
+
+**Still open:** Maricopa RESOLVE_BACKFILL exceeded even the 350-min ceiling at days=60 (no checkpointing — needs a window-offset input for chunked backfill); re-dispatched days=21 as the high-value recent slice. Greenwich post-canon close-out. Travis recorder parked (their search backend 500s for real users; cron is the recovery canary). PAT rotation owed.
 
 ### 2026-06-12 (cont.) — Expansion wave, Collin County launch, canon root-cause fix, blank-page saga, Maricopa inversion, Collin recorder live
 
