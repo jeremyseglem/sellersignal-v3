@@ -116,6 +116,28 @@ def main():
     # backfill since 06-12) persisted NOTHING. Per-slice flush + the existing
     # skip-seen logic makes deep pulls cancellation-safe and resumable: re-run
     # the same dispatch and it continues from where the last one stopped.
+    # 2026-06-13: CAPTURE mode — OCR a few docs of each code and dump the raw
+    # text so new parsers (JP / affidavit instruments) can be written against
+    # real samples. No roll, no parse, no DB write. Triggered by CAPTURE=1.
+    if os.environ.get("CAPTURE", "0") == "1":
+        cap_end = datetime.now() - timedelta(days=END_OFFSET_DAYS)
+        cap_begin = cap_end - timedelta(days=DAYS)
+        op = mr.new_session()
+        n = int(os.environ.get("CAPTURE_N", "3"))
+        for code in CODES:
+            dated = mr.discover_dated(op, code, cap_begin.strftime("%m/%d/%Y"),
+                                      cap_end.strftime("%m/%d/%Y"))
+            print(f"[capture] {code}: {len(dated)} recordings in window", flush=True)
+            for rec, dt in dated[:n]:
+                try:
+                    txt = mr.ocr_pdf(mr.fetch_pdf(op, rec))
+                    print(f"\n===== CAPTURE code={code} rec={rec} date={dt} =====\n"
+                          f"{txt[:4000]}\n===== END {rec} =====", flush=True)
+                except Exception as e:
+                    print(f"  capture {rec} ERR {type(e).__name__}: {e}", flush=True)
+                time.sleep(0.7)
+        return
+
     resolve_backfill = os.environ.get("RESOLVE_BACKFILL", "0") == "1"
     full_end = datetime.now() - timedelta(days=END_OFFSET_DAYS)
     full_begin = full_end - timedelta(days=DAYS)
