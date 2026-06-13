@@ -1,0 +1,66 @@
+name: Greenwich Recorder
+
+# Harvests Greenwich CT town-clerk recorded death/estate instruments (Affidavit of
+# Death, Executor's/PR/Administrator's Deed, Deed of Distribution, Transfer
+# on Death) from greenwich.ct.publicsearch.us (Dallas-generation React frontend,
+# no Cloudflare — verified 2026-06-12) and writes probate signals to
+# raw_signals_v3. County-wide decedent inversion via the CT statewide layer
+# roll (build_ct_roll.py — same CSV schema as the Maricopa roll).
+#
+# Default is a DRY RUN. Set input write=1 (the daily cron passes write=1)
+# to actually write. Secrets SUPABASE_URL + SUPABASE_SERVICE_KEY required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      days:
+        description: "lookback window in days"
+        required: false
+        default: "7"
+      chunk_days:
+        description: "sub-window size in days"
+        required: false
+        default: "2"
+  schedule:
+    # 7:50am America/Chicago, offset from the Dallas/Travis recorder crons.
+    - cron: "40 13 * * *"  # 9:40am ET
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Week key for roll cache
+        id: wk
+        run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache Greenwich owner roll (refreshed weekly)
+        id: roll-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ct-roll.csv.gz
+          key: ct-roll-${{ steps.wk.outputs.week }}
+      - name: Build Greenwich owner roll (town inversion)
+        if: steps.roll-cache.outputs.cache-hit != 'true'
+        run: OUT=/tmp/ct-roll.csv.gz python3 scripts/build_ct_roll.py
+      - name: Run Greenwich recorder
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # cron runs write=1; manual dispatch uses the input (default 0)
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          CT_ROLL: /tmp/ct-roll.csv.gz
+          DAYS: ${{ github.event.inputs.days || '7' }}
+          CHUNK_DAYS: ${{ github.event.inputs.chunk_days || '1' }}
+        run: python scripts/run_greenwich_recorder.py
