@@ -35,6 +35,26 @@ dr.DEATH_DOCTYPE_SIGNALS = list(dr.DEATH_DOCTYPE_SIGNALS) + [
     ("FIDUCIARY DEED", "probate"),
     ("PROBATE", "probate"),
 ]
+
+# Greenwich grid column order differs from both Dallas and Collin (captured
+# 2026-06-12): DOC# | BOOK | PAGE | GRANTOR | GRANTEE | DOC TYPE |
+# PROPERTY ADDRESS | RECORDED DATE | RELATED DOCS. Doc numbers are short
+# per-volume sequences (e.g. 03101), so document_ref is composed as
+# GW-{book}-{page}-{num} for uniqueness. PROPERTY ADDRESS lands in
+# legal_description — a direct parcel-resolution gift the TX grids lack.
+import re as _re
+dr._ROW_RE = _re.compile(
+    r"(?P<docnum>\d{3,8})\t(?P<bvp>\d+\t\d+)\t(?P<grantor>[^\t\n]+?)\t"
+    r"(?P<grantee>[^\t\n]+?)\t(?P<doctype>[A-Z][A-Z '/&.-]+?)\t"
+    r"(?P<legal>[^\t\n]*)\t(?P<recorded>\d{1,2}/\d{1,2}/20\d{2})(?P<town>)")
+_orig_parse = dr.parse_rows_from_text
+def _gw_parse(text):
+    rows = _orig_parse(text)
+    for r in rows:
+        bvp = _re.sub(r"\s+", "-", (r.get("book_vol_page") or "").strip())
+        r["doc_number"] = f"GW-{bvp}-{r['doc_number']}"
+    return rows
+dr.parse_rows_from_text = _gw_parse
 dr.SOURCE_TYPE = "ct_greenwich_recorder"
 
 import requests  # noqa: E402
