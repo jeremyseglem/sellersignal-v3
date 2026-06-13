@@ -29,7 +29,7 @@ jobs:
           from playwright.sync_api import sync_playwright
           import time, json
 
-          URL = "https://${{ github.event.inputs.host || 'dallas' }}.tx.publicsearch.us/"
+          URL = "https://${{ github.event.inputs.host || 'dallas.tx' }}.publicsearch.us/"  # host includes state segment
           api_calls = []
 
           with sync_playwright() as p:
