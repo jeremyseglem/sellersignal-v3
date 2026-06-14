@@ -58,8 +58,16 @@ router = APIRouter()
 # Cache hits and misses are tracked for the X-Briefing-Cache header,
 # which makes it easy to verify cache behavior in production with
 # a single curl -I call.
+#
+# SIZING (2026-06-14): bumped 100 -> 400. The "100" was sized for the
+# original 11 KC ZIPs; the platform now has 90 live ZIPs across 7
+# markets. With MAX=100 and 90 ZIPs (× a few param combos), the cache
+# overflowed and LRU-evicted live ZIPs, forcing cold ~10s recomputes
+# even inside the TTL window — a real driver of the "briefing is slow
+# again" reports. 400 comfortably holds every live ZIP's default-param
+# entry plus headroom; each entry is a small dict so memory is trivial.
 _BRIEFING_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
-_BRIEFING_CACHE_MAX = 100
+_BRIEFING_CACHE_MAX = 400
 
 # TTL: how long a cached briefing is considered fresh. Without this,
 # the cache holds entries until LRU eviction — which on a low-traffic
@@ -68,10 +76,12 @@ _BRIEFING_CACHE_MAX = 100
 # briefing reads the cached playbook; with no TTL the two drift apart
 # and agents see different numbers in different places.
 #
-# 5 minutes is the agreed bound: new matches landed by the harvester
-# or new statuses set by agents become visible within 5 min of any
-# refresh, and territories/briefing converge within the same window.
-_BRIEFING_CACHE_TTL_SEC = 300
+# 2026-06-14: raised 300 -> 900 (15 min). 5 min meant any idle gap
+# longer than a coffee break dropped the agent back to a cold ~10s
+# recompute. 15 min keeps a working session warm; data changes still
+# surface via ?force_rebuild=true and the territory snapshot
+# (refresh-counts) updates independently. Acceptable staleness for beta.
+_BRIEFING_CACHE_TTL_SEC = 900
 
 
 def _briefing_cache_get(key: tuple):
