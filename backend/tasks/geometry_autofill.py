@@ -160,6 +160,7 @@ async def geometry_autofill_loop() -> None:
                 backfill_geometry_zip,
                 zip_code, market_key=market_key,
                 dry_run=False, limit=GEOM_CHUNK, verbose=False,
+                geocode_fallback=True,
             )
 
             state["last_tick_at"] = datetime.now(timezone.utc).isoformat()
