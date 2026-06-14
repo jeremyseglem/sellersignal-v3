@@ -481,6 +481,7 @@ function StatsCard({
                     ?? 0;
   const buckets = zipRecord?.contact_now_buckets || null;
   const city    = zipRecord?.city || '—';
+  const stateAbbr = zipRecord?.state || '';
 
   // Slide-in transform. Off-state pushes the card 20px off-screen in
   // the appropriate direction; on-state lets transition settle to 0.
@@ -504,7 +505,7 @@ function StatsCard({
 
         <div style={STYLES.cardHead}>
           <h3 style={STYLES.cardZip}>{zip}</h3>
-          <div style={STYLES.cardCity}>{city}, WA</div>
+          <div style={STYLES.cardCity}>{stateAbbr ? `${city}, ${stateAbbr}` : city}</div>
           <span style={{ ...STYLES.statusPill, ...statusPillStyle(status) }}>
             {cfg.label}
           </span>
