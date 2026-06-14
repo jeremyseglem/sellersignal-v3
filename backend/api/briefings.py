@@ -466,8 +466,10 @@ async def get_briefing(
 
         # Apply contact_status to each match in every overlay
         # Recorder/citation sources whose PR rides in the signal itself (no
-        # case_parties scrape). CT joins the same branch as TX (2026-06-12).
-        _TX_SOURCES = {'tx_topics_citations', 'tx_dallas_recorder', 'tx_travis_recorder', 'tx_collin_recorder', 'ct_greenwich_recorder'}
+        # case_parties scrape). CT joined 2026-06-12; AZ Maricopa joined
+        # 2026-06-14 (was missing — AZ probates fell through to
+        # 'not_applicable', discarding their PD-parsed personal representative).
+        _RECORDER_SOURCES = {'tx_topics_citations', 'tx_dallas_recorder', 'tx_travis_recorder', 'tx_collin_recorder', 'ct_greenwich_recorder', 'az_maricopa_recorder'}
         _CORP_PR_RE = _re.compile(
             r'\b(LLC|INC|CORP|CO|TRUST|BANK|INVESTMENTS?|PROPERTIES|HOLDINGS|'
             r'LLP|PLLC|PC|LAW|ATTORNEY|ESQ|GROUP|PARTNERS|CAPITAL)\b', _re.I)
@@ -482,7 +484,7 @@ async def get_briefing(
                 # affiant heir) — there is no case_parties_v3 row to consult.
                 # Classify the PR name directly: family-looking → actionable;
                 # corporate/attorney-looking → unworkable; absent → no PR yet.
-                if src in _TX_SOURCES and m.get('signal_type') == 'probate':
+                if src in _RECORDER_SOURCES and m.get('signal_type') == 'probate':
                     pr_name = None
                     for p in (m.get('party_names') or []):
                         if isinstance(p, dict) and \
