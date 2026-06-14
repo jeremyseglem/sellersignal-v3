@@ -334,12 +334,18 @@ async def _fetch_geometry_for_pins(pins: list[str],
 _geocode_skipped_column_available: Optional[bool] = None
 
 
-def _fetch_pins_missing_geometry(supa, zip_code: str) -> list[str]:
+def _fetch_pins_missing_geometry(supa, zip_code: str,
+                                 include_skipped: bool = False) -> list[str]:
     """PINs in this ZIP where lat or lng is NULL.
 
     Excludes PINs marked geocode_skipped=TRUE (the 024 migration's
     "we tried and the source has no record" flag) so they don't sit
     at the top of the queue and block progress on findable PINs.
+
+    When include_skipped=True the geocode_skipped filter is dropped, so
+    previously-skipped PINs are returned too. Used to reclaim parcels
+    the GIS-only autofill skipped before the Census fallback existed —
+    the Census path can resolve their building address.
 
     Defensive: if the column doesn't exist (migration not applied
     yet), falls back to the legacy query and logs a one-time warning.
@@ -361,7 +367,9 @@ def _fetch_pins_missing_geometry(supa, zip_code: str) -> list[str]:
 
     while True:
         try:
-            if _geocode_skipped_column_available is not False:
+            if include_skipped:
+                res = _query(use_skipped_filter=False)
+            elif _geocode_skipped_column_available is not False:
                 res = _query(use_skipped_filter=True)
                 _geocode_skipped_column_available = True
             else:
@@ -442,6 +450,7 @@ async def backfill_geometry_zip_async(
     zip_code: str, market_key: str = 'WA_KING',
     dry_run: bool = False, limit: Optional[int] = None,
     verbose: bool = True, geocode_fallback: bool = False,
+    retry_skipped: bool = False,
 ) -> dict:
     """
     Async implementation. Safe to call from a FastAPI async endpoint
@@ -463,7 +472,7 @@ async def backfill_geometry_zip_async(
         stats['errors'].append('Supabase not configured')
         return stats
 
-    pins = _fetch_pins_missing_geometry(supa, zip_code)
+    pins = _fetch_pins_missing_geometry(supa, zip_code, include_skipped=retry_skipped)
     stats['missing_geom'] = len(pins)
     log(f"[geometry_backfill] ZIP {zip_code}: {len(pins)} parcels missing geometry")
 
@@ -538,7 +547,8 @@ async def backfill_geometry_zip_async(
 # ──────────────────────────────────────────────────────────────────────
 def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
                           dry_run: bool = False, limit: Optional[int] = None,
-                          verbose: bool = True, geocode_fallback: bool = False) -> dict:
+                          verbose: bool = True, geocode_fallback: bool = False,
+                          retry_skipped: bool = False) -> dict:
     """
     Synchronous wrapper around backfill_geometry_zip_async.
     Creates its own event loop — do NOT call from inside async code;
@@ -547,5 +557,5 @@ def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
     return asyncio.run(backfill_geometry_zip_async(
         zip_code=zip_code, market_key=market_key,
         dry_run=dry_run, limit=limit, verbose=verbose,
-        geocode_fallback=geocode_fallback,
+        geocode_fallback=geocode_fallback, retry_skipped=retry_skipped,
     ))
