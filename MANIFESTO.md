@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-06-12 night (90 live territories / 7 markets — CONNECTICUT live: Greenwich 5 ZIPs, 1,808 leads day one. Collin County TX launched + recorder live; 9-ZIP expansion wave; canon worker-saturation root-caused and fixed; blank-lead-page resolved; Maricopa county inversion shipped)
+**Last updated:** 2026-06-14 (90 live territories / 7 markets — MARICOPA probate harvesting SOLVED: deep PD pull 27→998 signals / 7→143 in-ZIP hits over 2yr, harvester self-healing (per-slice flush + parallel roll cache); recorder eligibility fix adds `az_maricopa_recorder`; honest finding — Contact-Now probate ceiling ~14 is a data-quality bound, NOT freshness/volume. Prior: CT Greenwich live 5 ZIPs; Collin recorder; canon worker-saturation fixed.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -506,6 +506,28 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-06-14 — Maricopa deep PD pull + recorder eligibility fix (probate harvesting SOLVED; honest Contact-Now ceiling)
+
+**The problem.** AZ_MARICOPA (24 ZIPs) was stuck at 7 Contact-Now probate leads vs KC's 2,126. Root cause was NOT the matcher — it was signal starvation. The recorder harvester had only ever pulled ~27 probate (`PD`) signals over a ~2-week window, vs KC's 8,846 court signals over 12 months. At the same ~22% in-ZIP hit rate, 27 signals can only yield ~7 hits. (Diagnosed via `/api/harvest/diag/signal-date-range?signal_type=probate&source_type=...` which gives total/matched/0-hit/earliest/latest.)
+
+**Why the harvester was starved — two compounding bugs, both fixed.** Every GitHub Action run since 06-11 was CANCELLED: (1) the runner accumulated all rows in memory and wrote to Supabase ONCE at the end, so any mid-run cancellation persisted zero; (2) the weekly county-roll cache build (1.76M parcels, sequential `resultOffset` pagination ~9-11s/page) blew the 350-min job ceiling, got cancelled, and since the cache only saves on success it never warmed — so every run rebuilt from scratch and died. Vicious cycle, the dominant blocker. NOTE: the Maricopa recorder is Cloudflare-gated from datacenter IPs — only the GitHub Action vantage can fetch it, so ALL parser/fetch validation must go through Action runs, never local.
+
+**Fixes shipped (workflow id 293329302):**
+- `7cc79f6` — runner walks the window in 30-day sub-slices and flushes writes PER SLICE (cancellation-safe, resumable via existing skip-seen). Added `END_OFFSET_DAYS`. Daily 14-day cron behavior unchanged.
+- `bd6f918` — county-roll builder parallelized via `ThreadPoolExecutor` (`ROLL_WORKERS=10`, `fetch_page(offset)` helper). Roll build ~57min (was 5+ hrs) → completes under timeout → cache finally sticks → runs stop dying. (Speculative further speedup: keyset pagination on `APN_DASH` instead of `resultOffset` — non-blocking, cache covers the week.)
+- `bffe0b6` — CAPTURE mode (`capture=1`): dump raw OCR for any doc code without roll/parse/write, for probing the code catalog. Skips the roll-build steps.
+- `7fb5f9b` — `briefings.py`: `az_maricopa_recorder` was MISSING from the recorder-PR-classification source set (renamed `_TX_SOURCES`→`_RECORDER_SOURCES`). AZ probates fell through to `contact_status='not_applicable'`, discarding their `PD`-parsed family PR. Now classified like the TX/CT recorders (family-looking PR → `family_pr_identified`; corporate → `unworkable_pr`; absent → `no_pr_yet`). Verified AZ recorder signals carry `party_names` with a `personal_representative` entry, same shape as TX/CT, so the branch works; parser sets `pr_name` but not `pr_classification` — briefing re-derives via `_CORP_PR_RE` regex, so that's fine.
+
+**Deep PD pull (Action run, days=730, write=1): 27 → 998 signals, 7 → 143 in-ZIP hits, full 2 years back to 2024-06-13.** This is the real win — King-County-style pipeline depth. Harvesting is now permanently fixed and self-healing (roll cached, incremental resumable writes, daily cron).
+
+**Parser tier ruled out as empty.** Capture runs over a full year returned: `JP` (Decree of Distribution) = 0, `DC` (Death Certificate) = 0, `BB` (Beneficiary Deed) = 0. `PD` is the ONLY productive Maricopa recorder probate code. No additional parsers worth building.
+
+**Honest conclusion — the eligibility fix is a CORRECTNESS fix, not a volume fix.** After `7fb5f9b` + full 24-ZIP refresh, AZ Contact-Now probate went 15 → 14 (DOWN one — correctly deferred a no-PR false positive). The deep pull did NOT raise Contact-Now. Verified in code: there is NO event-date freshness gate on Contact-Now (the only 7-day logic is `_is_new_this_week`, a display badge in `_shape_pick`, not a gate). The 143→14 funnel is `eligible_for_call_now` (strict parcel match + actionable family PR, Rules 1/2/3/6) + owner dedup. So the Contact-Now probate ceiling (~14) is a DATA-QUALITY bound — how many in-ZIP `PD` docs both strict-match an owner AND name a parseable family PR — NOT freshness and NOT signal volume. The deep pull's payoff is Build-Now depth (143 in-ZIP hits). The fix's real value: the dossier now names the actual PR to call (was blank under `not_applicable`), and no-PR probates are correctly deferred. (Earlier-in-session hypothesis that the eligibility path was suppressing a big lead jump was WRONG and is owned here.)
+
+**Ops lesson reinforced.** `refresh-counts` is an in-process briefing recompute on the single uvicorn worker — firing 24 back-to-back saturated the worker and timed out reads (site degraded ~2 min, recovered; `/api/health` stayed 200 throughout). Refresh in small paced batches with sleeps, never rapid-fire 24. No commit-SHA in `/api/health`, so deploys are verified via background-task `started_at` reset.
+
+**Still open:** PAT rotation owed (workflow-scoped classic PAT used this session — kept OUT of repo per active issue #7); CT + Collin coverage rows still show `city='Bellevue'` (fix via `/admin/coverage-meta/{zip}` on those 10 ZIPs); Greenwich post-canon recorder close-out.
 
 ### 2026-06-12 (night) — CONNECTICUT LIVE: Greenwich 5-ZIP launch (7th state-market, 90 territories)
 
