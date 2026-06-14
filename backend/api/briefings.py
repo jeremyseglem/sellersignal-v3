@@ -798,8 +798,15 @@ async def get_briefing(
         strategic_holds_total = _ws.count_strategic_holds_eligible(
             leads, exclude_pins, used_owner_keys)
 
+        # Render cap lowered 1000 -> 100 (2026-06-14): shaping 1000 holds
+        # (resolve_copy + investigation overlay per lead) made the briefing
+        # ~16s / 1.16MB on a cold cache, blocking the single worker so
+        # lead-clicks (/parcels) couldn't be served until it finished. The
+        # true pool size still rides in strategic_holds_total for the
+        # "N on watch list" header; the map colors the top 100 holds and
+        # renders the rest as background parcels. Tunable via ?hold_limit=.
         hold_leads     = _ws.select_strategic_holds(leads, exclude_pins, used_owner_keys,
-                                                    n=hd_n if hd_n is not None else 1000)
+                                                    n=hd_n if hd_n is not None else 100)
 
         # ── Resolve pressure-scored copy for each pick ──
         for L in call_now_leads:  L['_section'] = 'CALL NOW'
