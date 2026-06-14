@@ -315,6 +315,7 @@ async def geometry_backfill_endpoint(
     dry_run: bool = False,
     limit: Optional[int] = None,
     market_key: str = 'WA_KING',
+    geocode_fallback: bool = False,
 ):
     """
     Fill lat/lng on parcels_v3 rows that are missing geometry.
@@ -393,6 +394,7 @@ async def geometry_backfill_endpoint(
             dry_run=dry_run,
             limit=limit,
             verbose=False,
+            geocode_fallback=geocode_fallback,
         )
     except Exception as e:
         raise HTTPException(500, f"Geometry backfill failed: {e}")

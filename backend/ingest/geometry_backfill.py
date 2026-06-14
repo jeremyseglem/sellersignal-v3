@@ -20,6 +20,9 @@ ArcGIS query uses outSR=4326 (WGS84) so Leaflet can consume directly.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import re
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -121,6 +124,17 @@ BATCH_SIZE = 50        # PINs per ArcGIS IN clause. 200 was too large —
 PAGE_SIZE = 2000       # features per response (ArcGIS max)
 REQUEST_TIMEOUT_SECONDS = 60
 
+# Census batch geocoder — fallback for parcels the county GIS layer has no
+# geometry for (overwhelmingly condo/unit parcels that share a building
+# footprint; verified absent from Dallas DallasTaxParcels + Travis TCAD).
+# The geocoder resolves the building's street address to a WGS84 point —
+# exactly right for a condo map pin. Free, keyless, ~10k rows/request;
+# chunked smaller for reliability.
+CENSUS_BATCH_URL = (
+    "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
+)
+GEOCODE_CHUNK = 1000   # addresses per Census batch request
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Geometry extraction — same logic as arcgis._extract_lat_lng
@@ -149,6 +163,87 @@ def _extract_lat_lng(geom: dict) -> tuple[Optional[float], Optional[float]]:
 # ──────────────────────────────────────────────────────────────────────
 # ArcGIS batch fetcher
 # ──────────────────────────────────────────────────────────────────────
+def _strip_unit(addr: str) -> str:
+    """Drop unit/apt/suite/# suffixes so the building address geocodes.
+    A condo unit shares its building's coordinates, which is what we want
+    for a map pin. '1201 CASTLE HILL ST #301' -> '1201 CASTLE HILL ST'."""
+    if not addr:
+        return ""
+    a = addr.strip()
+    a = re.split(r"\s+#", a)[0]
+    a = re.split(r"\s+\b(?:UNIT|APT|STE|SUITE|BLDG|FL|FLOOR|RM|ROOM)\b",
+                 a, flags=re.IGNORECASE)[0]
+    return a.strip().rstrip(",").strip()
+
+
+def _fetch_addresses_for_pins(supa, pins: list[str]) -> dict:
+    """Return {pin: (street, city, state, zip)} for the given pins."""
+    out: dict = {}
+    pin_list = list(set(pins))
+    PAGE = 1000
+    for i in range(0, len(pin_list), PAGE):
+        chunk = pin_list[i:i + PAGE]
+        try:
+            res = (supa.table('parcels_v3')
+                   .select('pin, address, city, state, zip_code')
+                   .in_('pin', chunk)
+                   .execute())
+        except Exception as e:
+            print(f"[geometry_backfill] address fetch error: {e}")
+            continue
+        for r in (res.data or []):
+            out[r['pin']] = (
+                (r.get('address') or '').strip(),
+                (r.get('city') or '').strip(),
+                (r.get('state') or '').strip(),
+                (r.get('zip_code') or '').strip(),
+            )
+    return out
+
+
+async def _geocode_addresses_census(addr_map: dict) -> dict:
+    """Census batch-geocode {pin: (street, city, state, zip)} to
+    {pin: (lat, lng)}. Only rows with a resolvable street are sent;
+    unmatched pins simply don't appear in the result."""
+    if httpx is None:
+        raise ImportError("httpx is required. pip install httpx")
+    rows = []
+    for pin, (street, city, state, z) in addr_map.items():
+        base = _strip_unit(street)
+        if base:
+            rows.append((pin, base, city, state, z))
+    out: dict = {}
+    if not rows:
+        return out
+    async with httpx.AsyncClient(timeout=180) as client:
+        for i in range(0, len(rows), GEOCODE_CHUNK):
+            chunk = rows[i:i + GEOCODE_CHUNK]
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            for pin, street, city, state, z in chunk:
+                # Census batch CSV (no header): UniqueID, Street, City, State, ZIP
+                w.writerow([pin, street, city, state, z])
+            files = {'addressFile': ('addrs.csv', buf.getvalue(), 'text/csv')}
+            data = {'benchmark': 'Public_AR_Current'}
+            try:
+                resp = await client.post(CENSUS_BATCH_URL, files=files, data=data)
+                resp.raise_for_status()
+                text = resp.text
+            except Exception as e:
+                print(f"[geometry_backfill] census batch {i//GEOCODE_CHUNK} error: {e}")
+                continue
+            # Response CSV: id, input, Match/No_Match, type, matched, "lng,lat", tigerid, side
+            for r in csv.reader(io.StringIO(text)):
+                if len(r) >= 6 and r[2] == 'Match' and r[5]:
+                    try:
+                        lng_s, lat_s = r[5].split(',')
+                        out[r[0]] = (float(lat_s), float(lng_s))
+                    except (ValueError, IndexError):
+                        continue
+            await asyncio.sleep(0.3)
+    return out
+
+
 async def _fetch_geometry_for_pins(pins: list[str],
                                     market_key: str = 'WA_KING') -> dict[str, tuple[float, float]]:
     """
@@ -346,7 +441,7 @@ def _bulk_update_coords(supa, coords: dict[str, tuple[float, float]]) -> int:
 async def backfill_geometry_zip_async(
     zip_code: str, market_key: str = 'WA_KING',
     dry_run: bool = False, limit: Optional[int] = None,
-    verbose: bool = True,
+    verbose: bool = True, geocode_fallback: bool = False,
 ) -> dict:
     """
     Async implementation. Safe to call from a FastAPI async endpoint
@@ -394,8 +489,30 @@ async def backfill_geometry_zip_async(
         return stats
 
     stats['fetched'] = len(coords)
+    log(f"[geometry_backfill] fetched coords for {len(coords)} of {len(pins)} PINs from county GIS")
+
+    # Census address-geocode fallback: the county parcel layers (notably
+    # Dallas DallasTaxParcels + Travis TCAD) carry no per-unit condo
+    # geometry — stacked units share one building footprint, so the pin
+    # is simply absent. Geocode the building's street address to a point;
+    # a condo pin belongs on its building. Gated so other markets (already
+    # ~100% from GIS) are untouched.
+    if geocode_fallback:
+        unresolved = [pin for pin in pins if pin not in coords]
+        if unresolved:
+            log(f"[geometry_backfill] census fallback on {len(unresolved)} GIS-unresolved PINs")
+            addr_map = _fetch_addresses_for_pins(supa, unresolved)
+            try:
+                geo = await _geocode_addresses_census(addr_map)
+            except Exception as e:
+                stats['errors'].append(f"census fallback failed: {e}")
+                geo = {}
+            stats['census_fetched'] = len(geo)
+            log(f"[geometry_backfill] census resolved {len(geo)} additional PINs")
+            coords.update(geo)
+            stats['fetched'] = len(coords)
+
     stats['not_found'] = len(pins) - len(coords)
-    log(f"[geometry_backfill] fetched coords for {len(coords)} of {len(pins)} PINs")
     if stats['not_found']:
         log(f"[geometry_backfill] {stats['not_found']} PINs had no ArcGIS geometry (may be retired parcels)")
         # Mark the not-found PINs as geocode_skipped so the next backfill
@@ -421,7 +538,7 @@ async def backfill_geometry_zip_async(
 # ──────────────────────────────────────────────────────────────────────
 def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
                           dry_run: bool = False, limit: Optional[int] = None,
-                          verbose: bool = True) -> dict:
+                          verbose: bool = True, geocode_fallback: bool = False) -> dict:
     """
     Synchronous wrapper around backfill_geometry_zip_async.
     Creates its own event loop — do NOT call from inside async code;
@@ -430,4 +547,5 @@ def backfill_geometry_zip(zip_code: str, market_key: str = 'WA_KING',
     return asyncio.run(backfill_geometry_zip_async(
         zip_code=zip_code, market_key=market_key,
         dry_run=dry_run, limit=limit, verbose=verbose,
+        geocode_fallback=geocode_fallback,
     ))
