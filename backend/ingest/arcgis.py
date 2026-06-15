@@ -238,7 +238,9 @@ def _derive_owner_type(owner_name: str) -> str:
         r'\b(?:CITY\s+OF|COUNTY\s+OF|STATE\s+OF|US\s+OF\s+AMERICA|'
         r'PORT\s+OF|UNITED\s+STATES|FEDERAL|MUNICIPAL|'
         r'SCHOOL\s+DIST(?:RICT)?|PUBLIC\s+UTIL|WATER\s+DIST|'
-        r'PARK\s+DIST|FIRE\s+DIST|HOUSING\s+AUTH)\b',
+        r'PARK\s+DIST|FIRE\s+DIST|HOUSING\s+AUTH|'
+        r'AUTHORITY|REDEVELOPMENT|BOROUGH\s+OF|VILLAGE\s+OF|'
+        r'TOWN\s+OF|METROPOLITAN\s+DIST|COMMISSION)\b',
         on_norm,
     ):
         return 'gov'
@@ -281,7 +283,13 @@ def _derive_owner_type(owner_name: str) -> str:
         r'\bNONPROFIT\b|\bNON-PROFIT\b|\bNOT\s+FOR\s+PROFIT\b|'
         r'\bCHARITY\b|\bCHARITABLE\b|'
         r'\bMINISTRY\b|\bMINISTRIES\b|'
-        r'\bCONGREGATION\b|\bFELLOWSHIP\b',
+        r'\bCONGREGATION\b|\bFELLOWSHIP\b|'
+        r'\bCONVENT\b|\bMONASTERY\b|\bABBEY\b|\bRECTORY\b|\bSEMINARY\b|'
+        r'\bFOUNDATION\b|\bENDOWMENT\b|\bSOCIETY\b|\bCONSERVANCY\b|'
+        r'\bHABITAT\b|\bHOMEOWNERS?\b|\bASSOCIATION\b|\bASSN\b|\bASSOC\b|'
+        r'\bHOA\b|\bUNIVERSITY\b|\bCOLLEGE\b|\bACADEMY\b|\bHOSPITAL\b|'
+        r'\bMUSEUM\b|\bLIBRARY\b|\bCEMETERY\b|\bINSTITUTE\b|\bCLUB\b|'
+        r'\bEXCHANGE\b|\bCOUNCIL\b|\bLEAGUE\b',
         on_norm,
     ):
         return 'nonprofit'
@@ -301,8 +309,11 @@ def _derive_owner_type(owner_name: str) -> str:
 
     if re.search(
         r'\b(?:LLC|LLP|LP|INC|CORP|LTD|'
-        r'PARTNERSHIP|PARTNERS|'
-        r'HOLDINGS|GROUP|ENTERPRISES?|'
+        r'PARTNERSHIP|PARTNERS|ASSOCIATES|'
+        r'HOLDINGS|GROUP|ENTERPRISES?|COMPANY|'
+        r'REALTY|PROPERTIES|INVESTMENTS?|MANAGEMENT|'
+        r'DEVELOPMENT|BUILDERS|CONSTRUCTION|VENTURES|'
+        r'CAPITAL|BANCORP|'
         r'LIMITED\s+LIABILITY\s+COMPANY)\b',
         on_norm,
     ):
