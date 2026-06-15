@@ -289,7 +289,8 @@ def _derive_owner_type(owner_name: str) -> str:
         r'\bHABITAT\b|\bHOMEOWNERS?\b|\bASSOCIATION\b|\bASSN\b|\bASSOC\b|'
         r'\bHOA\b|\bUNIVERSITY\b|\bCOLLEGE\b|\bACADEMY\b|\bHOSPITAL\b|'
         r'\bMUSEUM\b|\bLIBRARY\b|\bCEMETERY\b|\bINSTITUTE\b|\bCLUB\b|'
-        r'\bEXCHANGE\b|\bCOUNCIL\b|\bLEAGUE\b',
+        r'\bEXCHANGE\b|\bCOUNCIL\b|\bLEAGUE\b|'
+        r'\bCONDOMINIUM\b|\bCOOPERATIVE\b',
         on_norm,
     ):
         return 'nonprofit'

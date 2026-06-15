@@ -602,7 +602,7 @@ async def reclassify_owner_type(
     #   - 'gov' -> anything except upgrades to 'nonprofit' (not yet implemented)
     # Trust<->estate cross is allowed because the TRUST vs SURVIVORS-TRUST
     # ordering fix correctly re-reads the data.
-    HIGHER_SPECIFICITY = {'llc', 'trust', 'estate', 'gov', 'nonprofit'}
+    HIGHER_SPECIFICITY = {'llc', 'trust', 'estate', 'gov', 'nonprofit', 'company'}
     changes: list[dict] = []
     skipped_downgrades = 0
     for r in all_rows:
