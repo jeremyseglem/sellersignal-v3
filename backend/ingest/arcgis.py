@@ -284,10 +284,10 @@ def _derive_owner_type(owner_name: str) -> str:
         r'\bCHARITY\b|\bCHARITABLE\b|'
         r'\bMINISTRY\b|\bMINISTRIES\b|'
         r'\bCONGREGATION\b|\bFELLOWSHIP\b|'
-        r'\bCONVENT\b|\bMONASTERY\b|\bABBEY\b|\bRECTORY\b|\bSEMINARY\b|'
+        r'\bCONVENT\b|\bMONASTERY\b|\bRECTORY\b|\bSEMINARY\b|'
         r'\bFOUNDATION\b|\bENDOWMENT\b|\bSOCIETY\b|\bCONSERVANCY\b|'
         r'\bHABITAT\b|\bHOMEOWNERS?\b|\bASSOCIATION\b|\bASSN\b|\bASSOC\b|'
-        r'\bHOA\b|\bUNIVERSITY\b|\bCOLLEGE\b|\bACADEMY\b|\bHOSPITAL\b|'
+        r'\bUNIVERSITY\b|\bCOLLEGE\b|\bACADEMY\b|\bHOSPITAL\b|'
         r'\bMUSEUM\b|\bLIBRARY\b|\bCEMETERY\b|\bINSTITUTE\b|\bCLUB\b|'
         r'\bEXCHANGE\b|\bCOUNCIL\b|\bLEAGUE\b|'
         r'\bCONDOMINIUM\b|\bCOOPERATIVE\b',
