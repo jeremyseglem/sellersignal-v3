@@ -290,7 +290,13 @@ def _derive_owner_type(owner_name: str) -> str:
         r'\bUNIVERSITY\b|\bCOLLEGE\b|\bACADEMY\b|\bHOSPITAL\b|'
         r'\bMUSEUM\b|\bLIBRARY\b|\bCEMETERY\b|\bINSTITUTE\b|\bCLUB\b|'
         r'\bEXCHANGE\b|\bCOUNCIL\b|\bLEAGUE\b|'
-        r'\bCONDOMINIUM\b|\bCOOPERATIVE\b',
+        r'\bCONDOMINIUM\b|\bCOOPERATIVE\b|'
+        r'\bLUTHERAN\b|\bMETHODIST\b|\bBAPTIST\b|\bPRESBYTERIAN\b|'
+        r'\bEPISCOPAL\b|\bEVANGELICAL\b|\bCONGREGATIONAL\b|\bUNITARIAN\b|'
+        r'\bADVENTIST\b|\bPENTECOSTAL\b|\bMENNONITE\b|\bORTHODOX\b|'
+        r'\bCATHOLIC\b|\bTABERNACLE\b|'
+        r'\bVETERANS\b|\bLEGION\b|\bELKS\b|\bROTARY\b|\bKIWANIS\b|'
+        r'\bKNIGHTS\s+OF\b|\bMASONIC\b|\bVFW\b',
         on_norm,
     ):
         return 'nonprofit'
@@ -315,6 +321,7 @@ def _derive_owner_type(owner_name: str) -> str:
         r'REALTY|PROPERTIES|INVESTMENTS?|MANAGEMENT|'
         r'DEVELOPMENT|BUILDERS|CONSTRUCTION|VENTURES|'
         r'CAPITAL|BANCORP|'
+        r'TELEPHONE|ELECTRIC|UTILITIES|RAILROAD|RAILWAY|GAS|'
         r'LIMITED\s+LIABILITY\s+COMPANY)\b',
         on_norm,
     ):

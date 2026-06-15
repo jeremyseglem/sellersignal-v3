@@ -816,6 +816,16 @@ def _select_absentee_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP)
     return picks
 
 
+# A living individual essentially never personally holds a deed beyond
+# ~80 years (bought as an adult 80 yrs ago => ~100+ today). Tenure past
+# this is a near-certain tell of a mis-classified entity (church/HOA/
+# utility the keyword classifier missed), a deed that never transferred
+# after the owner died (an estate, not a callable individual), or a bad
+# sale_date. Keep these out of the tenure bucket — they otherwise sort
+# straight to the top since the bucket ranks by tenure descending.
+_MAX_PLAUSIBLE_INDIVIDUAL_TENURE = 80
+
+
 def _select_long_tenure_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_CAP):
     """Long-term tenure bucket — individual-owned parcels held 15+ years.
 
@@ -829,7 +839,8 @@ def _select_long_tenure_bucket(leads, exclude_pins, used_owner_keys, n=_BUCKET_C
                 and owner_base_key(L) not in used_owner_keys
                 and not _has_blocker(L)
                 and (L.get('owner_type') or '').lower() == 'individual'
-                and (L.get('tenure_years') or 0) >= 15)
+                and (L.get('tenure_years') or 0) >= 15
+                and (L.get('tenure_years') or 0) <= _MAX_PLAUSIBLE_INDIVIDUAL_TENURE)
 
     picks = []
     for L in sorted([L for L in leads if base_filter(L)],
