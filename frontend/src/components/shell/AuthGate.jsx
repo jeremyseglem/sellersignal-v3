@@ -4,25 +4,21 @@ import { useAuth } from '../../lib/AuthContext.jsx';
 // AuthGate — wraps protected routes. Behavior depends on the
 // VITE_AUTH_REQUIRED build-time env var:
 //
-//   VITE_AUTH_REQUIRED=true   → enforce auth. Signed-out users get
+//   default (unset/anything)  → enforce auth. Signed-out users get
 //                                redirected to /login with ?next=
 //                                preserving their original path.
-//   anything else (default)   → demo mode. Auth is fully bypassed.
-//                                Anyone with the URL can hit any
-//                                route. Useful for early beta where
-//                                Jeremy + Brian want to walk the
-//                                product without logging in.
+//   VITE_AUTH_REQUIRED=false  → demo mode. Auth is fully bypassed;
+//                                anyone with the URL can hit any
+//                                route. Only for deliberate demos.
 //
-// Demo mode is the default because beta validation matters more
-// than gating during the 'show this to my partner' phase. Flip
-// VITE_AUTH_REQUIRED=true in Railway when public launch needs
-// real auth, and the gate re-engages without any code changes.
-//
-// AuthContext + Supabase Auth still run in demo mode — the user
-// just doesn't need to sign in to see protected pages. If they DO
-// sign in (manually navigating to /login), header and profile
-// still work normally. The flag only controls redirects.
-const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED === 'true';
+// SECURE BY DEFAULT: as of the post-launch auth hardening, the gate
+// enforces auth unless explicitly disabled with VITE_AUTH_REQUIRED=
+// 'false'. (Previously it was demo-by-default, which left protected
+// routes open whenever the bundle wasn't built with the flag set.)
+// The authoritative data gate is server-side (briefings/map/parcels
+// require_zip_access); this is the UI gate that also drives the
+// logout → /login redirect.
+const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED !== 'false';
 
 export default function AuthGate({ children }) {
   const { loading, session } = useAuth();

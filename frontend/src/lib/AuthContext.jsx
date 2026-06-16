@@ -137,7 +137,11 @@ export function AuthProvider({ children }) {
     signOut: async () => {
       await supabaseSignOut();
       setProfile(null);
-      // session goes null via onAuthStateChange
+      // Hard redirect to the public home. A full navigation unloads the
+      // React tree entirely, so no protected data stays painted on a
+      // shared/public machine after logout — and the route resets
+      // regardless of AuthGate re-render timing.
+      window.location.assign('/');
     },
     refreshProfile,
   };

@@ -13,9 +13,12 @@ Heat map coloring on the frontend uses the 'category' field:
   category=uninvestigated   → cool blue (lightest)
   category=avoid            → slate (blocker)
 """
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from typing import Optional
 from backend.api.db import get_supabase_client
 from backend.api.zip_gate import require_live_zip
+from backend.api.auth import user_from_authorization as _user_from_authorization
+from backend.api.territory import require_zip_access as _require_zip_access
 import os
 import hmac
 import hashlib
@@ -85,12 +88,24 @@ def _filter_bbox_outliers(coords: list[tuple[float, float]]) -> tuple[float, flo
 # Map data — heatmap + pin payload
 # ============================================================================
 
+def _gate(zip_code, authorization, x_admin_key):
+    """Read-endpoint auth gate. Allows server-to-self admin-key loopback;
+    otherwise requires an authenticated user with access to zip_code
+    (operator = all ZIPs, agent = own assigned_zip). Mirrors briefings."""
+    admin_env = (os.environ.get('ADMIN_KEY') or '').strip()
+    if admin_env and x_admin_key and x_admin_key == admin_env:
+        return
+    _require_zip_access(_user_from_authorization(authorization), zip_code)
+
+
 @router.get("/{zip_code}")
 async def get_map_data(
     zip_code: str = Depends(require_live_zip),
     include_uninvestigated: bool = Query(True,
         description="Include parcels with no investigation data"),
     limit: int = Query(5000, ge=1, le=20000),
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
 ):
     """
     All parcels in a ZIP formatted for map rendering.
@@ -103,6 +118,7 @@ async def get_map_data(
       - pressure: 0-3 if investigated, else null
       - has_street_view: True always (can generate on demand)
     """
+    _gate(zip_code, authorization, x_admin_key)
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
@@ -241,7 +257,11 @@ async def get_map_data(
 
 
 @router.get("/{zip_code}/bounds")
-async def get_zip_bounds(zip_code: str = Depends(require_live_zip)):
+async def get_zip_bounds(
+    zip_code: str = Depends(require_live_zip),
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+):
     """Bounding box for a ZIP — used to center map on load.
 
     Applies the same bbox-outlier filter as /map so the initial zoom
@@ -249,6 +269,7 @@ async def get_zip_bounds(zip_code: str = Depends(require_live_zip)):
     tagged with ZIP5=98053 whose geometry sits in Seattle — without
     filtering, the map would initially zoom to span Seattle→Snoqualmie).
     """
+    _gate(zip_code, authorization, x_admin_key)
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
@@ -326,6 +347,8 @@ async def get_streetview_url(
     pin: str,
     size: str = Query("640x400", pattern=r"^\d{2,4}x\d{2,4}$"),
     fov: int = Query(80, ge=20, le=120),
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
 ):
     """
     Returns a Google Street View Static URL for a parcel.
@@ -344,7 +367,7 @@ async def get_streetview_url(
 
     try:
         result = (supa.table('parcels_v3')
-                  .select('lat, lng, address')
+                  .select('zip_code, lat, lng, address')
                   .eq('pin', pin)
                   .maybe_single()
                   .execute())
@@ -352,6 +375,8 @@ async def get_streetview_url(
 
         if not parcel or not parcel.get('lat'):
             raise HTTPException(404, f"Parcel {pin} has no geocoded location")
+
+        _gate(parcel.get('zip_code'), authorization, x_admin_key)
 
         params = {
             'size':     size,

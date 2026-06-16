@@ -122,17 +122,17 @@ export const briefings = {
 
 export const map = {
   get: (zip, includeUninvestigated = true) =>
-    request(`/map/${zip}?include_uninvestigated=${includeUninvestigated}`),
-  bounds: (zip) => request(`/map/${zip}/bounds`),
+    authedRequest(`/map/${zip}?include_uninvestigated=${includeUninvestigated}`),
+  bounds: (zip) => authedRequest(`/map/${zip}/bounds`),
   streetView: (pin, size = '640x400') =>
-    request(`/map/streetview/${pin}?size=${size}`),
+    authedRequest(`/map/streetview/${pin}?size=${size}`),
 };
 
 // ── Parcels ────────────────────────────────────────────────────────
 
 export const parcels = {
-  get: (pin) => request(`/parcels/${pin}`),
-  why: (pin) => request(`/parcels/${pin}/why`),
+  get: (pin) => authedRequest(`/parcels/${pin}`),
+  why: (pin) => authedRequest(`/parcels/${pin}/why`),
 };
 
 // ── Investigations ─────────────────────────────────────────────────

@@ -8,9 +8,13 @@ Parcel endpoints are keyed on pin, not zip. But they enforce ZIP coverage
 implicitly: we fetch the parcel, read its zip_code, then check that the
 ZIP is in coverage. If not, we return 404 as if the parcel didn't exist.
 """
-from fastapi import APIRouter, HTTPException
+import os
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Header
 from backend.api.db import get_supabase_client
 from backend.api.zip_gate import get_zip_status
+from backend.api.auth import user_from_authorization as _user_from_authorization
+from backend.api.territory import require_zip_access as _require_zip_access
 from backend.scoring.why_not_selling import generate_why_not_selling
 from backend.selection.parcel_state_tags import (
     derive_tags as derive_parcel_state_tags,
@@ -52,8 +56,22 @@ def _assert_parcel_zip_is_live(parcel: dict) -> None:
         raise HTTPException(404, f"Parcel not found")
 
 
+def _gate(zip_code, authorization, x_admin_key):
+    """Read-endpoint auth gate. Allows server-to-self admin-key loopback;
+    otherwise requires an authenticated user with access to zip_code
+    (operator = all ZIPs, agent = own assigned_zip). Mirrors briefings."""
+    admin_env = (os.environ.get('ADMIN_KEY') or '').strip()
+    if admin_env and x_admin_key and x_admin_key == admin_env:
+        return
+    _require_zip_access(_user_from_authorization(authorization), zip_code)
+
+
 @router.get("/{pin}")
-async def get_parcel(pin: str):
+async def get_parcel(
+    pin: str,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+):
     """
     Full parcel dossier. Returns parcel facts + investigation data if present.
     Used for the property-card overlay in the unified map+briefing UI.
@@ -78,6 +96,9 @@ async def get_parcel(pin: str):
 
         # Enforce ZIP coverage — return 404 if parcel's ZIP isn't live
         _assert_parcel_zip_is_live(parcel)
+
+        # Enforce territory access (operator = all; agent = own ZIP)
+        _gate(parcel.get('zip_code'), authorization, x_admin_key)
 
         # Prefer deep, fall back to screen
         inv_deep = (supa.table('investigations_v3')
@@ -388,7 +409,11 @@ async def get_parcel(pin: str):
 
 
 @router.get("/{pin}/why")
-async def get_why_not_selling_endpoint(pin: str):
+async def get_why_not_selling_endpoint(
+    pin: str,
+    authorization: Optional[str] = Header(None),
+    x_admin_key: Optional[str] = Header(None),
+):
     """
     Zero-API forensic read — no SerpAPI cost per lookup.
     Used when clicking a parcel pin that doesn't have an investigation record.
@@ -409,6 +434,8 @@ async def get_why_not_selling_endpoint(pin: str):
             raise HTTPException(404, f"Parcel {pin} not found")
 
         _assert_parcel_zip_is_live(parcel)
+
+        _gate(parcel.get('zip_code'), authorization, x_admin_key)
 
         why = generate_why_not_selling(parcel)
 
