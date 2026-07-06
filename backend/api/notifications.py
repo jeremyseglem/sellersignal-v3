@@ -22,7 +22,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 
 from backend.api.db import get_supabase_client
@@ -34,9 +34,18 @@ router = APIRouter()
 ZIP_RE = re.compile(r"^\d{5}$")
 
 
+# Whitelisted subscription sources. 'territories_map' is the original
+# authed-map flow; 'homepage_checker' is the public ZIP checker on the
+# landing page; 'expansion_request' is a ZIP we don't cover yet — the
+# email is captured as expansion demand and the coverage check below
+# is skipped for that source only.
+ALLOWED_SOURCES = {"territories_map", "homepage_checker", "expansion_request"}
+
+
 class SubscribeRequest(BaseModel):
     zip_code: str = Field(..., min_length=5, max_length=5)
     email:    EmailStr
+    source:   str = Field("territories_map")
 
 
 @router.post("/subscribe")
@@ -53,15 +62,20 @@ async def subscribe_to_zip(payload: SubscribeRequest, request: Request):
     if not supa:
         raise HTTPException(503, "Database unavailable")
 
-    # Verify the ZIP is one we actually cover. Subscribing to a ZIP we
-    # don't recognize is a UX hint that something's off.
-    cov = (supa.table("zip_coverage_v3")
-           .select("zip_code, status")
-           .eq("zip_code", payload.zip_code)
-           .limit(1)
-           .execute())
-    if not cov.data:
-        raise HTTPException(404, f"ZIP {payload.zip_code} is not in our coverage")
+    if payload.source not in ALLOWED_SOURCES:
+        raise HTTPException(400, "Unrecognized source")
+
+    # Verify the ZIP is one we actually cover — EXCEPT for expansion
+    # requests, where "we don't cover it" is exactly the point: the
+    # row is captured as demand signal for market prioritization.
+    if payload.source != "expansion_request":
+        cov = (supa.table("zip_coverage_v3")
+               .select("zip_code, status")
+               .eq("zip_code", payload.zip_code)
+               .limit(1)
+               .execute())
+        if not cov.data:
+            raise HTTPException(404, f"ZIP {payload.zip_code} is not in our coverage")
 
     # Capture lightweight context for fraud / abuse review later. Not
     # surfaced to agents and not used by trigger logic.
@@ -74,7 +88,7 @@ async def subscribe_to_zip(payload: SubscribeRequest, request: Request):
     row = {
         "zip_code":   payload.zip_code,
         "email":      str(payload.email),
-        "source":     "territories_map",
+        "source":     payload.source,
         "user_agent": user_agent or None,
         "ip_address": ip_address,
     }
@@ -187,3 +201,57 @@ async def queue_size_for_zip(zip_code: str):
     except Exception as e:
         log.exception("[notify] queue-size lookup failed: %s", e)
         raise HTTPException(500, "Lookup failed")
+
+
+@router.get("/admin/waitlist-summary")
+async def waitlist_summary(x_admin_key: Optional[str] = Header(None)):
+    """
+    Admin read of the full active wait list, grouped by ZIP. Gated by
+    X-Admin-Key. Includes emails (this is the outreach list — that's
+    the point of the endpoint), split by source so claimed-territory
+    waiters and expansion requests are distinguishable.
+    """
+    import os
+    server_key = os.environ.get("ADMIN_KEY")
+    if not server_key:
+        raise HTTPException(503, "ADMIN_KEY not configured server-side")
+    if x_admin_key != server_key:
+        raise HTTPException(401, "Missing or invalid X-Admin-Key header")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+
+    try:
+        r = (supa.table("zip_release_notifications")
+             .select("zip_code, email, source, created_at")
+             .is_("notified_at", "null")
+             .order("created_at", desc=True)
+             .limit(5000)
+             .execute())
+        rows = r.data or []
+    except Exception as e:
+        log.exception("[notify] waitlist-summary failed: %s", e)
+        raise HTTPException(500, "Lookup failed")
+
+    by_zip: dict = {}
+    for row in rows:
+        z = row["zip_code"]
+        entry = by_zip.setdefault(z, {
+            "zip_code": z, "total": 0,
+            "by_source": {}, "subscribers": [],
+        })
+        entry["total"] += 1
+        src = row.get("source") or "unknown"
+        entry["by_source"][src] = entry["by_source"].get(src, 0) + 1
+        entry["subscribers"].append({
+            "email": row["email"],
+            "source": src,
+            "created_at": row["created_at"],
+        })
+
+    out = sorted(by_zip.values(), key=lambda e: -e["total"])
+    return {
+        "total_active": len(rows),
+        "zips": out,
+    }

@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import Logo from '../components/shell/Logo.jsx';
+import { availability, notifications } from '../api/client.js';
 
 // HomePage — the public landing at `/`.
 //
@@ -468,10 +470,229 @@ function Territory() {
           agent and calls it ownership. Additional markets opening
           selectively.
         </p>
+
+        <ZipChecker />
       </div>
     </section>
   );
 }
+
+
+// ─────────────────────────────────────────────────────────────────
+// ZipChecker — public availability check inside the Territory
+// section. Three outcomes:
+//   open        → route to signup (the existing claim flow)
+//   claimed     → email capture on the release wait list
+//   not_covered → email capture as expansion demand
+// No countdowns, no urgency copy — the status itself is the scarcity.
+// ─────────────────────────────────────────────────────────────────
+function ZipChecker() {
+  const [zip, setZip]         = useState('');
+  const [result, setResult]   = useState(null);   // availability payload
+  const [email, setEmail]     = useState('');
+  const [phase, setPhase]     = useState('idle'); // idle|checking|checked|subscribing|subscribed
+  const [errMsg, setErrMsg]   = useState('');
+
+  const zipValid = /^\d{5}$/.test(zip);
+
+  async function check() {
+    if (!zipValid || phase === 'checking') return;
+    setPhase('checking');
+    setErrMsg('');
+    setResult(null);
+    try {
+      const r = await availability.check(zip);
+      setResult(r);
+      setPhase('checked');
+    } catch {
+      setErrMsg('Could not check that ZIP. Try again?');
+      setPhase('idle');
+    }
+  }
+
+  async function subscribe() {
+    if (!email || phase === 'subscribing' || !result) return;
+    setPhase('subscribing');
+    setErrMsg('');
+    const source = result.status === 'claimed'
+      ? 'homepage_checker'
+      : 'expansion_request';
+    try {
+      await notifications.subscribe(result.zip_code, email, source);
+      setPhase('subscribed');
+    } catch {
+      setErrMsg('Could not save that. Try again?');
+      setPhase('checked');
+    }
+  }
+
+  function reset() {
+    setZip(''); setResult(null); setEmail('');
+    setPhase('idle'); setErrMsg('');
+  }
+
+  const place = result && result.city
+    ? `${result.city}, ${result.state}`
+    : null;
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-lg)',
+      padding: '28px 28px 24px',
+      background: 'var(--bg)',
+      border: '1px solid var(--border)',
+      borderRadius: 4,
+    }}>
+      <div style={{
+        fontFamily: 'var(--font-sans)',
+        fontSize: 11,
+        letterSpacing: '0.14em',
+        textTransform: 'uppercase',
+        color: 'var(--text-tertiary)',
+        marginBottom: 14,
+      }}>
+        Check your ZIP
+      </div>
+
+      {phase !== 'subscribed' && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <input
+            value={zip}
+            onChange={(e) => {
+              setZip(e.target.value.replace(/\D/g, '').slice(0, 5));
+              if (result) { setResult(null); setPhase('idle'); }
+            }}
+            onKeyDown={(e) => { if (e.key === 'Enter') check(); }}
+            placeholder="ZIP code"
+            inputMode="numeric"
+            aria-label="ZIP code"
+            style={checkerInput}
+          />
+          <button
+            onClick={check}
+            disabled={!zipValid || phase === 'checking'}
+            style={{
+              ...ctaPrimary,
+              cursor: zipValid ? 'pointer' : 'default',
+              opacity: zipValid ? 1 : 0.5,
+            }}
+          >
+            {phase === 'checking' ? 'Checking\u2026' : 'Check availability'}
+          </button>
+        </div>
+      )}
+
+      {errMsg && (
+        <p style={{ ...checkerBody, color: '#A33D2E', marginTop: 12 }}>
+          {errMsg}
+        </p>
+      )}
+
+      {result && phase !== 'subscribed' && result.status === 'open' && (
+        <div style={{ marginTop: 18 }}>
+          <p style={checkerBody}>
+            {result.zip_code}{place ? ` \u2014 ${place} \u2014` : ''} is
+            open. One agent will hold it.
+          </p>
+          <Link to="/signup" style={{ ...ctaPrimary, marginTop: 12, display: 'inline-block' }}>
+            Request access
+          </Link>
+        </div>
+      )}
+
+      {result && phase !== 'subscribed' && result.status === 'claimed' && (
+        <div style={{ marginTop: 18 }}>
+          <p style={checkerBody}>
+            {result.zip_code}{place ? ` \u2014 ${place} \u2014` : ''} is
+            held by another agent.
+            {result.queue_size > 0
+              ? ` ${result.queue_size} waiting if it releases.`
+              : ' We can tell you if it releases.'}
+          </p>
+          <EmailCapture
+            email={email} setEmail={setEmail}
+            onSubmit={subscribe} busy={phase === 'subscribing'}
+            buttonLabel="Notify me"
+          />
+        </div>
+      )}
+
+      {result && phase !== 'subscribed' && result.status === 'not_covered' && (
+        <div style={{ marginTop: 18 }}>
+          <p style={checkerBody}>
+            We&rsquo;re not in {result.zip_code} yet. Markets open
+            selectively &mdash; demand decides where next.
+          </p>
+          <EmailCapture
+            email={email} setEmail={setEmail}
+            onSubmit={subscribe} busy={phase === 'subscribing'}
+            buttonLabel="Request my market"
+          />
+        </div>
+      )}
+
+      {phase === 'subscribed' && (
+        <div>
+          <p style={checkerBody}>
+            Noted. You&rsquo;ll hear from us about {result?.zip_code} &mdash;
+            nothing else, no list.
+          </p>
+          <button onClick={reset} style={{ ...ctaGhost, marginTop: 12 }}>
+            Check another ZIP
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmailCapture({ email, setEmail, onSubmit, busy, buttonLabel }) {
+  const valid = /.+@.+\..+/.test(email);
+  return (
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+      <input
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && valid) onSubmit(); }}
+        placeholder="Email"
+        type="email"
+        aria-label="Email"
+        style={checkerInput}
+      />
+      <button
+        onClick={onSubmit}
+        disabled={!valid || busy}
+        style={{
+          ...ctaGhost,
+          cursor: valid ? 'pointer' : 'default',
+          opacity: valid ? 1 : 0.5,
+        }}
+      >
+        {busy ? 'Saving\u2026' : buttonLabel}
+      </button>
+    </div>
+  );
+}
+
+const checkerInput = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: 15,
+  padding: '10px 14px',
+  border: '1px solid var(--border-strong)',
+  borderRadius: 4,
+  background: 'var(--bg-card)',
+  color: 'var(--text)',
+  outline: 'none',
+  width: 180,
+};
+
+const checkerBody = {
+  fontFamily: 'var(--font-serif)',
+  fontSize: 15.5,
+  color: 'var(--text-secondary)',
+  lineHeight: 1.6,
+  margin: 0,
+};
 
 
 // ─────────────────────────────────────────────────────────────────

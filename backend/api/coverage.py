@@ -20,6 +20,79 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/availability/{zip_code}")
+async def zip_availability(zip_code: str):
+    """
+    Public availability check for a single ZIP. Returns exactly one of
+    three statuses and never any agent identity:
+
+      { zip_code, status: 'open' | 'claimed' | 'not_covered',
+        city?, state?, queue_size }
+
+    - 'open'        : ZIP is live and no agent holds it — claimable now.
+    - 'claimed'     : ZIP is live and held. queue_size = how many are
+                      waiting (same public count as /api/notifications
+                      queue-size; no PII).
+    - 'not_covered' : ZIP is not live on the platform. Front-end offers
+                      expansion-demand capture via /api/notifications
+                      /subscribe with source='expansion_request'.
+
+    Deliberately boolean on claim status — claimed_by_name stays behind
+    the authed /api/agent/territory-status endpoint only.
+    """
+    if not zip_code.isdigit() or len(zip_code) != 5:
+        raise HTTPException(400, "zip_code must be 5 digits")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+
+    try:
+        cov = (supa.table('zip_coverage_v3')
+               .select('zip_code, city, state, status')
+               .eq('zip_code', zip_code)
+               .limit(1)
+               .execute())
+        row = (cov.data or [None])[0]
+
+        if not row or row.get('status') != 'live':
+            return {'zip_code': zip_code, 'status': 'not_covered',
+                    'queue_size': 0}
+
+        # Claim check mirrors territory.py's _claims_map source of
+        # truth: agent_profiles_v3.assigned_zip, excluding operators.
+        claim = (supa.table('agent_profiles_v3')
+                 .select('id, role')
+                 .eq('assigned_zip', zip_code)
+                 .neq('role', 'operator')
+                 .limit(1)
+                 .execute())
+        is_claimed = bool(claim.data)
+
+        queue_size = 0
+        if is_claimed:
+            q = (supa.table('zip_release_notifications')
+                 .select('id', count='exact')
+                 .eq('zip_code', zip_code)
+                 .is_('notified_at', 'null')
+                 .limit(1)
+                 .execute())
+            queue_size = q.count or 0
+
+        return {
+            'zip_code':   zip_code,
+            'status':     'claimed' if is_claimed else 'open',
+            'city':       row.get('city'),
+            'state':      row.get('state'),
+            'queue_size': queue_size,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("[coverage] availability lookup failed: %s", e)
+        raise HTTPException(500, "Availability lookup failed")
+
+
 @router.get("")
 async def list_coverage(
     include_development: bool = Query(False,

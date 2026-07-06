@@ -101,12 +101,18 @@ export const zipPolygons = {
 // ── Notify-me when a territory releases ────────────────────────────
 
 export const notifications = {
-  subscribe: (zip_code, email) =>
+  subscribe: (zip_code, email, source = 'territories_map') =>
     request('/notifications/subscribe', {
       method: 'POST',
-      body: JSON.stringify({ zip_code, email }),
+      body: JSON.stringify({ zip_code, email, source }),
     }),
   queueSize: (zip) => request(`/notifications/zip/${zip}/queue-size`),
+};
+
+// ── Public ZIP availability (homepage checker) ────────────────────
+
+export const availability = {
+  check: (zip) => request(`/coverage/availability/${zip}`),
 };
 
 // ── Briefings ──────────────────────────────────────────────────────
