@@ -69,13 +69,6 @@ function searchLeads(leads, query) {
 }
 
 export default function BriefingPage(props) {
-  // ── V4 skin: swap the map engine only; the rest is token-themed ──
-  const [v4Active, setV4Active] = useState(isV4());
-  useEffect(() => {
-    const on = () => setV4Active(true);
-    window.addEventListener('ss:ui-v4', on);
-    return () => window.removeEventListener('ss:ui-v4', on);
-  }, []);
 
   return (
     <SiteLayout
@@ -90,6 +83,14 @@ export default function BriefingPage(props) {
 }
 
 function BriefingBody() {
+  // ── V4 skin: swap the map engine only; the rest is token-themed ──
+  const [v4Active, setV4Active] = useState(isV4());
+  useEffect(() => {
+    const on = () => setV4Active(true);
+    window.addEventListener('ss:ui-v4', on);
+    return () => window.removeEventListener('ss:ui-v4', on);
+  }, []);
+
   const { zip } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
