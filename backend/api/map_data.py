@@ -171,37 +171,44 @@ async def lot_polygons(zip_code: str,
         src = _LOT_SOURCES.get(market.split('_')[0])
         if not src:
             return empty
-        rows = (supa.table('parcels_v3').select('pin, lat, lng')
-                .eq('zip_code', zip_code).not_.is_('lat', 'null')
+        rows = (supa.table('parcels_v3').select('pin')
+                .eq('zip_code', zip_code)
                 .limit(20000).execute()).data or []
         pins = {''.join(c for c in str(r['pin']) if c.isdigit()) for r in rows}
-        if not rows:
+        if not rows or not zip_code.isdigit():
             return empty
-        lats = [r['lat'] for r in rows]; lngs = [r['lng'] for r in rows]
-        env = f"{min(lngs)},{min(lats)},{max(lngs)},{max(lats)}"
 
-        import urllib.request, urllib.parse, json as _json
-        polys, offset = {}, 0
-        while True:
-            q = urllib.parse.urlencode({
-                'where': '1=1', 'geometry': env,
-                'geometryType': 'esriGeometryEnvelope', 'inSR': '4326',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': 'PARCEL_ID_NR,ORIG_PARCEL_ID', 'outSR': '4326',
-                'f': 'geojson', 'geometryPrecision': '6',
-                'resultOffset': str(offset), 'resultRecordCount': '2000'})
-            d = _json.loads(urllib.request.urlopen(src + '?' + q, timeout=45).read())
-            fs = d.get('features', [])
-            for f in fs:
-                p = f.get('properties') or {}
-                for cand in (p.get('PARCEL_ID_NR'), p.get('ORIG_PARCEL_ID')):
-                    n = ''.join(c for c in str(cand or '') if c.isdigit())
-                    if n in pins and n not in polys:
-                        polys[n] = f['geometry']
-                        break
-            if len(fs) < 2000 or offset > 20000:
-                break
-            offset += 2000
+        # ZIP-attribute query (SITUS_ZIP_NR, includes ZIP+4 variants) instead
+        # of an envelope. 98008's envelope intersected 58k statewide features
+        # and blew past the pagination cap (58 of 8.3k pins matched);
+        # the ZIP predicate returns ~8k features in 4 pages. Runs in a
+        # thread — a multi-second sync urllib loop on the event loop stalls
+        # the single uvicorn worker.
+        import asyncio, urllib.request, urllib.parse, json as _json
+
+        def _fetch_lots():
+            out, offset = {}, 0
+            while True:
+                q = urllib.parse.urlencode({
+                    'where': f"SITUS_ZIP_NR LIKE '{zip_code}%'",
+                    'outFields': 'PARCEL_ID_NR,ORIG_PARCEL_ID', 'outSR': '4326',
+                    'f': 'geojson', 'geometryPrecision': '6',
+                    'resultOffset': str(offset), 'resultRecordCount': '2000'})
+                d = _json.loads(urllib.request.urlopen(src + '?' + q, timeout=45).read())
+                fs = d.get('features', [])
+                for f in fs:
+                    p = f.get('properties') or {}
+                    for cand in (p.get('ORIG_PARCEL_ID'), p.get('PARCEL_ID_NR')):
+                        n = ''.join(c for c in str(cand or '') if c.isdigit())
+                        if n in pins and n not in out:
+                            out[n] = f['geometry']
+                            break
+                if len(fs) < 2000 or offset >= 38000:
+                    break
+                offset += 2000
+            return out
+
+        polys = await asyncio.to_thread(_fetch_lots)
         _LOT_CACHE[zip_code] = (_time.time(), polys)
         return {'zip_code': zip_code, 'polygons': polys, 'cached': False}
     except Exception as e:

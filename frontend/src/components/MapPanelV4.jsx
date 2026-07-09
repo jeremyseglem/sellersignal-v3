@@ -165,7 +165,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           'circle-radius': ['interpolate', ['linear'], ['zoom'],
             12, ['match', ['get', 'cat'], 'none', 1.4, 'hold', 2.2, 'build_now', 2.8, 3.6],
             16, ['match', ['get', 'cat'], 'none', 3.5, 'hold', 5, 'build_now', 6, 8]],
-          'circle-opacity': ['match', ['get', 'cat'], 'none', 0.5, 'hold', 0.85, 1, 1],
+          'circle-opacity': ['match', ['get', 'cat'], 'none', 0.5, 'hold', 0.85, 1],
           'circle-stroke-width': ['case', ['boolean', ['feature-state', 'sel'], false], 2.4, 0],
           'circle-stroke-color': GOLD,
         },

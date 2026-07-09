@@ -112,16 +112,22 @@ if (jsFiles.length === 0) {
   );
 }
 
-if (jsFiles.length > 1) {
+// Since the V4 map work, deck.gl dynamic imports code-split the build
+// into multiple index-*.js chunks. The ENTRY chunk is whichever one
+// dist/index.html actually loads — identify it from the script tag
+// rather than assuming a single file.
+const indexHtml = readFileSync(join(DIST_ASSETS, '..', 'index.html'), 'utf-8');
+const entryMatch = indexHtml.match(/src="\/assets\/(index-[A-Za-z0-9_-]+\.js)"/);
+if (!entryMatch || !jsFiles.includes(entryMatch[1])) {
   fail(
-    `Multiple index-*.js files in dist/assets. Expected exactly one.\n` +
-      `Found: ${jsFiles.join(', ')}\n` +
-      `Stale builds from a previous run may need to be cleaned.`,
+    `Could not identify the entry chunk from dist/index.html.\n` +
+      `index-*.js chunks present: ${jsFiles.join(', ')}\n` +
+      `index.html entry match: ${entryMatch ? entryMatch[1] : '(none)'}`,
     2,
   );
 }
 
-const bundleFile = jsFiles[0];
+const bundleFile = entryMatch[1];
 const bundlePath = join(DIST_ASSETS, bundleFile);
 const contents = readFileSync(bundlePath, 'utf-8');
 
@@ -143,11 +149,16 @@ if (!hasRuntimeFetch) {
   );
 }
 
-// ── Step 4: negative invariant — no Supabase JWT in the bundle ──
-const hasInlinedJwt = contents.includes(SUPABASE_JWT_PREFIX);
-if (hasInlinedJwt) {
+// ── Step 4: negative invariant — no Supabase JWT in ANY chunk ──
+const allChunks = readdirSync(DIST_ASSETS).filter(
+  (f) => f.endsWith('.js') && !f.endsWith('.map'),
+);
+const leakedChunk = allChunks.find((f) =>
+  readFileSync(join(DIST_ASSETS, f), 'utf-8').includes(SUPABASE_JWT_PREFIX),
+);
+if (leakedChunk) {
   fail(
-    `Bundle ${bundleFile} contains an inlined Supabase JWT.\n` +
+    `Chunk ${leakedChunk} contains an inlined Supabase JWT.\n` +
       `\n` +
       `Since the 2026-05-20 refactor, no Supabase credentials should be\n` +
       `inlined into the JS bundle. The frontend fetches them from\n` +
