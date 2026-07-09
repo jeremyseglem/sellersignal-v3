@@ -507,6 +507,13 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-09 (later) — Preview-walk fixes + institutional-owner screen
+
+Jeremy's V4 preview walk caught, all fixed same session: (1) **BriefingBody scope crash** — v4Active state was in the page wrapper, swap in the body: ReferenceError broke briefings for ALL users ~40min; verification checklists now require rendering the touched page, both themes. (2) Hook-safety restructure: HomePage/TerritoriesPage are now pure chooser components (HomeLegacy/TerritoriesLegacy extracted) so the server-flag flip can't violate hook order at Phase 5. (3) Sign in restored to V4 nav. (4) Hero collision guards (viewport-height media rules; terminal keeps ≥14px on desktop — compression comes from spacing). (5) **Briefing map is Earth-ONLY per Jeremy — no display pills.** MapPanelV4 rewritten: earth-config authorized → mesh IS the map (labels re-lit, lots draped, leads glowing, PIP + nearest-centroid clicks + map-level click handler so clicks fire even without deck picks); silent treated-satellite fallback otherwise. Root cause of "Earth not loading": umbrella `import('deck.gl')` produced NO Vite chunk → scoped `@deck.gl/*` dynamic imports (chunks verified in dist). Pins now pass through untouched (String() coercion could miss handlePickLead identity checks). (6) **Institutional-owner screen** (`_is_institutional_owner`, backend/selection/weekly_selector.py): schools/churches/government/utilities/hospitals/cemeteries etc. excluded from ALL buckets and call-now at both selection entry points — Brunswick School INC was ranking #1 in Greenwich's LLC bucket. Deterministic keyword screen; applies live at briefing build, so effective immediately on deploy.
+
+TODO next session: per-market _LOT_SOURCES for CT/AZ/TX lot polygons (CT OPM statewide parcel FeatureServer; Maricopa + Dallas ArcGIS already known from geometry backfill); parcel outlines at zoom are WA-only until then.
+
+
 ### 2026-07-09 — V4 UI migration: plan committed + Phase 0 (flag plumbing)
 
 The full-scale redesign (July design sessions: homepage v18, briefing real-data demo, territories atlas demo) begins porting to production as **V4** (v1/v2 archived, V3 live, so the redesign is V4 — never "v2"). Canonical plan: **`MIGRATION_V4.md`** at repo root — phases 0-5, naming conventions, mobile acceptance gates per phase, risk register, rollback procedure. Core commitments: same components/new skin (no logic, data, or API-contract changes), V3 default until Jeremy flips `UI_V4` in Railway (rollback = env-var unset, no redeploy), mobile ships with V4 not after it (inline-style purge doubles as the mobile unlock).

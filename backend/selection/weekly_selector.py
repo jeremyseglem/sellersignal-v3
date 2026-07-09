@@ -561,6 +561,30 @@ def _coerce_n(n):
     return None
 
 
+# ── Institutional-owner screen (2026-07-09, Jeremy) ──────────────────────
+# Schools, churches, governments, utilities, and similar exempt/civic
+# owners must never surface as disposition leads in ANY bucket — a private
+# school "held 27 years" is not an investor contemplating a sale.
+# Deterministic keyword screen on owner name (no LLM in the live pipeline).
+_INSTITUTIONAL_TOKENS = (
+    'school', 'academy', 'university', 'college', 'district',
+    'church', 'parish', 'diocese', 'ministr', 'assembly of god', 'temple',
+    'synagogue', 'congregation', 'mosque', 'chapel', 'cathedral', 'monastery',
+    'convent', 'seminary', 'salvation army', 'ymca', 'ywca',
+    'town of', 'city of', 'county of', 'state of', 'united states',
+    'housing authority', 'water district', 'fire district', 'utility',
+    'hospital', 'medical center', 'cemetery', 'library', 'museum',
+    'foundation', 'charitable', 'benevolent',
+)
+
+
+def _is_institutional_owner(L) -> bool:
+    name = (L.get('owner_name') or '').lower()
+    if not name:
+        return False
+    return any(tok in name for tok in _INSTITUTIONAL_TOKENS)
+
+
 def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
     """CALL NOW picks with slot reservations AND contract enforcement.
 
@@ -580,6 +604,7 @@ def select_call_now(leads, exclude_pins, used_owner_keys, n=None):
     n: maximum number of picks to return. Default None = no cap (return
        every contract-eligible signal). Pass an int to cap.
     """
+    leads = [L for L in leads if not _is_institutional_owner(L)]
     n = _coerce_n(n)
     def base_filter(L):
         return (L['pin'] not in exclude_pins
@@ -868,6 +893,7 @@ def select_contact_now_buckets(leads, exclude_pins, used_owner_keys):
     parcel claimed by Probate will not appear in Long-tenure even
     if it qualifies on parcel attributes alone.
     """
+    leads = [L for L in leads if not _is_institutional_owner(L)]
     out: dict[str, list[dict]] = {}
 
     out['probate'] = _select_probate_bucket(

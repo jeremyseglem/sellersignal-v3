@@ -254,6 +254,14 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
         });
         map.addControl(overlayRef.current);
         earthOnRef.current = true;
+        // clicks anywhere on the mesh — maplibre still owns events in
+        // interleaved mode, so this fires even when no deck layer picks
+        map.on('click', (e) => {
+          if (!earthOnRef.current || !onPickPin) return;
+          const pin = resolveClick(e.lngLat.lng, e.lngLat.lat);
+          if (pin != null) onPickPin(pin);
+        });
+        map.getCanvas().style.cursor = 'crosshair';
         // ground yields to the mesh; labels re-lit; leads stay on top
         for (const l of map.getStyle().layers) {
           try {
