@@ -125,6 +125,28 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
     });
     mapRef.current = map;
 
+    // Mobile: the map pane is display:none while the Leads tab is active,
+    // so maplibre can initialize inside a 0×0 container. When the tab
+    // switches to Map, resize the canvas and — if the map was born at
+    // zero size — re-fit the ZIP bounds (the initial fit computed against
+    // a zero-height viewport is meaningless).
+    const bornHidden = !el.current.clientWidth || !el.current.clientHeight;
+    let refitDone = !bornHidden;
+    const ro = new ResizeObserver(() => {
+      if (!el.current || !el.current.clientWidth || !el.current.clientHeight) return;
+      map.resize();
+      if (!refitDone) {
+        refitDone = true;
+        try {
+          map.fitBounds(
+            [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+            { padding: 40, duration: 0 },
+          );
+        } catch (e) {}
+      }
+    });
+    ro.observe(el.current);
+
     map.on('load', async () => {
       for (const l of map.getStyle().layers) {
         try {
@@ -320,6 +342,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
     });
 
     return () => {
+      ro.disconnect();
       if (overlayRef.current) { try { map.removeControl(overlayRef.current); } catch (e) {} overlayRef.current = null; }
       earthOnRef.current = false;
       map.remove(); mapRef.current = null;
