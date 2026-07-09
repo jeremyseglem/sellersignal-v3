@@ -517,7 +517,9 @@ Phase 0 shipped (invisible; UI byte-identical for all users by default):
 - `frontend/src/lib/uiVersion.js` — activation util: `?v4=1` / `?v4=0` per-browser preview override (localStorage `ss:ui_v4_preview`) → server flag; sets `<html data-theme="v4">`; lazy-injects V4 Google fonts only when active; fail-safe to V3 on any error
 - Wired in `main.jsx`; built with `build:safe`
 
-Next: Phase 1 (leaf pages: Terms/Privacy/Contact/Voice/Profile).
+Phase 1 shipped same day: **`v4-remap.css`** — V3's entire token vocabulary (--bg/--text/--accent/semantic/tone colors, shadows, radii) redefined to warm-dusk values under `[data-theme='v4']`. Because V3 components are disciplined about styling through tokens (audit found zero literal hex in the leaf/auth pages — only never-firing var() fallbacks; V3 already carried the V4 font stack from The Estate), the remap rethemes the shell + every var-based page automatically. Spacing/transitions untouched (layout parity). Preview: `?v4=1` on /terms, /privacy, /login, /signup, /profile, /profile/voice. Known: surfaces with hardcoded module-CSS (BriefingPage era) are only partially themed in preview — that's Phase 4 scope; flag stays off by default.
+
+Next: Phase 2 (homepage v18 port).
 
 
 ### 2026-06-16 — LAUNCH DAY: go-live (Stripe/Stannp/purge) + CRITICAL data-exposure fix (map/parcel read endpoints were public) + auth hardening

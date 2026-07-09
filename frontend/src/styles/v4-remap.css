@@ -1,0 +1,80 @@
+/*
+ * V4 remap — redefines V3's token VOCABULARY to V4 values (MIGRATION_V4.md).
+ *
+ * V3 components style themselves through tokens.css custom properties
+ * (var(--bg), var(--text), var(--accent), ...). Because that discipline
+ * held across the codebase, flipping the theme is a matter of remapping
+ * those same names under [data-theme='v4'] — every var-based style,
+ * including var()-referencing inline styles, rethemes automatically.
+ *
+ * Inert until uiVersion.js sets the attribute. V3 (Estate ivory) remains
+ * byte-identical for everyone else.
+ *
+ * Mapping philosophy:
+ *  - Light ivory canvas -> warm dusk ink. Same warm-brown family, inverted.
+ *  - Gold #8B6914 (dark on light) -> brass #C6A15B; hover LIGHTENS
+ *    (#E9CD8F) on dark, where V3's hover darkened on light.
+ *  - Semantic hues (call-now red, hold sage, avoid slate) keep their hue,
+ *    raised in luminance to read on ink; their *-bg tints become dark
+ *    translucents.
+ *  - Spacing and transitions are untouched: layout parity is safety.
+ *  - Radii tighten (the V4 estate is square-shouldered).
+ */
+
+[data-theme='v4'] {
+  /* ── Backgrounds ── */
+  --bg:             #14110C;
+  --bg-card:        #1A1610;
+  --bg-card-hover:  #201B13;
+  --bg-input:       #12100B;
+  --bg-dark:        #0D0B07;
+
+  /* ── Text ── */
+  --text:           #F3EFE6;
+  --text-secondary: #C8C2B4;
+  --text-tertiary:  #7A7264;
+  --text-inverse:   #0D0B07;
+
+  /* ── Accents ── */
+  --accent:         #C6A15B;
+  --accent-hover:   #E9CD8F;
+  --accent-dim:     rgba(198, 161, 91, 0.12);
+
+  /* ── Borders ── */
+  --border:         #2A241A;
+  --border-strong:  #3A3226;
+
+  /* ── Semantic action colors ── */
+  --call-now:       #D4705C;
+  --call-now-bg:    rgba(212, 112, 92, 0.12);
+  --build-now:      #C6A15B;
+  --build-now-bg:   rgba(198, 161, 91, 0.12);
+  --hold:           #8FA97C;
+  --hold-bg:        rgba(143, 169, 124, 0.12);
+  --avoid:          #8E9094;
+  --avoid-bg:       rgba(142, 144, 148, 0.12);
+
+  /* ── Tone colors ── */
+  --tone-urgent:      #D4705C;
+  --tone-sensitive:   #C6A15B;
+  --tone-relational:  #8FA97C;
+  --tone-neutral:     #7A7264;
+
+  /* ── Shadows (dark ground carries real shadow) ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 14px 44px rgba(0, 0, 0, 0.5);
+
+  /* ── Radii ── */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+}
+
+/* Form controls inherit color-scheme:dark from v4-tokens.css; ensure
+   native inputs don't render light chrome inside the ink. */
+[data-theme='v4'] input,
+[data-theme='v4'] textarea,
+[data-theme='v4'] select {
+  color-scheme: dark;
+}

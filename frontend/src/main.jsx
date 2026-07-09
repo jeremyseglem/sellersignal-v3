@@ -5,6 +5,7 @@ import App from './App.jsx';
 import { AuthProvider } from './lib/AuthContext.jsx';
 import './styles/tokens.css';
 import './styles/v4-tokens.css';
+import './styles/v4-remap.css';
 import { initUiVersion } from './lib/uiVersion';
 
 // V4 UI flag plumbing (MIGRATION_V4.md) — no-op unless UI_V4 or ?v4=1
