@@ -9,10 +9,11 @@ Only live ZIPs are returned by default — in-development ZIPs are hidden.
 """
 import logging
 import os
+import json
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Response
 from backend.api.db import get_supabase_client
 
 log = logging.getLogger(__name__)
@@ -431,3 +432,25 @@ async def refresh_coverage_counts(
         'transitions':  transitions,
         'errors':       errors,
     }
+
+# ── V4 atlas: avg home value snapshot (MIGRATION_V4.md Phase 3) ──────────
+# Mean assessed value per live ZIP, served from a committed snapshot —
+# assessed values move annually; a static snapshot beats hammering
+# parcels_v3 with 90 aggregate scans per page load. Public: aggregates
+# only, no PII. Refresh path: recompute offline, commit new JSON.
+_AVG_VALUES_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'zip_avg_values.json')
+_AVG_VALUES_CACHE = None
+
+
+@router.get("/avg-values")
+async def coverage_avg_values(response: Response):
+    global _AVG_VALUES_CACHE
+    if _AVG_VALUES_CACHE is None:
+        try:
+            with open(_AVG_VALUES_PATH) as f:
+                _AVG_VALUES_CACHE = json.load(f)
+        except Exception:
+            _AVG_VALUES_CACHE = {'avg_by_zip': {}}
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return _AVG_VALUES_CACHE
+

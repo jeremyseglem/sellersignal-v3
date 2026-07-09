@@ -1,4 +1,10 @@
 import { useEffect, useState } from 'react';
+import { lazy, Suspense } from 'react';
+import { isV4 } from '../lib/uiVersion.js';
+
+// V4 territories atlas (MIGRATION_V4.md Phase 3) — lazy; V3 users load zero extra bytes
+const TerritoriesV4 = lazy(() => import('./TerritoriesV4.jsx'));
+
 import { Link, useNavigate } from 'react-router-dom';
 import { territory, billing, safeErrorMessage } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
@@ -23,6 +29,21 @@ import TerritoryMap from '../components/territories/TerritoryMap.jsx';
  *     visibly disabled.
  */
 export default function TerritoriesPage() {
+  // ── V4 skin branch (flag/preview via uiVersion.js) ──
+  const [v4Active, setV4Active] = useState(isV4());
+  useEffect(() => {
+    const on = () => setV4Active(true);
+    window.addEventListener('ss:ui-v4', on);
+    return () => window.removeEventListener('ss:ui-v4', on);
+  }, []);
+  if (v4Active) {
+    return (
+      <Suspense fallback={null}>
+        <TerritoriesV4 />
+      </Suspense>
+    );
+  }
+
   const { profile, refreshProfile, signOut } = useAuth();
   const navigate = useNavigate();
 
@@ -316,7 +337,7 @@ function StatusBadge({ status, role, claimedByName }) {
 }
 
 
-function ClaimModal({ zip, claiming, error, onConfirm, onCancel }) {
+export function ClaimModal({ zip, claiming, error, onConfirm, onCancel }) {
   return (
     <div
       onClick={onCancel}

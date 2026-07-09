@@ -1,0 +1,63 @@
+/* V4 territories atlas (MIGRATION_V4.md Phase 3) — ported from the approved
+   atlas demo. Scoped .tv4; mounts only when the V4 skin is active.
+   Mobile-first: the card rail is a bottom drawer under 1080px; the map is
+   always the hero. */
+
+.tv4 { position: fixed; inset: 0; background: var(--v4-ink, #14110C); color: var(--v4-text-hi, #F3EFE6); font-family: var(--v4-font-sans, Inter, sans-serif); }
+.tv4 .tv4-map { position: absolute; inset: 0; }
+.tv4 .maplibregl-ctrl-attrib { background: rgba(13, 11, 7, 0.6) !important; font-size: 9px; }
+.tv4 .maplibregl-ctrl-attrib a { color: var(--v4-text-low, #7A7264) !important; }
+
+/* ── market chips ── */
+.tv4 .chips { position: absolute; top: 14px; left: 14px; right: 14px; z-index: 15; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 4px; }
+.tv4 .chips::-webkit-scrollbar { display: none; }
+.tv4 .chip { flex-shrink: 0; background: rgba(13, 11, 7, 0.82); backdrop-filter: blur(6px); border: 1px solid var(--v4-line, #2A241A); color: var(--v4-text-mid, #C8C2B4); font-family: var(--v4-font-mono, monospace); font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 9px 12px; border-radius: 2px; cursor: pointer; display: inline-flex; gap: 7px; align-items: center; }
+.tv4 .chip .n { color: var(--v4-text-low, #7A7264); }
+.tv4 .chip.on { border-color: var(--v4-brass, #C6A15B); color: var(--v4-brass-hi, #E9CD8F); }
+.tv4 .chip.on .n { color: var(--v4-brass-hi, #E9CD8F); }
+
+/* ── hover tooltip ── */
+.tv4 .tip { position: fixed; z-index: 30; pointer-events: none; background: rgba(13, 11, 7, 0.9); border: 1px solid var(--v4-line, #2A241A); border-left: 2px solid var(--v4-brass, #C6A15B); border-radius: 2px; padding: 10px 13px; font-family: var(--v4-font-mono, monospace); font-size: 10.5px; letter-spacing: 0.04em; color: var(--v4-text-hi, #F3EFE6); display: none; max-width: 320px; line-height: 1.7; }
+.tv4 .tip .t2 { color: var(--v4-text-low, #7A7264); }
+
+/* ── seals on the board ── */
+.tv4 .seal { font-family: var(--v4-font-mono, monospace); font-size: 10px; letter-spacing: 0.22em; color: var(--v4-text-mid, #C8C2B4); background: rgba(13, 11, 7, 0.85); border: 1px solid var(--v4-line, #2A241A); padding: 5px 10px; border-radius: 2px; }
+.tv4 .seal.mine { color: var(--v4-ink-deep, #0D0B07); background: var(--v4-brass-hi, #E9CD8F); border-color: var(--v4-brass-hi, #E9CD8F); font-weight: 600; }
+
+/* ── rail: bottom drawer on phone, side panel on desktop ── */
+.tv4 .rail { position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--v4-ink-deep, #0D0B07); border-top: 1px solid var(--v4-line, #2A241A); max-height: 76vh; transform: translateY(calc(100% - 132px)); transition: transform 0.35s var(--v4-ease, ease); display: flex; flex-direction: column; border-radius: 10px 10px 0 0; }
+.tv4 .rail.open { transform: none; }
+.tv4 .rail-grab { padding: 10px 22px 0; cursor: pointer; text-align: center; flex-shrink: 0; }
+.tv4 .rail-grab::before { content: ''; display: block; width: 44px; height: 4px; border-radius: 2px; background: var(--v4-line, #2A241A); margin: 0 auto 10px; }
+.tv4 .rail-head { padding: 0 22px 14px; flex-shrink: 0; }
+.tv4 .eyebrow { font-family: var(--v4-font-mono, monospace); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--v4-text-low, #7A7264); font-weight: 600; margin-bottom: 6px; }
+.tv4 .h1 { font-family: var(--v4-font-display, Georgia, serif); font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+.tv4 .sub { font-family: var(--v4-font-serif, Georgia, serif); font-style: italic; font-size: 14px; color: var(--v4-text-mid, #C8C2B4); margin-top: 6px; line-height: 1.5; }
+.tv4 .cards { flex: 1; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--v4-line, #2A241A) transparent; padding: 4px 16px 30px; }
+.tv4 .mhead { font-family: var(--v4-font-mono, monospace); font-size: 9.5px; letter-spacing: 0.16em; color: var(--v4-brass-hi, #E9CD8F); text-transform: uppercase; padding: 16px 6px 8px; }
+.tv4 .card { padding: 14px 16px; margin-bottom: 8px; background: var(--v4-panel, #1A1610); border: 1px solid var(--v4-line, #2A241A); border-radius: 4px; cursor: pointer; transition: border-color 0.2s; }
+.tv4 .card:hover { border-color: var(--v4-brass, #C6A15B); }
+.tv4 .card.dead { opacity: 0.6; cursor: default; }
+.tv4 .card.dead:hover { border-color: var(--v4-line, #2A241A); }
+.tv4 .card .r1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.tv4 .card .nm { font-weight: 600; font-size: 14px; }
+.tv4 .badge { font-family: var(--v4-font-mono, monospace); font-size: 8.5px; letter-spacing: 0.1em; padding: 3px 8px; border-radius: 2px; flex-shrink: 0; }
+.tv4 .badge.avail { color: var(--v4-brass-hi, #E9CD8F); border: 1px solid var(--v4-brass, #C6A15B); }
+.tv4 .badge.taken { color: var(--v4-text-mid, #C8C2B4); border: 1px solid var(--v4-line, #2A241A); }
+.tv4 .badge.mine { color: var(--v4-ink-deep, #0D0B07); background: var(--v4-brass-hi, #E9CD8F); border: 1px solid var(--v4-brass-hi, #E9CD8F); font-weight: 600; }
+.tv4 .card .r2 { font-size: 12px; color: var(--v4-text-low, #7A7264); margin-top: 5px; }
+.tv4 .card .cta { font-family: var(--v4-font-mono, monospace); font-size: 10px; letter-spacing: 0.08em; margin-top: 8px; color: var(--v4-brass-hi, #E9CD8F); text-transform: uppercase; }
+.tv4 .card.dead .cta { color: var(--v4-text-low, #7A7264); }
+.tv4 .tv4-back { position: absolute; top: 64px; left: 14px; z-index: 15; background: rgba(13, 11, 7, 0.82); border: 1px solid var(--v4-line, #2A241A); color: var(--v4-text-mid, #C8C2B4); font-family: var(--v4-font-mono, monospace); font-size: 10px; letter-spacing: 0.1em; padding: 9px 13px; border-radius: 2px; cursor: pointer; text-transform: uppercase; }
+.tv4 .tv4-back:hover { color: var(--v4-brass-hi, #E9CD8F); border-color: var(--v4-brass, #C6A15B); }
+
+/* ── desktop: side rail ── */
+@media (min-width: 1080px) {
+  .tv4 .tv4-map { inset: 0 0 0 400px; }
+  .tv4 .rail { left: 0; right: auto; top: 0; bottom: 0; width: 400px; max-height: none; transform: none; border-top: none; border-right: 1px solid var(--v4-line, #2A241A); border-radius: 0; }
+  .tv4 .rail-grab { display: none; }
+  .tv4 .rail-head { padding: 24px 26px 16px; }
+  .tv4 .h1 { font-size: 30px; }
+  .tv4 .chips { left: 426px; }
+  .tv4 .tv4-back { left: 426px; }
+}
