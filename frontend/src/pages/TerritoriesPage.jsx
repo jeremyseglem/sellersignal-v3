@@ -43,6 +43,10 @@ export default function TerritoriesPage() {
       </Suspense>
     );
   }
+  return <TerritoriesLegacy />;
+}
+
+function TerritoriesLegacy() {
 
   const { profile, refreshProfile, signOut } = useAuth();
   const navigate = useNavigate();

@@ -47,6 +47,10 @@ export default function HomePage() {
       </Suspense>
     );
   }
+  return <HomeLegacy />;
+}
+
+function HomeLegacy() {
 
   return (
     <SiteLayout mode="public" showFooter>
