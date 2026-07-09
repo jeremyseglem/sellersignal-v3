@@ -20,11 +20,13 @@ from backend.api.zip_gate import require_live_zip
 from backend.api.auth import user_from_authorization as _user_from_authorization
 from backend.api.territory import require_zip_access as _require_zip_access
 import os
+import logging
 import hmac
 import hashlib
 import base64
 from urllib.parse import quote, urlencode
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -132,6 +134,79 @@ async def earth_config(authorization: str | None = Header(None),
         if profile.get('role') != 'operator' and not profile.get('assigned_zip'):
             raise HTTPException(403, 'Earth mode is available once you hold a territory.')
     return {'key': key, 'attribution': 'Map data \u00a9 Google'}
+
+
+# ── V4 parcel fabric: legal lot polygons (MIGRATION_V4.md Phase 4) ────────
+# Proxies the state parcel FeatureServer so county GIS uptime is not our
+# uptime (KC's own server 503'd all of July 8) and callers never learn the
+# upstream. In-process cache per ZIP (24h). Markets without a configured
+# source return {} — the frontend falls back to centroid dots gracefully.
+_LOT_SOURCES = {
+    # WA statewide Current_Parcels (proven July 2026 design sessions):
+    # envelope query + digit-normalized PARCEL_ID_NR/ORIG_PARCEL_ID match.
+    'WA': 'https://services.arcgis.com/jsIt88o09Q0r1j8h/arcgis/rest/services/Current_Parcels/FeatureServer/0/query',
+}
+_LOT_CACHE: dict = {}   # zip -> (ts, {pin: geometry})
+_LOT_TTL = 86400
+
+
+@router.get("/{zip_code}/lot-polygons")
+async def lot_polygons(zip_code: str,
+                       authorization: str | None = Header(None),
+                       x_admin_key: str | None = Header(None, alias="X-Admin-Key")):
+    _gate(zip_code, authorization, x_admin_key)
+    import time as _time
+    hit = _LOT_CACHE.get(zip_code)
+    if hit and _time.time() - hit[0] < _LOT_TTL:
+        return {'zip_code': zip_code, 'polygons': hit[1], 'cached': True}
+
+    supa = get_supabase_client()
+    empty = {'zip_code': zip_code, 'polygons': {}, 'cached': False}
+    if not supa:
+        return empty
+    try:
+        cov = (supa.table('zip_coverage_v3').select('market_key')
+               .eq('zip_code', zip_code).limit(1).execute()).data
+        market = (cov[0].get('market_key') or '') if cov else ''
+        src = _LOT_SOURCES.get(market.split('_')[0])
+        if not src:
+            return empty
+        rows = (supa.table('parcels_v3').select('pin, lat, lng')
+                .eq('zip_code', zip_code).not_.is_('lat', 'null')
+                .limit(20000).execute()).data or []
+        pins = {''.join(c for c in str(r['pin']) if c.isdigit()) for r in rows}
+        if not rows:
+            return empty
+        lats = [r['lat'] for r in rows]; lngs = [r['lng'] for r in rows]
+        env = f"{min(lngs)},{min(lats)},{max(lngs)},{max(lats)}"
+
+        import urllib.request, urllib.parse, json as _json
+        polys, offset = {}, 0
+        while True:
+            q = urllib.parse.urlencode({
+                'where': '1=1', 'geometry': env,
+                'geometryType': 'esriGeometryEnvelope', 'inSR': '4326',
+                'spatialRel': 'esriSpatialRelIntersects',
+                'outFields': 'PARCEL_ID_NR,ORIG_PARCEL_ID', 'outSR': '4326',
+                'f': 'geojson', 'geometryPrecision': '6',
+                'resultOffset': str(offset), 'resultRecordCount': '2000'})
+            d = _json.loads(urllib.request.urlopen(src + '?' + q, timeout=45).read())
+            fs = d.get('features', [])
+            for f in fs:
+                p = f.get('properties') or {}
+                for cand in (p.get('PARCEL_ID_NR'), p.get('ORIG_PARCEL_ID')):
+                    n = ''.join(c for c in str(cand or '') if c.isdigit())
+                    if n in pins and n not in polys:
+                        polys[n] = f['geometry']
+                        break
+            if len(fs) < 2000 or offset > 20000:
+                break
+            offset += 2000
+        _LOT_CACHE[zip_code] = (_time.time(), polys)
+        return {'zip_code': zip_code, 'polygons': polys, 'cached': False}
+    except Exception as e:
+        log.warning("[lot-polygons] %s failed: %s", zip_code, e)
+        return empty
 
 
 @router.get("/{zip_code}")

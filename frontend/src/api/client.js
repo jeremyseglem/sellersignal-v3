@@ -589,3 +589,10 @@ export const letters = {
     });
   },
 };
+
+
+// ── V4 map data (MIGRATION_V4.md Phase 4) ──────────────────────────────
+export const mapApi = {
+  earthConfig: () => authedRequest('/map/earth-config'),
+  lotPolygons: (zip_code) => authedRequest(`/map/${zip_code}/lot-polygons`),
+};

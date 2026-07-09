@@ -9,6 +9,11 @@ import {
 } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import MapPanel from '../components/MapPanel.jsx';
+import { lazy, Suspense } from 'react';
+import { isV4 } from '../lib/uiVersion.js';
+
+// V4 map (MIGRATION_V4.md Phase 4) — lazy; V3 users load zero extra bytes
+const MapPanelV4 = lazy(() => import('../components/MapPanelV4.jsx'));
 import ParcelDossier from '../components/ParcelDossierV2.jsx';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import BriefingHeader from '../components/briefing/BriefingHeader.jsx';
@@ -64,6 +69,14 @@ function searchLeads(leads, query) {
 }
 
 export default function BriefingPage(props) {
+  // ── V4 skin: swap the map engine only; the rest is token-themed ──
+  const [v4Active, setV4Active] = useState(isV4());
+  useEffect(() => {
+    const on = () => setV4Active(true);
+    window.addEventListener('ss:ui-v4', on);
+    return () => window.removeEventListener('ss:ui-v4', on);
+  }, []);
+
   return (
     <SiteLayout
       agent={props.agent || null}
@@ -756,12 +769,23 @@ function BriefingBody() {
           </div>
         )}
         {mapData && (
-          <MapPanel
+          v4Active ? (
+            <Suspense fallback={null}>
+              <MapPanelV4
             mapData={mapData}
             playbook={filteredPlaybook || briefing?.playbook}
             selectedPin={selectedPin}
             onPickPin={handlePickLead}
           />
+            </Suspense>
+          ) : (
+            <MapPanel
+            mapData={mapData}
+            playbook={filteredPlaybook || briefing?.playbook}
+            selectedPin={selectedPin}
+            onPickPin={handlePickLead}
+          />
+          )
         )}
 
         {/* Exploration controls overlaid on the map. Hidden until
@@ -858,7 +882,7 @@ function WorkingSection({ leads, selectedPin, onPickLead }) {
           fontWeight: 600,
           letterSpacing: '0.12em',
           textTransform: 'uppercase',
-          color: '#8B6914',
+          color: 'var(--accent)',
           fontFamily: 'var(--font-sans)',
         }}>
           Working
