@@ -517,7 +517,7 @@ async def my_leads(
     # count includes delivered to reflect total letters that went out.)
     letter_rows = (supa.table('letters_sent_v3')
                    .select('pin, status, status_updated_at, '
-                           'sent_at, delivered_at, stannp_send_date, '
+                           'mailed_at, delivered_at, stannp_send_date, '
                            'sequence_id, letter_index')
                    .eq('agent_id', agent_id)
                    .in_('pin', active_pins)
@@ -561,7 +561,7 @@ async def my_leads(
         # a future letter isn't an "event" in the same sense as one
         # actually moving through the mail system.
         if s and s not in _SCHEDULED_STATUSES:
-            ts = row.get('status_updated_at') or row.get('sent_at')
+            ts = row.get('status_updated_at') or row.get('mailed_at')
             if ts and (sum_['letter_last_status_at'] is None
                        or ts > sum_['letter_last_status_at']):
                 sum_['letter_last_status']    = s
