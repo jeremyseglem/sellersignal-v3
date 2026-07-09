@@ -39,3 +39,29 @@
   @keyframes kb{from{transform:scale(1)}to{transform:scale(1.08)}}
   .hv4 .tile-line{width:44px}
 }
+
+
+/* ── viewport-height guards: the headline block (top-anchored) and the
+      terminal (bottom-anchored) must never intersect ── */
+@media (max-height: 900px) {
+  .hv4 .hero .wrap { padding-top: 112px; }
+  .hv4 h1 { font-size: 38px; margin-bottom: 16px; }
+  .hv4 .hero-sub { font-size: 16px; margin-bottom: 24px; }
+  .hv4 .term { bottom: 76px; }
+  .hv4 .term-line { font-size: 12.5px; margin-top: 8px; }
+  .hv4 .term-line.play-line { font-size: 14px; margin-top: 12px; }
+  .hv4 .replay { bottom: 76px; }
+}
+@media (max-height: 760px) {
+  .hv4 .hero .wrap { padding-top: 96px; }
+  .hv4 h1 { font-size: 32px; }
+  .hv4 .eyebrow { margin-bottom: 16px; }
+  .hv4 .term { bottom: 60px; }
+  .hv4 .term-line { font-size: 11px; margin-top: 6px; }
+  .hv4 .term-line.play-line { font-size: 12.5px; }
+  .hv4 .hero-fn { display: none; }
+  .hv4 .replay { bottom: 22px; }
+}
+
+/* ── seal horizontal overflow at the page level, not just the component ── */
+[data-theme='v4'] html, [data-theme='v4'] body { overflow-x: hidden; }
