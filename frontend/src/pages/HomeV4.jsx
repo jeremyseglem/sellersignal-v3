@@ -306,7 +306,10 @@ export default function HomeV4() {
             </svg>
             <span className="logo-word">SellerSignal</span>
           </div>
-          <Link to="/signup" className="btn btn-brass btn-sm">Request access</Link>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <Link to="/login" className="btn btn-ghost btn-sm">Sign in</Link>
+            <Link to="/signup" className="btn btn-brass btn-sm">Request access</Link>
+          </div>
         </div>
       </nav>
 
