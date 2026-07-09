@@ -223,12 +223,19 @@ async def lot_polygons(zip_code: str,
         cfg = _LOT_SOURCES.get(market)
         if not cfg:
             return empty
-        rows = (supa.table('parcels_v3').select('pin')
-                .eq('zip_code', zip_code)
-                .limit(20000).execute()).data or []
-        raw_pins = [str(r['pin']) for r in rows]
+        # PostgREST caps responses at 1000 rows regardless of .limit() —
+        # paginate with .range() (same pattern as get_map_data/briefings).
+        raw_pins, _off = [], 0
+        while True:
+            page = (supa.table('parcels_v3').select('pin')
+                    .eq('zip_code', zip_code)
+                    .range(_off, _off + 999).execute()).data or []
+            raw_pins.extend(str(r['pin']) for r in page)
+            if len(page) < 1000 or _off >= 30000:
+                break
+            _off += 1000
         pins = {''.join(c for c in p if c.isdigit()) for p in raw_pins}
-        if not rows or not zip_code.isdigit():
+        if not raw_pins or not zip_code.isdigit():
             return empty
 
         # Upstream fetch runs in a thread — a multi-second sync urllib loop
