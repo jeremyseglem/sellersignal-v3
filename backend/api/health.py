@@ -71,4 +71,7 @@ async def frontend_config():
     return {
         "supabase_url":      os.environ.get('SUPABASE_URL', ''),
         "supabase_anon_key": os.environ.get('SUPABASE_ANON_KEY', ''),
+        # V4 UI feature flag (see MIGRATION_V4.md). "" = off (V3 skin default),
+        # "1" = V4 default-on. Per-browser preview override: ?v4=1 query param.
+        "ui_v4": os.environ.get('UI_V4', ''),
     }

@@ -507,6 +507,19 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-09 — V4 UI migration: plan committed + Phase 0 (flag plumbing)
+
+The full-scale redesign (July design sessions: homepage v18, briefing real-data demo, territories atlas demo) begins porting to production as **V4** (v1/v2 archived, V3 live, so the redesign is V4 — never "v2"). Canonical plan: **`MIGRATION_V4.md`** at repo root — phases 0-5, naming conventions, mobile acceptance gates per phase, risk register, rollback procedure. Core commitments: same components/new skin (no logic, data, or API-contract changes), V3 default until Jeremy flips `UI_V4` in Railway (rollback = env-var unset, no redeploy), mobile ships with V4 not after it (inline-style purge doubles as the mobile unlock).
+
+Phase 0 shipped (invisible; UI byte-identical for all users by default):
+- `GET /api/config` gains `ui_v4` (Railway env `UI_V4`, default off)
+- `frontend/src/styles/v4-tokens.css` — warm-dusk "ink & brass" token set fully scoped to `[data-theme="v4"]` (inert until attribute set) + breakpoint canon (480/768/1080, mobile-first convention)
+- `frontend/src/lib/uiVersion.js` — activation util: `?v4=1` / `?v4=0` per-browser preview override (localStorage `ss:ui_v4_preview`) → server flag; sets `<html data-theme="v4">`; lazy-injects V4 Google fonts only when active; fail-safe to V3 on any error
+- Wired in `main.jsx`; built with `build:safe`
+
+Next: Phase 1 (leaf pages: Terms/Privacy/Contact/Voice/Profile).
+
+
 ### 2026-06-16 — LAUNCH DAY: go-live (Stripe/Stannp/purge) + CRITICAL data-exposure fix (map/parcel read endpoints were public) + auth hardening
 
 **Go-live.** Flipped the platform from test to live:

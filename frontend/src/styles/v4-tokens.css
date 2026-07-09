@@ -1,0 +1,71 @@
+/*
+ * V4 design tokens — "ink & brass" warm dusk (see MIGRATION_V4.md).
+ *
+ * Scoped entirely to [data-theme="v4"]: loading this file changes NOTHING
+ * until frontend/src/lib/uiVersion.js sets the attribute on <html>.
+ * V3's tokens.css remains untouched and remains the default experience.
+ *
+ * Phase 0 ships tokens only. Component styles arrive per-phase and must
+ * reference these variables — never hardcoded hex — so a page is themed
+ * completely or not at all.
+ */
+
+[data-theme='v4'] {
+  /* ── surfaces ── */
+  --v4-ink: #14110C;        /* page ground */
+  --v4-ink-deep: #0D0B07;   /* rails, nav, deepest wells */
+  --v4-panel: #1A1610;      /* cards, sheets */
+  --v4-line: #2A241A;       /* hairlines, borders */
+  --v4-line-soft: #201B13;  /* row separators */
+
+  /* ── brass ── */
+  --v4-brass: #C6A15B;      /* structure: rules, outlines, labels */
+  --v4-brass-hi: #E9CD8F;   /* emphasis: highlights, active states */
+
+  /* ── text ── */
+  --v4-text-hi: #F3EFE6;    /* primary */
+  --v4-text-mid: #C8C2B4;   /* body */
+  --v4-text-low: #7A7264;   /* meta, machine voice at rest */
+
+  /* ── paper (scripts, letters — the one light surface) ── */
+  --v4-paper: #F3EFE6;
+  --v4-paper-ink: #2A2417;
+
+  /* ── type stack (fonts injected by uiVersion.js only when v4 active) ── */
+  --v4-font-display: 'Playfair Display', Georgia, serif;
+  --v4-font-wordmark: 'DM Serif Display', Georgia, serif;
+  --v4-font-serif: 'Source Serif 4', Georgia, serif;
+  --v4-font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  --v4-font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* ── scrims & shadows (warm-based, never blue-black) ── */
+  --v4-scrim: rgba(13, 11, 7, 0.82);
+  --v4-scrim-heavy: rgba(13, 11, 7, 0.92);
+  --v4-shadow: 0 18px 50px rgba(13, 11, 7, 0.55);
+
+  /* ── radii & rhythm ── */
+  --v4-radius: 2px;         /* the estate is square-shouldered */
+  --v4-radius-card: 4px;
+  --v4-pad-rail: 22px;
+
+  /* ── breakpoints (for use in JS via getComputedStyle; CSS uses the
+        raw values below in @media — custom properties cannot appear in
+        media queries, so these document the canon) ──
+        --v4-bp-phone:   480px   (single column, bottom sheets)
+        --v4-bp-tablet:  768px   (rail collapses, map goes full-bleed)
+        --v4-bp-desktop: 1080px  (full rail + map + sheet layout)      */
+  --v4-bp-phone: 480px;
+  --v4-bp-tablet: 768px;
+  --v4-bp-desktop: 1080px;
+
+  /* ── motion ── */
+  --v4-ease: cubic-bezier(0.3, 0.8, 0.3, 1);
+  --v4-dur: 0.35s;
+
+  color-scheme: dark;
+}
+
+/* Mobile-first convention for all V4 component styles:
+   base rules target the phone; enhance upward with
+   @media (min-width: 768px) and @media (min-width: 1080px).
+   Never max-width overrides. */
