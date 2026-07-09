@@ -342,6 +342,42 @@ def _sign_url(url: str, secret: str) -> str:
     return url + '&signature=' + encoded_signature
 
 
+@router.get("/earth-config")
+async def earth_config(authorization: str | None = Header(None),
+                       x_admin_key: str | None = Header(None, alias="X-Admin-Key")):
+    """
+    Photorealistic 3D Tiles ("Earth mode") key handoff — MIGRATION_V4.md
+    Phase 4, the "velvet rope": Earth mode is a territory-owner feature,
+    never a public/marketing one, so the metered Google spend is scoped
+    to paying agents.
+
+    The key returned here is a BROWSER key by design (Google 3D tiles are
+    fetched directly by the client; proxying the mesh through our single
+    worker is a non-starter). Its real protections live in Cloud Console:
+      - API restriction: Map Tiles API only
+      - Referrer restriction: https://sellersignal.co/*
+      - Quota caps
+    This endpoint adds the product-level gate: only authenticated agents
+    with a claimed territory (or operators / X-Admin-Key) receive it.
+
+    Env: GOOGLE_MAPS_3D_TILES_KEY (separate from the server-side
+    GOOGLE_MAPS_API_KEY used for Street View — never hand that one out).
+    Returns 404 when unconfigured so the frontend can hide the EARTH
+    control entirely.
+    """
+    key = os.environ.get('GOOGLE_MAPS_3D_TILES_KEY', '')
+    if not key:
+        raise HTTPException(404, 'Earth mode is not configured.')
+    admin_expected = os.environ.get('ADMIN_KEY', '')
+    if not (admin_expected and x_admin_key == admin_expected):
+        user = _user_from_authorization(authorization)
+        from backend.api.territory import _load_profile
+        profile = _load_profile(user.id)
+        if profile.get('role') != 'operator' and not profile.get('assigned_zip'):
+            raise HTTPException(403, 'Earth mode is available once you hold a territory.')
+    return {'key': key, 'attribution': 'Map data \u00a9 Google'}
+
+
 @router.get("/streetview/{pin}")
 async def get_streetview_url(
     pin: str,
