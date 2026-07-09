@@ -49,6 +49,9 @@ function injectFonts() {
 function activate() {
   document.documentElement.dataset.theme = 'v4';
   injectFonts();
+  try {
+    window.dispatchEvent(new Event('ss:ui-v4'));
+  } catch (e) { /* older browsers: attribute alone still themes CSS */ }
 }
 
 /**

@@ -1,8 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import SiteLayout from '../components/shell/SiteLayout.jsx';
 import Logo from '../components/shell/Logo.jsx';
 import { availability, notifications } from '../api/client.js';
+import { lazy, Suspense } from 'react';
+import { isV4 } from '../lib/uiVersion.js';
+
+// V4 homepage (MIGRATION_V4.md Phase 2) — lazy so V3 users never load it
+const HomeV4 = lazy(() => import('./HomeV4.jsx'));
 
 // HomePage — the public landing at `/`.
 //
@@ -28,6 +33,21 @@ import { availability, notifications } from '../api/client.js';
 //   7. Footer CTA — direct, no metaphor
 
 export default function HomePage() {
+  // ── V4 skin branch (flag/preview via uiVersion.js) ──
+  const [v4Active, setV4Active] = useState(isV4());
+  useEffect(() => {
+    const on = () => setV4Active(true);
+    window.addEventListener('ss:ui-v4', on);
+    return () => window.removeEventListener('ss:ui-v4', on);
+  }, []);
+  if (v4Active) {
+    return (
+      <Suspense fallback={null}>
+        <HomeV4 />
+      </Suspense>
+    );
+  }
+
   return (
     <SiteLayout mode="public" showFooter>
       <Hero />
