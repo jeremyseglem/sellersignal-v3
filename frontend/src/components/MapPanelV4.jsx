@@ -53,6 +53,8 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
   const lotIndexRef = useRef([]);
   const featsRef = useRef([]);
   const earthOnRef = useRef(false);
+  const earthRefreshRef = useRef(null);
+  const selPinRef = useRef(null);
   const creditRef = useRef(null);
 
   const zip = mapData?.zip_code || mapData?.zip || mapData?.parcels?.[0]?.zip_code;
@@ -232,11 +234,26 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
         }
         return layers;
       }
+      function selLayer() {
+        const { GeoJsonLayer, TerrainExtension } = deckMods || {};
+        if (!GeoJsonLayer) return null;
+        const hit = lotIndexRef.current.find((l) => String(l.pin) === String(selPinRef.current));
+        if (!hit) return null;
+        return new GeoJsonLayer({
+          id: 'sel3d', data: { type: 'Feature', geometry: hit.geom },
+          stroked: true, filled: false, getLineColor: [233, 205, 143, 255],
+          getLineWidth: 3, lineWidthUnits: 'pixels',
+          extensions: TerrainExtension ? [new TerrainExtension()] : [],
+        });
+      }
       function refreshEarthLayers() {
         if (overlayRef.current && earthKey) {
-          try { overlayRef.current.setProps({ layers: earthLayers(earthKey) }); } catch (e) {}
+          const base = earthLayers(earthKey);
+          const sel = selLayer();
+          try { overlayRef.current.setProps({ layers: sel ? [...base, sel] : base }); } catch (e) {}
         }
       }
+      earthRefreshRef.current = refreshEarthLayers;
       try {
         const cfg = await mapApi.earthConfig();      // 403/404 → catch → satellite
         if (!cfg?.key) throw new Error('earth not configured');
@@ -296,6 +313,9 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           id: 'sat', type: 'raster', source: 'sat',
           paint: { 'raster-opacity': 0.92, 'raster-saturation': -0.12, 'raster-contrast': 0.06 },
         }, 'p-dots');
+        map.addSource('sel-lot', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        map.addLayer({ id: 'sel-lot', type: 'line', source: 'sel-lot',
+          paint: { 'line-color': GOLD, 'line-width': 2.6 } });
       }
     });
 
@@ -318,6 +338,17 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
     if (!f) { prevSel.current = null; return; }
     prevSel.current = f.i;
     try { map.setFeatureState({ source: 'pts', id: f.i }, { sel: true }); } catch (e) {}
+    selPinRef.current = f.pin;
+    if (earthOnRef.current && earthRefreshRef.current) {
+      earthRefreshRef.current();
+    } else {
+      try {
+        const hit = lotIndexRef.current.find((l) => String(l.pin) === String(f.pin));
+        map.getSource('sel-lot')?.setData(hit
+          ? { type: 'Feature', geometry: hit.geom }
+          : { type: 'FeatureCollection', features: [] });
+      } catch (e) {}
+    }
     try { map.flyTo({ center: [f.lng, f.lat], zoom: Math.max(map.getZoom(), 16.2), duration: 800 }); } catch (e) {}
   }, [selectedPin, feats]);
 
