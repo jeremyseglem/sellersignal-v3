@@ -137,17 +137,69 @@ async def earth_config(authorization: str | None = Header(None),
 
 
 # ── V4 parcel fabric: legal lot polygons (MIGRATION_V4.md Phase 4) ────────
-# Proxies the state parcel FeatureServer so county GIS uptime is not our
-# uptime (KC's own server 503'd all of July 8) and callers never learn the
-# upstream. In-process cache per ZIP (24h). Markets without a configured
-# source return {} — the frontend falls back to centroid dots gracefully.
+# Proxies each market's parcel FeatureServer so county GIS uptime is not our
+# uptime and callers never learn the upstream. In-process cache per ZIP (24h).
+# Markets without a configured source return {} — the frontend falls back to
+# centroid dots gracefully.
+#
+# Two fetch modes (all sources truth-tested with live pins, 2026-07-09):
+#   zip  — layer has a situs-ZIP attribute; one paginated query per ZIP.
+#   pins — no situs-ZIP attribute (Dallas TAXPAZIP is mailing-only; Travis
+#          and CT have none). POST IN(...) batches of parcels_v3 pins.
+#          Misses are overwhelmingly condos/units, which have no individual
+#          lot polygon anyway (same gap geometry_backfill documented) —
+#          the frontend's dot highlight covers those.
+# Same layers geometry_backfill.MARKET_CONFIGS verified 2026-06-11, except
+# WA_KING which uses the WA statewide layer (KC's AGOL ZIP5 covers only
+# ~half its rows; statewide SITUS_ZIP_NR matched 7,887/8.3k on 98008).
 _LOT_SOURCES = {
-    # WA statewide Current_Parcels (proven July 2026 design sessions):
-    # envelope query + digit-normalized PARCEL_ID_NR/ORIG_PARCEL_ID match.
-    'WA': 'https://services.arcgis.com/jsIt88o09Q0r1j8h/arcgis/rest/services/Current_Parcels/FeatureServer/0/query',
+    'WA_KING': {
+        'mode': 'zip',
+        'url': 'https://services.arcgis.com/jsIt88o09Q0r1j8h/arcgis/rest/services/Current_Parcels/FeatureServer/0/query',
+        'zip_where': "SITUS_ZIP_NR LIKE '{zip}%'",
+        'out_fields': 'PARCEL_ID_NR,ORIG_PARCEL_ID',
+    },
+    'WA_SNOHOMISH': {
+        'mode': 'zip',
+        'url': 'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/arcgis/rest/services/Parcels/FeatureServer/0/query',
+        'zip_where': "SITUSZIP LIKE '{zip}%'",
+        'out_fields': 'PARCEL_ID',
+    },
+    'AZ_MARICOPA': {
+        'mode': 'zip',
+        'url': 'https://gis.mcassessor.maricopa.gov/arcgis/rest/services/Parcels/MapServer/0/query',
+        'zip_where': "PHYSICAL_ZIP LIKE '{zip}%'",
+        'out_fields': 'APN',   # undashed on layer; digit-normalization matches dashed pins
+    },
+    'TX_COLLIN': {
+        'mode': 'zip',
+        'url': 'https://services2.arcgis.com/uXyoacYrZTPTKD3R/arcgis/rest/services/CCAD_Parcel_Feature_Set/FeatureServer/4/query',
+        'zip_where': "situsZip LIKE '{zip}%'",
+        'out_fields': 'propID',
+    },
+    'TX_DALLAS': {
+        'mode': 'pins',
+        'url': 'https://gis.dallascityhall.com/arcgis/rest/services/Basemap/DallasTaxParcels/FeatureServer/0/query',
+        'pin_field': 'ACCT',
+        'quoted': True,
+    },
+    'TX_TRAVIS': {
+        'mode': 'pins',
+        'url': 'https://services.arcgis.com/0L95CJ0VTaxqcmED/arcgis/rest/services/EXTERNAL_tcad_parcel/FeatureServer/0/query',
+        'pin_field': 'PROP_ID',
+        'quoted': False,       # esriFieldTypeInteger
+    },
+    'CT_FAIRFIELD': {
+        'mode': 'pins',
+        'url': 'https://services3.arcgis.com/3FL1kr7L4LvwA2Kb/arcgis/rest/services/Connecticut_State_Parcel_Layer_2023/FeatureServer/0/query',
+        'pin_field': 'Link',
+        'quoted': True,
+    },
 }
 _LOT_CACHE: dict = {}   # zip -> (ts, {pin: geometry})
 _LOT_TTL = 86400
+_LOT_PAGE = 1000        # KC-statewide/Maricopa clamp at 1000; uniform page size
+_LOT_PIN_BATCH = 150    # pins per POST IN(...) — ~3KB where clause, in body
 
 
 @router.get("/{zip_code}/lot-polygons")
@@ -168,44 +220,67 @@ async def lot_polygons(zip_code: str,
         cov = (supa.table('zip_coverage_v3').select('market_key')
                .eq('zip_code', zip_code).limit(1).execute()).data
         market = (cov[0].get('market_key') or '') if cov else ''
-        src = _LOT_SOURCES.get(market.split('_')[0])
-        if not src:
+        cfg = _LOT_SOURCES.get(market)
+        if not cfg:
             return empty
         rows = (supa.table('parcels_v3').select('pin')
                 .eq('zip_code', zip_code)
                 .limit(20000).execute()).data or []
-        pins = {''.join(c for c in str(r['pin']) if c.isdigit()) for r in rows}
+        raw_pins = [str(r['pin']) for r in rows]
+        pins = {''.join(c for c in p if c.isdigit()) for p in raw_pins}
         if not rows or not zip_code.isdigit():
             return empty
 
-        # ZIP-attribute query (SITUS_ZIP_NR, includes ZIP+4 variants) instead
-        # of an envelope. 98008's envelope intersected 58k statewide features
-        # and blew past the pagination cap (58 of 8.3k pins matched);
-        # the ZIP predicate returns ~8k features in 4 pages. Runs in a
-        # thread — a multi-second sync urllib loop on the event loop stalls
-        # the single uvicorn worker.
+        # Upstream fetch runs in a thread — a multi-second sync urllib loop
+        # on the event loop stalls the single uvicorn worker.
         import asyncio, urllib.request, urllib.parse, json as _json
 
+        def _match_into(out, features, fields):
+            for f in features:
+                p = f.get('properties') or {}
+                for fld in fields:
+                    n = ''.join(c for c in str(p.get(fld) or '') if c.isdigit())
+                    if n in pins and n not in out:
+                        out[n] = f['geometry']
+                        break
+
         def _fetch_lots():
-            out, offset = {}, 0
-            while True:
-                q = urllib.parse.urlencode({
-                    'where': f"SITUS_ZIP_NR LIKE '{zip_code}%'",
-                    'outFields': 'PARCEL_ID_NR,ORIG_PARCEL_ID', 'outSR': '4326',
-                    'f': 'geojson', 'geometryPrecision': '6',
-                    'resultOffset': str(offset), 'resultRecordCount': '2000'})
-                d = _json.loads(urllib.request.urlopen(src + '?' + q, timeout=45).read())
-                fs = d.get('features', [])
-                for f in fs:
-                    p = f.get('properties') or {}
-                    for cand in (p.get('ORIG_PARCEL_ID'), p.get('PARCEL_ID_NR')):
-                        n = ''.join(c for c in str(cand or '') if c.isdigit())
-                        if n in pins and n not in out:
-                            out[n] = f['geometry']
-                            break
-                if len(fs) < 2000 or offset >= 38000:
-                    break
-                offset += 2000
+            out = {}
+            if cfg['mode'] == 'zip':
+                fields = cfg['out_fields'].split(',')
+                offset = 0
+                while True:
+                    q = urllib.parse.urlencode({
+                        'where': cfg['zip_where'].format(zip=zip_code),
+                        'outFields': cfg['out_fields'], 'outSR': '4326',
+                        'f': 'geojson', 'geometryPrecision': '6',
+                        'returnGeometry': 'true',
+                        'resultOffset': str(offset),
+                        'resultRecordCount': str(_LOT_PAGE)})
+                    d = _json.loads(urllib.request.urlopen(
+                        cfg['url'] + '?' + q, timeout=45).read())
+                    fs = d.get('features', [])
+                    _match_into(out, fs, fields)
+                    if len(fs) < _LOT_PAGE or offset >= 40000:
+                        break
+                    offset += _LOT_PAGE
+            else:  # pins mode
+                fld = cfg['pin_field']
+                for i in range(0, len(raw_pins), _LOT_PIN_BATCH):
+                    batch = raw_pins[i:i + _LOT_PIN_BATCH]
+                    vals = ','.join(
+                        ("'" + b.replace("'", "") + "'") if cfg['quoted']
+                        else ''.join(c for c in b if c.isdigit())
+                        for b in batch)
+                    body = urllib.parse.urlencode({
+                        'where': f"{fld} IN ({vals})",
+                        'outFields': fld, 'outSR': '4326',
+                        'f': 'geojson', 'geometryPrecision': '6',
+                        'returnGeometry': 'true'}).encode()
+                    d = _json.loads(urllib.request.urlopen(
+                        urllib.request.Request(cfg['url'], data=body),
+                        timeout=45).read())
+                    _match_into(out, d.get('features', []), [fld])
             return out
 
         polys = await asyncio.to_thread(_fetch_lots)
