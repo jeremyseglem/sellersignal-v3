@@ -41,30 +41,27 @@
 }
 
 
-/* ── viewport-height guards: the headline block (top-anchored) and the
-      terminal (bottom-anchored) must never intersect — compression comes
-      from spacing, not from shrinking the intelligence feed ── */
-@media (max-height: 900px) {
+/* ── viewport-height guards: full v18 sizes are the default; compression
+      begins only when the window is genuinely short ── */
+@media (max-height: 780px) {
   .hv4 .hero .wrap { padding-top: 104px; }
   .hv4 .eyebrow { margin-bottom: 16px; }
-  .hv4 h1 { font-size: 36px; margin-bottom: 14px; }
-  .hv4 .hero-sub { font-size: 15.5px; line-height: 1.55; margin-bottom: 20px; }
-  .hv4 .term { bottom: 64px; }
+  .hv4 h1 { font-size: 38px; margin-bottom: 16px; }
+  .hv4 .hero-sub { font-size: 16.5px; margin-bottom: 22px; }
+  .hv4 .term { bottom: 60px; }
   .hv4 .term-line { font-size: 14px; margin-top: 9px; }
-  .hv4 .term-line.play-line { font-size: 15.5px; margin-top: 13px; }
-  .hv4 .replay { bottom: 64px; }
+  .hv4 .term-line.play-line { font-size: 15.5px; }
+  .hv4 .replay { bottom: 60px; }
 }
-@media (max-height: 760px) {
-  .hv4 .hero .wrap { padding-top: 88px; }
-  .hv4 .eyebrow { margin-bottom: 12px; }
-  .hv4 h1 { font-size: 30px; margin-bottom: 12px; }
-  .hv4 .hero-sub { font-size: 14.5px; margin-bottom: 16px; }
+@media (max-height: 660px) {
+  .hv4 .hero .wrap { padding-top: 86px; }
+  .hv4 h1 { font-size: 31px; margin-bottom: 12px; }
+  .hv4 .hero-sub { font-size: 15px; margin-bottom: 16px; }
   .hv4 .btn { padding: 12px 20px; }
-  .hv4 .term { bottom: 46px; }
+  .hv4 .term { bottom: 44px; }
   .hv4 .term-line { font-size: 12.5px; margin-top: 7px; }
-  .hv4 .term-line.play-line { font-size: 14px; }
   .hv4 .hero-fn { display: none; }
-  .hv4 .replay { bottom: 12px; }
+  .hv4 .replay { bottom: 10px; }
 }
 
 /* ── seal horizontal overflow at the page level, not just the component ── */
