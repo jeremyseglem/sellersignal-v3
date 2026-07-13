@@ -52,12 +52,9 @@ import SkipTracePanel from './SkipTracePanel.jsx';
  *   dossier   — full dossier response from /api/parcels/:pin
  *   onClose   — handler for the X button
  */
-export default function ParcelDossierV2({ dossier, onClose, preferredSignalType = null, demo = false }) {
+export default function ParcelDossierV2({ dossier, onClose, preferredSignalType = null }) {
   const { session } = useAuth();
-  // Demo mode has no session but must show the full action flow (the
-  // whole point of the pitch is to see skip-trace + letters work). The
-  // data is fabricated, so there's nothing to gate.
-  const isColdVisitor = !session && !demo;
+  const isColdVisitor = !session;
 
   const [streetViewUrl, setStreetViewUrl] = useState(null);
   const [streetViewOk, setStreetViewOk] = useState(true);
@@ -347,7 +344,6 @@ export default function ParcelDossierV2({ dossier, onClose, preferredSignalType 
           pin={dossier.pin}
           isColdVisitor={isColdVisitor}
           onAfterSkipTrace={handleAfterSkipTrace}
-          demo={demo}
         />
 
         <WhatToSaySection
@@ -802,7 +798,7 @@ function NextStepSection({ archetype, contactStatus, inWaitWindow, waitOpens }) 
 
 
 function ContactSection({ parcel, archetype, equityDollars, personalRep,
-                          pin, isColdVisitor, onAfterSkipTrace, demo = false }) {
+                          pin, isColdVisitor, onAfterSkipTrace }) {
   const ownerCity = (parcel.owner_city || '').trim();
   const ownerState = (parcel.owner_state || '').trim();
   const propCity = (parcel.city || '').trim().toUpperCase();
@@ -886,7 +882,6 @@ function ContactSection({ parcel, archetype, equityDollars, personalRep,
           <SkipTracePanel
             pin={pin}
             onAfterTrace={onAfterSkipTrace}
-            demo={demo}
           />
         )}
       </div>

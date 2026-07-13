@@ -6,7 +6,6 @@ import {
   parcels as parcelsApi,
   leadTags,
   leadInteractions,
-  demo as demoApi,
 } from '../api/client.js';
 import { useAuth } from '../lib/AuthContext.jsx';
 import MapPanel from '../components/MapPanel.jsx';
@@ -117,13 +116,7 @@ function BriefingBody() {
   //
   // ENTERING WITH ?welcome=1 is the post-Checkout case — don't bounce
   // away while the webhook is still landing the assigned_zip.
-  // Demo mode: ?demo=1 renders a fabricated, fixture-backed briefing with
-  // no auth and no ZIP gate. Used for the marketing video and Zoom pitches.
-  // Data comes from /api/demo/* (fixture-only, cannot reach real records).
-  const isDemo = searchParams.get('demo') === '1';
-
   useEffect(() => {
-    if (isDemo) return;    // demo mode bypasses the territory gate entirely
     if (!profile) return;  // wait for profile to load
     if (profile.role === 'operator') return;
 
@@ -252,14 +245,9 @@ function BriefingBody() {
     setSelectedTags([]); setTagFilteredPins(null); setAvailableTags([]);
     setLeadStatuses({});
 
-    const loadBriefing = isDemo
-      ? Promise.all([demoApi.briefing(), demoApi.map()])
-      : Promise.all([briefings.get(zip, false), mapApi.get(zip)]);
-    loadBriefing
+    Promise.all([briefings.get(zip, false), mapApi.get(zip)])
       .then(([b, m]) => { setBriefing(b); setMapData(m); })
       .catch((e) => setError(e.detail?.message || e.message));
-
-    if (isDemo) return;  // skip agent-scoped tag/memory loads in demo mode
 
     // Load this agent's distinct tags for this ZIP (chip list source).
     // Independent of the briefing load — failure here just leaves the
@@ -275,7 +263,7 @@ function BriefingBody() {
     leadInteractions.byZip(zip)
       .then((r) => setLeadStatuses(r.statuses || {}))
       .catch(() => setLeadStatuses({}));
-  }, [zip, isDemo]);
+  }, [zip]);
 
   // Whenever selectedTags changes, fetch the union of matching pins.
   // Empty selection clears the filter (sets back to null).
@@ -321,7 +309,7 @@ function BriefingBody() {
     if (!selectedPin) { setDossier(null); setDossierError(null); return; }
     let stale = false;
     setDossier(null); setDossierError(null); setDossierLoading(true);
-    (isDemo ? demoApi.parcel(selectedPin) : parcelsApi.get(selectedPin))
+    parcelsApi.get(selectedPin)
       .then((d) => { if (!stale) setDossier(d); })
       .catch((e) => {
         // 2026-06-12: this used to console.error only — a failed fetch
@@ -333,7 +321,7 @@ function BriefingBody() {
       })
       .finally(() => { if (!stale) setDossierLoading(false); });
     return () => { stale = true; };
-  }, [selectedPin, dossierRetryNonce, isDemo]);
+  }, [selectedPin, dossierRetryNonce]);
 
   const handlePickLead = (pin) => {
     setSelectedPin(pin);
@@ -789,7 +777,6 @@ function BriefingBody() {
             playbook={filteredPlaybook || briefing?.playbook}
             selectedPin={selectedPin}
             onPickPin={handlePickLead}
-            demo={isDemo}
           />
             </Suspense>
           ) : (
@@ -841,7 +828,6 @@ function BriefingBody() {
           <ParcelDossier
             dossier={dossier}
             onClose={() => setSelectedPin(null)}
-            demo={isDemo}
             preferredSignalType={
               activeBucket === 'probate' ? 'probate'
               : activeBucket === 'divorce' ? 'divorce'

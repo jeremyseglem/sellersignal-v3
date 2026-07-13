@@ -17,7 +17,6 @@ from backend.api import (
     investigations,
     playbook,
     map_data,
-    demo,
     health,
     coverage,
     admin,
@@ -211,7 +210,6 @@ app.include_router(parcels.router,        prefix="/api/parcels",     tags=["parc
 app.include_router(investigations.router, prefix="/api/investigations", tags=["investigations"])
 app.include_router(playbook.router,       prefix="/api/playbook",    tags=["playbook"])
 app.include_router(map_data.router,       prefix="/api/map",         tags=["map"])
-app.include_router(demo.router,           prefix="/api/demo",        tags=["demo"])
 app.include_router(admin.router,          prefix="/api/admin",       tags=["admin"])
 app.include_router(deep_signal.router,    prefix="/api/deep-signal", tags=["deep-signal"])
 app.include_router(harvest.router,        prefix="/api/harvest",     tags=["harvest"])

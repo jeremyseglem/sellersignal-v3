@@ -27,29 +27,8 @@ import { useEffect, useState } from 'react';
 import { skipTrace, leadInteractions, safeErrorMessage } from '../api/client.js';
 import TCPAComplianceModal from './TCPAComplianceModal.jsx';
 
-// Fabricated result shown in demo mode (?demo=1). Not a real person —
-// invented contact for the marketing/pitch flow.
-const DEMO_STATUS = {
-  acked: true, is_operator: false,
-  monthly_used: 2, monthly_cap: 50, monthly_remaining: 48,
-};
-const DEMO_RESULT = {
-  source: 'fresh', hit: true,
-  persons: [{
-    name: 'Daniel R Winslow',
-    phones: [
-      { number: '(425) 555-0184', type: 'mobile', confidence: 'high' },
-      { number: '(425) 555-0139', type: 'landline', confidence: 'medium' },
-    ],
-    emails: [{ address: 'd.winslow@example.com', confidence: 'medium' }],
-    age: 58, city: 'Bellevue', state: 'WA',
-  }],
-  retrieved_at: new Date().toISOString(),
-  expires_at: new Date(Date.now() + 30 * 864e5).toISOString(),
-};
-
-export default function SkipTracePanel({ pin, onAfterTrace, demo = false }) {
-  const [status, setStatus]   = useState(demo ? DEMO_STATUS : null);
+export default function SkipTracePanel({ pin, onAfterTrace }) {
+  const [status, setStatus]   = useState(null);   // {acked, monthly_used, monthly_cap, ...}
   const [result, setResult]   = useState(null);   // {source, hit, persons, ...} | null
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
@@ -61,7 +40,6 @@ export default function SkipTracePanel({ pin, onAfterTrace, demo = false }) {
   // contact info" every time they re-open a dossier they've already
   // traced.
   useEffect(() => {
-    if (demo) return;   // demo mode uses synthetic status/result, no fetch
     let cancelled = false;
     skipTrace.status()
       .then((s) => { if (!cancelled) setStatus(s); })
@@ -95,15 +73,6 @@ export default function SkipTracePanel({ pin, onAfterTrace, demo = false }) {
   const runTrace = async ({ force_refresh = false } = {}) => {
     setError(null);
     setLoading(true);
-    if (demo) {
-      // Synthetic trace: brief spinner, then the fabricated result.
-      await new Promise((r) => setTimeout(r, 1100));
-      setResult(DEMO_RESULT);
-      setStatus({ ...DEMO_STATUS, monthly_used: 3, monthly_remaining: 47 });
-      setLoading(false);
-      onAfterTrace && onAfterTrace();
-      return;
-    }
     try {
       const r = await skipTrace.lookup(pin, { force_refresh });
       setResult(r);

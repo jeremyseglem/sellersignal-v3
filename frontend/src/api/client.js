@@ -124,17 +124,6 @@ export const briefings = {
   history: (zip, limit = 12) => authedRequest(`/briefings/${zip}/history?limit=${limit}`),
 };
 
-// ── Demo mode ──────────────────────────────────────────────────────
-// Public, unauthenticated, fixture-only. Backs the ?demo=1 briefing.
-// Every response is fabricated data from backend/data/demo/.
-
-export const demo = {
-  briefing: () => request('/demo/briefing'),
-  map: () => request('/demo/map'),
-  lotPolygons: () => request('/demo/lot-polygons'),
-  parcel: (pin) => request(`/demo/parcel/${pin}`),
-};
-
 // ── Map data ───────────────────────────────────────────────────────
 
 export const map = {
