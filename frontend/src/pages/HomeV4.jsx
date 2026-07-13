@@ -331,7 +331,7 @@ export default function HomeV4() {
           <p className="hero-sub">Proprietary predictive technology that reveals homeowners most likely to sell — turning hidden opportunity into predictable listings.</p>
           <div className="hero-cta">
             <a href="#claim" className="btn btn-brass">Check your ZIP</a>
-            <a href="#markets" className="btn btn-ghost">Territories</a>
+            <a href="#pricing" className="btn btn-ghost">Pricing</a>
           </div>
         </div>
       </section>
@@ -411,6 +411,33 @@ export default function HomeV4() {
               <div className="fd">Runs the platform in his own market every week. Every feature ships only after it survives his prospecting.</div>
             </div>
             <a className="f-link" href="mailto:jeremy.seglem@theagencyre.com">Speak with the founders →</a>
+          </div>
+        </div>
+      </section>
+
+      <section className="pricing" id="pricing">
+        <div className="wrap">
+          <div className="section-label">THE TERRITORY</div>
+          <h2 className="pr-head">One agent. One ZIP. <em>Every lead in it.</em></h2>
+
+          <div className="pr-grid">
+            <div className="pr-copy">
+              <p className="body">Exclusivity isn't just that you're the only agent with this ZIP. It's that you're the only agent — anywhere — with the thousands of motivated-seller leads inside it. The named decision-maker behind every probate, divorce, trust, and long-tenure signal in your territory. <b>No one else has this list. No one else ever will.</b></p>
+              <div className="kicker">The leads in your ZIP are yours alone — today and every week after.</div>
+            </div>
+
+            <div className="pr-card">
+              <div className="pr-price"><b>$299</b><span>/ month</span></div>
+              <div className="pr-terms">3-month commitment · One agent per ZIP</div>
+              <ul className="pr-list">
+                <li><b>Your ZIP, exclusively</b> — one agent per territory, never sold twice.</li>
+                <li><b>The full signal set</b> — probate, divorce, trust, LLC, absentee, and long-tenure sellers, surfaced weekly.</li>
+                <li><b>The person, not the parcel</b> — the named decision-maker to actually call, with skip-trace built in.</li>
+                <li><b>Personalized direct mail, automated</b> — every letter written to the specific seller and their situation. No form letters here.</li>
+                <li><b>The briefing workspace</b> — your territory mapped, prioritized, and ready to work each morning.</li>
+              </ul>
+              <a href="#claim" className="btn btn-brass" style={{ width: '100%', justifyContent: 'center' }}>Check your ZIP</a>
+            </div>
           </div>
         </div>
       </section>

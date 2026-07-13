@@ -94,7 +94,7 @@ export default function ClaimZipModal({ zip, onClose }) {
           textAlign: 'center',
           letterSpacing: '0.02em',
         }}>
-          $299/month · One agent per ZIP · Cancel anytime
+          $299/month · One agent per ZIP · 3-month commitment
         </div>
         <div style={{
           marginTop: 'var(--space-lg)',
