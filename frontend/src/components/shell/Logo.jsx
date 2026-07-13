@@ -20,7 +20,13 @@
 
 export default function Logo({ size = 'default', tone = 'light', as = 'span' }) {
   const config = SIZES[size] || SIZES.default;
-  const color = tone === 'dark' ? 'var(--text)' : 'var(--text-inverse)';
+  // 'light' tone must stay light on the always-dark nav/hero surfaces in
+  // BOTH themes. It previously used var(--text-inverse), which V3 defined
+  // as #F5F0EB (light) but v4-remap redefines as #0D0B07 (dark) — making
+  // the header logo render black-on-black under V4. Pin to the same stable
+  // off-white the header's other chrome uses (rgba(245,240,235)). This is
+  // byte-identical to V3's prior value, so V3 is visually unchanged.
+  const color = tone === 'dark' ? 'var(--text)' : '#F5F0EB';
 
   const Wrapper = as;
 
