@@ -1,7 +1,7 @@
 import { useEffect, useRef, useMemo } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { mapApi } from '../api/client.js';
+import { mapApi, demo as demoApi } from '../api/client.js';
 
 /*
  * MapPanelV4 (MIGRATION_V4.md Phase 4) — same contract as MapPanel.jsx:
@@ -46,7 +46,7 @@ const geomBounds = (g) => {
   return [minx, miny, maxx, maxy];
 };
 
-export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }) {
+export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin, demo = false }) {
   const el = useRef(null);
   const mapRef = useRef(null);
   const overlayRef = useRef(null);
@@ -203,7 +203,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
       map.on('mouseleave', 'p-dots', () => { map.getCanvas().style.cursor = ''; });
 
       // lot fabric — Earth's click resolution + faint drape
-      mapApi.lotPolygons(zip).then((d) => {
+      (demo ? demoApi.lotPolygons() : mapApi.lotPolygons(zip)).then((d) => {
         const lots = d?.polygons || {};
         lotIndexRef.current = [];
         for (const f of featsRef.current) {

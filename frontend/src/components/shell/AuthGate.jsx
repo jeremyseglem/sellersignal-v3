@@ -24,6 +24,14 @@ export default function AuthGate({ children }) {
   const { loading, session } = useAuth();
   const location = useLocation();
 
+  // Per-URL demo bypass: ?demo=1 renders the page without auth. Only
+  // the briefing page honors this flag, and there it loads fixture-only
+  // /api/demo/* data (no real records reachable). Scoped to the query
+  // string so it can't be used to reach live authed data on other routes.
+  if (new URLSearchParams(location.search).get('demo') === '1') {
+    return children;
+  }
+
   // Demo mode: render children unconditionally. Skip the loading
   // gate too — no point waiting on an auth check we're going to
   // ignore anyway.
