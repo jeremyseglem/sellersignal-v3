@@ -4,6 +4,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { territory, billing } from '../api/client.js';
 import { ClaimModal } from './TerritoriesPage.jsx';
+import Logo from '../components/shell/Logo.jsx';
 import '../styles/territories-v4.css';
 
 /*
@@ -371,6 +372,9 @@ export default function TerritoriesV4() {
       <div className={`rail ${railOpen ? 'open' : ''}`}>
         <div className="rail-grab" onClick={() => setRailOpen((o) => !o)} />
         <div className="rail-head">
+          <div style={{ marginTop: 2, marginBottom: 16 }}>
+            <Logo tone="light" size="default" />
+          </div>
           <div className="eyebrow">{role === 'operator' ? 'Operator dashboard' : 'Your territory'}</div>
           <div className="h1">
             {role === 'operator' ? 'All territories' : myZip ? 'Live briefings' : 'Choose your territory'}
