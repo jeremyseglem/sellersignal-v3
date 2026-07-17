@@ -1541,6 +1541,8 @@ KC_ZIP_TO_CITY = {
     "98102": "Seattle",
     "98109": "Seattle",
     "98177": "Seattle",
+    "98116": "Seattle",
+    "98144": "Seattle",
 }
 
 # Snohomish County ZIPs. Phase 1 — only 98290 (Snohomish/Lake Stevens area).
@@ -1555,6 +1557,8 @@ SNO_ZIP_TO_CITY = {
     # 2026-06-10 gap-fill expansion
     "98012": "Mill Creek",
     "98021": "Bothell",
+    "98036": "Lynnwood",
+    "98296": "Snohomish",
     "98275": "Mukilteo",
 }
 
@@ -1574,6 +1578,7 @@ MARICOPA_ZIP_TO_CITY = {
     "85377": "Carefree",
     "85255": "Scottsdale",
     "85254": "Scottsdale",
+    "85258": "Scottsdale",
     "85018": "Phoenix",
     "85259": "Scottsdale",
     "85266": "Scottsdale",
@@ -1601,6 +1606,7 @@ DALLAS_ZIP_TO_CITY = {
     "75205": "Highland Park",
     "75225": "University Park",
     "75230": "Preston Hollow",
+    "75219": "Dallas",
     "75209": "Dallas",
     "75214": "Dallas",      # Lakewood / M Streets — onboarded 2026-06-11
     "75201": "Dallas",      # Downtown/Uptown — polygon staged, not yet seeded

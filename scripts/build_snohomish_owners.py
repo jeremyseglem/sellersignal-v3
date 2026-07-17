@@ -197,7 +197,7 @@ def compose_situs_address(attrs: dict) -> str:
         (attrs.get("SITUSHOUSE") or "").strip(),
         (attrs.get("SITUSPREFX") or "").strip(),
         (attrs.get("SITUSSTRT")  or "").strip(),
-        (attrs.get("SITUSTTYP")  or "").strip(),
+        (attrs.get("SITUSSTTYP") or "").strip(),  # renamed from SITUSTTYP upstream
         (attrs.get("SITUSPOSTD") or "").strip(),
         (attrs.get("SITUSUNIT")  or "").strip(),
     ]
@@ -237,7 +237,7 @@ OUT_FIELDS = ",".join([
     "OWNERNAME",
     "TAXPRNAME",
     "SITUSLINE1", "SITUSHOUSE", "SITUSPREFX", "SITUSSTRT",
-    "SITUSTTYP",  "SITUSPOSTD", "SITUSUNIT",
+    "SITUSSTTYP", "SITUSPOSTD", "SITUSUNIT",  # SITUSTTYP renamed upstream ~2026-07
     "SITUSCITY",  "SITUSSTATE", "SITUSZIP",
     "OWNERLINE1", "OWNERCITY",  "OWNERSTATE", "OWNERZIP",
     "USECODE", "MKTTL", "MKIMP", "MKLND",
@@ -281,6 +281,11 @@ while True:
         "orderByFields":      "PARCEL_ID",  # stable page ordering
         "f":                  "json",
     })
+    if "error" in resp:
+        print(f"ERROR: FeatureServer returned an error payload: {resp['error']}. "
+              f"Likely an outFields name no longer on the layer — diff OUT_FIELDS "
+              f"against {PARCELS_URL}?f=json before re-running.", file=sys.stderr)
+        sys.exit(1)
     feats = resp.get("features", [])
     if not feats:
         break
