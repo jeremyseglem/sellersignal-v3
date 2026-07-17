@@ -133,7 +133,7 @@ MARKET_CONFIGS = {
         'zip_field': 'SITUSZIP',
         'out_fields': (
             'PARCEL_ID,OWNERNAME,TAXPRNAME,'
-            'SITUSLINE1,SITUSHOUSE,SITUSPREFX,SITUSSTRT,SITUSTTYP,'
+            'SITUSLINE1,SITUSHOUSE,SITUSPREFX,SITUSSTRT,SITUSSTTYP,'
             'SITUSPOSTD,SITUSUNIT,SITUSCITY,SITUSSTATE,SITUSZIP,'
             'OWNERCITY,OWNERSTATE,'
             'MKLND,MKIMP,MKTTL,USECODE,GIS_ACRES,STATUS'
@@ -571,7 +571,7 @@ def _parse_feature_snohomish(feature: dict, zip_code: str, market_key: str, conf
     2. **Address comes from situs components.** SITUSLINE1 is often
        blank or set to "UNKNOWN ADDRESS"; the actual address has to
        be assembled from SITUSHOUSE + SITUSPREFX + SITUSSTRT +
-       SITUSTTYP + SITUSPOSTD + SITUSUNIT.
+       SITUSSTTYP + SITUSPOSTD + SITUSUNIT. (renamed from SITUSTTYP upstream ~2026-07)
 
     Field map:
       PARCEL_ID                 -> pin
@@ -603,7 +603,7 @@ def _parse_feature_snohomish(feature: dict, zip_code: str, market_key: str, conf
         attrs.get('SITUSHOUSE'),
         attrs.get('SITUSPREFX'),
         attrs.get('SITUSSTRT'),
-        attrs.get('SITUSTTYP'),
+        attrs.get('SITUSSTTYP'),
         attrs.get('SITUSPOSTD'),
         attrs.get('SITUSUNIT'),
     ]
