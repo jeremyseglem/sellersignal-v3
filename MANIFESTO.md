@@ -507,6 +507,23 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-18 (later) — CT statewide probate harvester live: probate leads across all 9 CT territories
+
+**The unlock:** ctprobate.gov exposes a statewide public JSON case-lookup service — no captcha, no auth (`/services/case-lookup?caseTypeCode=1&districtNum=PDxx&status=2&nameLast=<prefix>`). Probate in CT files with the state's probate district courts, NOT town clerks — so the per-town recorder fragmentation that blocks deed-level signals is irrelevant for probate. One adapter covers every CT territory including towns whose parcels aren't live yet (Darien).
+
+Service mechanics (recon-verified): results hard-cap at 1000 rows oldest-first; every date/sort param is ignored; but `nameLast` is a PREFIX match returning complete slices under the cap. Harvest strategy: per-district A-Z prefix sweep, split any capped slice one letter deeper, filter client-side on dateFiled. Districts wired: PD54 Greenwich, PD52 Darien–New Canaan, PD50 Westport/Weston, PD51 Norwalk–Wilton.
+
+**Shipped:** `backend/harvesters/ct_probate_courts.py` (source_type `ct_probate_courts`, decedent-tier signals, `raw_data.case_id` persisted on every signal for future fiduciary detail-enrichment); orchestrator registry key `ct_probate`; matcher `SOURCE_MARKET_SCOPE` entry → CT_FAIRFIELD; `backend/tasks/ct_probate_autofill.py` (24h tick, 10-day lookback, env prefix `CTPROBATE_`); admin endpoints `/api/harvest/ct-probate-autofill-{status,pause,resume,trigger}`; lifespan + shutdown-cancel wiring. Truth-tested locally against the live service before deploy.
+
+**First production run (60-day window):** ~202 signals harvested, rematch_autofill drained the queue in-process, 22 parcel matches written. Post refresh-counts, CT probate buckets: 06830=15, 06831=29, 06807=10, 06870=7, 06878=4, 06840=5, 06880=6, 06897=2, 06883=0 (Weston small + newest). Greenwich cluster totals rose above the recorder-only baseline — the statewide feed catches filings the deed-side recorder never saw.
+
+**Open follow-ups:**
+- **Fiduciary tier:** search API returns the DECEDENT only; leads are `no_pr_yet` shape. The case-detail surface (executor/administrator names → family_pr_identified) wasn't findable from the container (site JS bundles blocked). Jeremy to click into a case in his browser and report the URL — that reveals the detail endpoint. `raw_data.case_id` on every signal is the join key when it lands.
+- **Trusts case type:** the service also exposes caseTypeCode=2 (Trusts) per district — deliberate follow-up pending Jeremy's call on mapping trust FILINGS into the signal taxonomy.
+- **CT divorce:** jud.ct.gov Superior Court civil/family lookup returns 503 to datacenter IPs (likely IP-class blocking, not outage). Jeremy to verify it loads in a residential browser; if yes, it's a proxy/fetch-strategy question.
+- **Older sibling harvesters:** the per-town recorder roadmap (RECORDhub first) is now SECOND priority — it only gates deed-level signals (lis pendens, transfers), not probate.
+
+### 2026-07-18 — CT Gold Coast parcels-first: 06840, 06880, 06897, 06883 live (Darien deferred)
 ### 2026-07-18 — CT Gold Coast parcels-first: 06840, 06880, 06897, 06883 live (Darien deferred)
 
 Four Fairfield County towns live, all fully loaded day one (CT seeds carry tenure + mailing state inline): **New Canaan 06840** (7,192 parcels), **Westport 06880** (9,893), **Wilton 06897** (6,305) — each trust=100 llc=100 absentee=100 tenure=100 at cap; **Weston 06883** (3,986) trust=66 llc=43 absentee=82 tenure=100. Geometry 100% (centroids ride in at seed). 100 → 104 live territories.
