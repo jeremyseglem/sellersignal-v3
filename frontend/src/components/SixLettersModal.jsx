@@ -304,7 +304,7 @@ export default function SixLettersModal({
         }}>
           <div style={{
             fontSize: 10,
-            color: 'var(--text-tertiary)',
+            color: '#8A8070',
             fontWeight: 600,
             letterSpacing: '0.08em',
             textTransform: 'uppercase',
@@ -316,7 +316,7 @@ export default function SixLettersModal({
             fontFamily: 'var(--font-display)',
             fontSize: 20,
             fontWeight: 600,
-            color: 'var(--text)',
+            color: '#2C2418',
             marginBottom: 'var(--space-xs)',
           }}>
             {letter.name}
@@ -324,7 +324,7 @@ export default function SixLettersModal({
           {letter.trigger && (
             <div style={{
               fontSize: 12,
-              color: 'var(--text-tertiary)',
+              color: '#8A8070',
               fontStyle: 'italic',
               marginBottom: 'var(--space-lg)',
               fontFamily: 'var(--font-serif)',
@@ -336,11 +336,11 @@ export default function SixLettersModal({
           {/* Recipient block */}
           <div style={{
             fontSize: 13,
-            color: 'var(--text-secondary)',
+            color: '#57503F',
             marginBottom: 'var(--space-lg)',
             fontFamily: 'var(--font-serif)',
           }}>
-            {parcel.owner_name && <div style={{ color: 'var(--text)' }}>{parcel.owner_name}</div>}
+            {parcel.owner_name && <div style={{ color: '#2C2418' }}>{parcel.owner_name}</div>}
             <div>{mailAddr}</div>
           </div>
 
@@ -348,7 +348,7 @@ export default function SixLettersModal({
           <div style={{
             fontFamily: 'var(--font-serif)',
             fontSize: 15,
-            color: 'var(--text)',
+            color: '#2C2418',
             lineHeight: 1.7,
             whiteSpace: 'pre-line',
           }}>
