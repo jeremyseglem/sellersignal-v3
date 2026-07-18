@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
+**Last updated:** 2026-07-18 (CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -506,6 +506,19 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-07-18 — CT Gold Coast parcels-first: 06840, 06880, 06897, 06883 live (Darien deferred)
+
+Four Fairfield County towns live, all fully loaded day one (CT seeds carry tenure + mailing state inline): **New Canaan 06840** (7,192 parcels), **Westport 06880** (9,893), **Wilton 06897** (6,305) — each trust=100 llc=100 absentee=100 tenure=100 at cap; **Weston 06883** (3,986) trust=66 llc=43 absentee=82 tenure=100. Geometry 100% (centroids ride in at seed). 100 → 104 live territories.
+
+Builder changes (commit `ee1…`): `build_ct_owners.py` now has a `_TOWN_CONFIG` map (per-town ZIP_CITY + local mail-city set for absentee logic) and scopes the ZCTA spatial join to the current town's own ZIPs (with all towns' polygons in ct.json, border parcels matched neighbors' ZCTAs and KeyError'd; they now fall to unzoned like the original Greenwich build). Five ZCTA polygons appended to `data/zip_polygons/ct.json` from the OpenDataDE census GeoJSON.
+
+**Darien 06820 deferred:** the town withholds situs addresses from BOTH statewide layer vintages (2023 `Location` empty; 2024 `Location_1` populated on 10 of 7,670 rows). No VGSI tenant; town GIS is MapGeo (`darienct.mapgeo.io`) — needs its own recon (MapGeo internal API or the town assessor's online DB) before a seed can pass the 80% address gate. Note the 2024 CAMA layer (`Connecticut_CAMA_and_Parcel_Layer_2024`) renames fields (`link_1`, `Location_1`, adds `Property_City`, `Land_Acres`, beds/baths) — worth migrating the builder to it when Darien work happens.
+
+**CT recorder-signal follow-up (committed direction, not yet built):** Gold Coast towns are one-recorder-platform-per-town — Darien on Cott RECORDhub, New Canaan legacy self-hosted, Norwalk homegrown, Fairfield town on uslandrecords.com, Westport account-walled. Greenwich's publicsearch.us covers Greenwich only. First adapter should be **RECORDhub** (modern multi-town Cott platform; towns actively migrating onto it — buys Darien now, appreciates over time). Until adapters land, the four new towns run parcel-derived signals only; Greenwich remains the fullest-stack CT territory.
+
+**Onboarding-under-canon discipline (reconfirmed):** onboarding while ANY canonicalize holds the lock fails intermittently at seed/classify/band/counts (`Server disconnected`); small ZIPs sometimes squeeze through on spaced re-fires, larger ones don't. New Canaan's canon (7,192 parcels) ran ~45 min; Weston onboarded in ~25s the moment it released. Fire ZIPs into lock-free windows.
+
 
 ### 2026-07-17 — 6-ZIP expansion (98116, 98144, 98036, 98296, 85258, 75219) + Snohomish field-rename fix
 
