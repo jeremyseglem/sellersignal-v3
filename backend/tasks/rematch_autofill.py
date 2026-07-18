@@ -93,7 +93,12 @@ def _count_unmatched(supa) -> int:
                .select('id', count='exact')
                .is_('matched_at', 'null')
                .execute())
-        return res.count or 0
+        # res.count can be None when PostgREST omits the count header
+        # (seen under load, 2026-07-18: 1,033 pending signals idled for
+        # an hour because None-or-0 read as "nothing to do"). Unknown
+        # must NOT look like zero — return -1 so the loop attempts a
+        # tick and lets the batch fetch discover the truth.
+        return res.count if res.count is not None else -1
     except Exception as e:
         log.warning(f"rematch_autofill: count query failed: {e}")
         return -1
