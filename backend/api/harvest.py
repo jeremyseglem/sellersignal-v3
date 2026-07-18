@@ -2187,6 +2187,58 @@ def snohomish_daily_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
 
 # ─── KC Treasury autofill background task admin ───────────────────────
 
+# ─── CT probate case-lookup autofill admin ─────────────────────────────
+
+@router.get("/ct-probate-autofill-status")
+def ct_probate_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """
+    Current state of the CT probate case-lookup autofill. Ticks
+    once per day, calls /api/harvest/run?source=ct_probate to pull
+    the County Clerk's daily PDFs and feed probate / divorce signals into
+    raw_signals_v3. Returns total ticks, last tick result, error state,
+    and configuration.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.ct_probate_autofill import state
+    return dict(state)
+
+
+@router.post("/ct-probate-autofill-pause")
+def ct_probate_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause CT probate autofill — loop keeps running but skips ticks."""
+    _require_admin(x_admin_key)
+    from backend.tasks.ct_probate_autofill import state
+    state["enabled"] = False
+    return {"enabled": False, "message": "CT probate autofill paused."}
+
+
+@router.post("/ct-probate-autofill-resume")
+def ct_probate_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume CT probate autofill and clear any active backoff window."""
+    _require_admin(x_admin_key)
+    from backend.tasks.ct_probate_autofill import state
+    state["enabled"]             = True
+    state["backoff_until"]       = None
+    state["consecutive_errors"]  = 0
+    return {"enabled": True, "message": "CT probate autofill resumed."}
+
+
+@router.post("/ct-probate-autofill-trigger")
+def ct_probate_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
+    """
+    Clear backoff state on the CT probate autofill task. The tick
+    interval still applies — to force an immediate harvest, call
+    POST /api/harvest/run with source=ct_probate directly.
+    """
+    _require_admin(x_admin_key)
+    from backend.tasks.ct_probate_autofill import state
+    state["backoff_until"]      = None
+    state["consecutive_errors"] = 0
+    return {"message": "Backoff cleared. Task will tick on its normal schedule."}
+
+
+# ─── KC Treasury autofill background task admin ───────────────────────
+
 @router.get("/treasury-autofill-status")
 def treasury_autofill_status(x_admin_key: Optional[str] = Header(None)):
     """

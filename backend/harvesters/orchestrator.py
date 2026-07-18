@@ -34,6 +34,7 @@ from .kc_treasury import KCTreasuryForeclosureHarvester
 from .kc_delinquent_taxes import KCDelinquentTaxesHarvester
 from .obituary import ObituaryHarvester
 from .snohomish_daily_report import SnohomishDailyReportHarvester
+from .ct_probate_courts import CTProbateCourtsHarvester
 from backend.api.db import get_supabase_client
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ HARVESTERS = {
     # WA counties (Pierce, Thurston, Whatcom, Kitsap) that publish similar
     # daily reports; one harvester per county is the current plan.
     "snohomish_daily":   lambda case_types: SnohomishDailyReportHarvester(case_types),
+    # CT Probate Courts: statewide public JSON case-lookup service — no
+    # captcha, no auth. Prefix-sweep per district; decedent-tier signals.
+    # See backend/harvesters/ct_probate_courts.py for the recon notes.
+    "ct_probate":        lambda case_types: CTProbateCourtsHarvester(case_types),
     # Future: "kc_recorder" (captcha-blocked — see kc_treasury.py comments),
     # "wa_sos", "zillow_sitemap"
 }

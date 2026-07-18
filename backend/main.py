@@ -97,6 +97,10 @@ async def lifespan(app: FastAPI):
     from backend.tasks.snohomish_daily_autofill import snohomish_daily_autofill_loop
     snohomish_daily_autofill_task = asyncio.create_task(snohomish_daily_autofill_loop())
 
+    # CT probate case-lookup autofill (statewide ctprobate.gov service)
+    from backend.tasks.ct_probate_autofill import ct_probate_autofill_loop
+    ct_probate_autofill_task = asyncio.create_task(ct_probate_autofill_loop())
+
     # Renewal notifier — daily tick. Finds active subscriptions whose
     # 90-day commitment (cancel_at) is approaching at T-30, T-7, T-1 days
     # and emails the agent via Resend. Idempotent per (territory, window)
@@ -139,6 +143,7 @@ async def lifespan(app: FastAPI):
     snohomish_tenure_autofill_task.cancel()
     canonicalize_autofill_task.cancel()
     snohomish_daily_autofill_task.cancel()
+    ct_probate_autofill_task.cancel()
     renewal_notifier_task.cancel()
     letter_digest_task.cancel()
     geometry_autofill_task.cancel()
