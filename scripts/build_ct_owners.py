@@ -48,11 +48,23 @@ POLY_PATH = os.environ.get("CT_POLYGONS", "data/zip_polygons/ct.json")
 PAGE = 2000
 UA = {"User-Agent": "Mozilla/5.0 SellerSignal-Seed/1.0"}
 
-ZIP_CITY = {
-    "06830": "Greenwich", "06831": "Greenwich", "06870": "Old Greenwich",
-    "06878": "Riverside", "06807": "Cos Cob",
+_TOWN_CONFIG = {
+    # town -> (ZIP_CITY map, local USPS mail-city set for absentee logic)
+    "Greenwich": (
+        {"06830": "Greenwich", "06831": "Greenwich", "06870": "Old Greenwich",
+         "06878": "Riverside", "06807": "Cos Cob"},
+        {"GREENWICH", "OLD GREENWICH", "RIVERSIDE", "COS COB"},
+    ),
+    "Darien":     ({"06820": "Darien"},     {"DARIEN", "NOROTON", "NOROTON HEIGHTS"}),
+    "New Canaan": ({"06840": "New Canaan"}, {"NEW CANAAN"}),
+    "Westport":   ({"06880": "Westport"},   {"WESTPORT"}),
+    "Wilton":     ({"06897": "Wilton"},     {"WILTON"}),
+    "Weston":     ({"06883": "Weston"},     {"WESTON"}),
 }
-LOCAL_MAIL_CITIES = {"GREENWICH", "OLD GREENWICH", "RIVERSIDE", "COS COB"}
+if TOWN not in _TOWN_CONFIG:
+    raise SystemExit(f"TOWN={TOWN!r} has no _TOWN_CONFIG entry — add its "
+                     f"ZIP_CITY map and local mail-city set before running.")
+ZIP_CITY, LOCAL_MAIL_CITIES = _TOWN_CONFIG[TOWN]
 FIELDS = ("Link,Owner,Co_Owner,Location,Mailing_City,Mailing_State,"
           "Assessed_Total,Appraised_Land,Appraised_Building,Sale_Date,State_Use")
 
@@ -116,7 +128,8 @@ def classify_owner_type(name: str) -> str:
 def main():
     polys = json.load(open(POLY_PATH))
     zones = [((f["properties"] or {}).get("zip"), f["geometry"])
-             for f in polys["features"]]
+             for f in polys["features"]
+             if (f["properties"] or {}).get("zip") in ZIP_CITY]
 
     rows, offset = [], 0
     while True:

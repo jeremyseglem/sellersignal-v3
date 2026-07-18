@@ -1622,6 +1622,13 @@ CT_ZIP_TO_CITY = {
     "06870": "Old Greenwich",
     "06878": "Riverside",
     "06807": "Cos Cob",
+    # Gold Coast expansion (2026-07-17) — parcels-first; per-town recorder
+    # adapters to follow (RECORDhub first). Darien 06820 pending: town
+    # withholds situs addresses from the statewide layer; needs town-source.
+    "06840": "New Canaan",
+    "06880": "Westport",
+    "06897": "Wilton",
+    "06883": "Weston",
 }
 
 COLLIN_ZIP_TO_CITY = {
