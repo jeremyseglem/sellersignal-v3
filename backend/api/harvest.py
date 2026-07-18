@@ -2187,6 +2187,84 @@ def snohomish_daily_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
 
 # ─── KC Treasury autofill background task admin ───────────────────────
 
+# ─── Maricopa party-name repair (one-off data fix, 2026-07-18) ─────────
+
+@router.post("/admin/maricopa-clean-party-names")
+def maricopa_clean_party_names(
+    confirm: bool = False,
+    dry_run: bool = True,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Re-clean decedent names on stored az_maricopa_recorder signals.
+
+    The recorder's OCR parser let case-header junk into decedent names
+    ("PB PB 2026~-0053797 ALFRED MOSTARDO") when Maricopa case numbers
+    grew to 7 digits — the old strip regex was anchored on \\d{6}. The
+    parser is fixed for future harvests; this endpoint repairs rows
+    already in raw_signals_v3 by applying the same stripper and
+    re-normalizing. Run with dry_run=true first; pair with
+    /rematch-reset-scoped?source_type=az_maricopa_recorder&signal_type=probate
+    afterwards so repaired names get re-matched.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(400, "Pass confirm=true")
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    from backend.harvesters.maricopa_recorder import (
+        strip_leading_name_junk, _normalize_party_name)
+
+    changed, scanned, samples = 0, 0, []
+    offset, page = 0, 500
+    while True:
+        res = (supa.table("raw_signals_v3")
+               .select("id,party_names")
+               .eq("source_type", "az_maricopa_recorder")
+               .order("id")
+               .range(offset, offset + page - 1)
+               .execute())
+        rows = res.data or []
+        if not rows:
+            break
+        for row in rows:
+            scanned += 1
+            parties = row.get("party_names") or []
+            dirty = False
+            for p in parties:
+                if p.get("role") != "decedent":
+                    continue
+                raw = p.get("raw") or ""
+                cleaned = strip_leading_name_junk(raw)
+                if cleaned and cleaned != raw:
+                    if len(samples) < 8:
+                        samples.append({"id": row["id"], "before": raw,
+                                        "after": cleaned})
+                    p["raw"] = cleaned
+                    p["normalized"] = _normalize_party_name(cleaned)
+                    dirty = True
+            if dirty:
+                changed += 1
+                if not dry_run:
+                    (supa.table("raw_signals_v3")
+                     .update({"party_names": parties})
+                     .eq("id", row["id"])
+                     .execute())
+        offset += page
+
+    return {"dry_run": dry_run, "scanned": scanned,
+            "changed": changed, "samples": samples,
+            "next_step": ("Re-run with dry_run=false, then "
+                          "POST /rematch-reset-scoped?source_type="
+                          "az_maricopa_recorder&signal_type=probate"
+                          "&confirm=true" if dry_run else
+                          "POST /rematch-reset-scoped?source_type="
+                          "az_maricopa_recorder&signal_type=probate"
+                          "&confirm=true")}
+
+
 # ─── CT probate case-lookup autofill admin ─────────────────────────────
 
 @router.get("/ct-probate-autofill-status")

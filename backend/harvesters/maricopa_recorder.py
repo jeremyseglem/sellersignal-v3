@@ -216,6 +216,29 @@ def parse_ns(text: str) -> dict:
     return rec
 
 
+def strip_leading_name_junk(name: str) -> str:
+    """
+    Remove case-header / OCR junk from the FRONT of an extracted party name.
+
+    Observed pollution (2026-07): "PB PB 2026~-0053797 ALFRED MOSTARDO",
+    "PB2026-0047%¢ JEFFREY WILLIAM MOORE" — case numbers grew to 7 digits
+    and OCR injects ~ % ¢ etc., so the old \\d{6}-anchored strip missed them.
+    Strategy: drop leading tokens until the first token that looks like a
+    name word (letters plus . ' - only). Keeps everything after that intact.
+    """
+    tokens = (name or "").split()
+    JUNK_WORDS = {"PB", "NO", "NO.", "CASE", "ESTATE", "OF", "MATTER", "IN", "RE"}
+    while tokens and len(tokens) > 1:
+        t = tokens[0]
+        is_name_word = bool(re.fullmatch(r"[A-Za-z][A-Za-z.\-']*", t))
+        if not is_name_word or (t.upper().rstrip(".") in {w.rstrip(".") for w in JUNK_WORDS}
+                                and len(tokens) > 2):
+            tokens.pop(0)
+        else:
+            break
+    return " ".join(tokens).strip()
+
+
 def parse_pd(text: str) -> dict:
     """
     Parse a Probate Deed / Deed of Distribution. The lead is the Personal
@@ -228,7 +251,7 @@ def parse_pd(text: str) -> dict:
     addrs = _all_addresses(flat)
 
     # case number (tolerate OCR spacing/dash loss: "PB 2025-005885", "PB_PB2025-...")
-    cm = re.search(r"PB[_\s]*(?:PB)?\s*(\d{4})\s*-?\s*(\d{6})", flat)
+    cm = re.search(r"PB[_\s]*(?:PB)?\s*(\d{4})[~\s]*-?\s*(\d{5,8})", flat)
     case_number = f"PB{cm.group(1)}-{cm.group(2)}" if cm else None
 
     # decedent: capture broadly between "Estate of" and the distribution/deceased
@@ -243,11 +266,12 @@ def parse_pd(text: str) -> dict:
             r"(?i)^(?:case\s*no\.?:?|no\.?|=|\.|\)|\(|distribution|instrument|or|deed|"
             r"pb[_\s]*(?:pb)?\s*\d{4}\s*-?\s*\d{6}|\d+[}\])]?|[\s:=.)(}\]]+)+", "", dm.group(1)).strip()
         chunk = re.sub(r"\s{2,}", " ", chunk)
+        chunk = strip_leading_name_junk(chunk)
         if 4 <= len(chunk) <= 45 and re.search(r"[A-Za-z]{2}", chunk):
             decedent = chunk
     if not decedent:  # "Personal Representative of the ESTATES OF [NAME]" variant
         em = re.search(r"ESTATES? OF\s+([A-Z][A-Za-z.\-' ]{4,40}?)(?:,|\s+(?:Deceased|deceased|and\b))", flat)
-        decedent = _clean(em.group(1)) if em else None
+        decedent = strip_leading_name_junk(_clean(em.group(1))) if em else None
 
     # PR (the lead): follows "undersigned PR" / "Person Filing" / "Attorney for",
     # or precedes "Personal Representative" in a signature/caption line.
