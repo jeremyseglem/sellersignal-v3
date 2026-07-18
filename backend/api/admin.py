@@ -1151,6 +1151,8 @@ async def onboard_zip(
             or MARICOPA_ZIP_TO_CITY.get(zip_code)
             or DALLAS_ZIP_TO_CITY.get(zip_code)
             or TRAVIS_ZIP_TO_CITY.get(zip_code)
+            or COLLIN_ZIP_TO_CITY.get(zip_code)
+            or CT_ZIP_TO_CITY.get(zip_code)
             or "Bellevue"
         )
 
