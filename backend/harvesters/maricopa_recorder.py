@@ -227,15 +227,28 @@ def strip_leading_name_junk(name: str) -> str:
     name word (letters plus . ' - only). Keeps everything after that intact.
     """
     tokens = (name or "").split()
-    JUNK_WORDS = {"PB", "NO", "NO.", "CASE", "ESTATE", "OF", "MATTER", "IN", "RE"}
+    JUNK = {"PB", "NO", "CASE", "ESTATE", "OF", "MATTER", "IN", "RE"}
+
+    def _edge_trim(t: str) -> str:
+        # strip quotes/brackets/OCR symbols glued to token edges,
+        # keep interior name chars (letters . ' -)
+        return re.sub(r"^[^A-Za-z]+|[^A-Za-z.'’‘\-]+$", "", t)
+
+    # leading junk
     while tokens and len(tokens) > 1:
-        t = tokens[0]
-        is_name_word = bool(re.fullmatch(r"[A-Za-z][A-Za-z.\-']*", t))
-        if not is_name_word or (t.upper().rstrip(".") in {w.rstrip(".") for w in JUNK_WORDS}
-                                and len(tokens) > 2):
-            tokens.pop(0)
-        else:
+        t = _edge_trim(tokens[0])
+        if t and re.fullmatch(r"[A-Za-z][A-Za-z.\-'’‘]*", t) \
+                and not (t.upper().rstrip(".") in JUNK and len(tokens) > 2):
+            tokens[0] = t          # keep, minus glued punctuation
             break
+        tokens.pop(0)
+    # trailing junk
+    while len(tokens) > 1:
+        t = _edge_trim(tokens[-1])
+        if t and re.fullmatch(r"[A-Za-z][A-Za-z.\-'’‘]*", t):
+            tokens[-1] = t
+            break
+        tokens.pop()
     return " ".join(tokens).strip()
 
 
