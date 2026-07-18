@@ -242,10 +242,11 @@ def strip_leading_name_junk(name: str) -> str:
             tokens[0] = t          # keep, minus glued punctuation
             break
         tokens.pop(0)
-    # trailing junk
+    # trailing junk (incl. trailing case-header words like "NO. PB")
     while len(tokens) > 1:
         t = _edge_trim(tokens[-1])
-        if t and re.fullmatch(r"[A-Za-z][A-Za-z.\-'’‘]*", t):
+        if t and re.fullmatch(r"[A-Za-z][A-Za-z.\-'’‘]*", t) \
+                and t.upper().rstrip(".") not in JUNK:
             tokens[-1] = t
             break
         tokens.pop()
