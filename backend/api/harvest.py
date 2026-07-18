@@ -5000,7 +5000,17 @@ def diag_snohomish_matcher_truth_test(
     from backend.harvesters import matcher as M
     from collections import Counter, defaultdict
 
-    SNOHOMISH_ZIPS = ['98020', '98026', '98290']
+    # Resolve live Snohomish ZIPs from coverage (was a hardcoded 3-ZIP
+    # list, which silently excluded ZIPs onboarded after May 2026 —
+    # the classic stale-allowlist failure; see signal-registry debt).
+    try:
+        _cov = (supa.table('zip_coverage_v3')
+                .select('zip_code')
+                .eq('market_key', 'WA_SNOHOMISH')
+                .execute()).data or []
+        SNOHOMISH_ZIPS = sorted({r['zip_code'] for r in _cov}) or ['98020', '98026', '98290']
+    except Exception:
+        SNOHOMISH_ZIPS = ['98020', '98026', '98290']
 
     # 1. Load owners_db for the Snohomish ZIPs only — one ZIP at a time
     #    because _load_owners_db takes a single zip_filter.
@@ -5194,7 +5204,17 @@ def admin_run_matcher_snohomish_real(
     from backend.harvesters import matcher as M
     from datetime import datetime
 
-    SNOHOMISH_ZIPS = ['98020', '98026', '98290']
+    # Resolve live Snohomish ZIPs from coverage (was a hardcoded 3-ZIP
+    # list, which silently excluded ZIPs onboarded after May 2026 —
+    # the classic stale-allowlist failure; see signal-registry debt).
+    try:
+        _cov = (supa.table('zip_coverage_v3')
+                .select('zip_code')
+                .eq('market_key', 'WA_SNOHOMISH')
+                .execute()).data or []
+        SNOHOMISH_ZIPS = sorted({r['zip_code'] for r in _cov}) or ['98020', '98026', '98290']
+    except Exception:
+        SNOHOMISH_ZIPS = ['98020', '98026', '98290']
 
     # 1. Load owners_db for the 3 Snohomish ZIPs (merged).
     merged_owners: dict = {}
