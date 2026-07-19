@@ -166,8 +166,50 @@ def _ui_drive_search(page, begin: date, end: date):
                 page.query_selector("input[aria-label='Ending Recorded Date']"))
 
     start_el, end_el = _find_dates()
+
+    # Travis redesign (captured 2026-07-19): the date control is a
+    # react-downshift PRESET-LIST combobox — there are no date inputs at
+    # all anymore. Options are fixed windows ("Last 24 Hours", "Last 3
+    # Days", "Last 1 Week"...) with stable ids date-range-select-listbox-
+    # option-N. For a daily task we pick "Last 3 Days" (option-2), which
+    # covers weekend gaps and any missed tick. This path is selected when
+    # the inline date inputs are absent AND the preset listbox is present.
     if not (start_el and end_el):
-        # Travis layout: expand the collapsed date-range panel first.
+        toggle = page.query_selector("#date-range-select")
+        listbox = page.query_selector("#date-range-select-listbox")
+        if toggle and listbox:
+            for _click in (
+                lambda: toggle.click(timeout=6000),
+                lambda: toggle.click(force=True, timeout=6000),
+                lambda: page.evaluate("el => el.click()", toggle),
+            ):
+                try:
+                    _click(); break
+                except Exception:
+                    continue
+            time.sleep(1.5)
+            # "Last 3 Days" == option-2. Select by stable id; the option
+            # renders in the downshift portal, so click via JS to bypass
+            # any visibility/hit-test flakiness.
+            opt = page.query_selector("#date-range-select-listbox-option-2")
+            if opt is None:
+                raise RuntimeError(
+                    "UI_DRIVE: Travis preset date option-2 ('Last 3 Days') "
+                    "not found — combobox options changed again; re-probe.")
+            try:
+                opt.click(timeout=6000)
+            except Exception:
+                page.evaluate("el => el.click()", opt)
+            time.sleep(1.5)
+            # preset path selects the window directly; jump to submit
+            _travis_preset = True
+        else:
+            _travis_preset = False
+    else:
+        _travis_preset = False
+
+    if not (start_el and end_el) and not _travis_preset:
+        # Legacy Travis / other layout: expand a collapsed inline panel.
         toggle = (page.query_selector("#date-range-select")
                   or page.query_selector("button[aria-label='Recorded Date']")
                   or page.query_selector("button[aria-label='select date range']"))
@@ -178,22 +220,22 @@ def _ui_drive_search(page, begin: date, end: date):
                 try:
                     toggle.click(force=True, timeout=6000)
                 except Exception:
-                    # JS dispatch bypasses hit-testing (overlay/banner cases)
                     page.evaluate("el => el.click()", toggle)
             time.sleep(2)
             start_el, end_el = _find_dates()
-    if not (start_el and end_el):
-        raise RuntimeError("UI_DRIVE: date inputs not found on search page")
-    start_el.fill(begin.strftime("%m/%d/%Y"))
-    end_el.fill(end.strftime("%m/%d/%Y"))
-    # If the date panel was a popover (Travis), it can overlay the Search
-    # button — close it first; then submit with a resilient chain.
-    try:
-        page.keyboard.press("Escape")
-        time.sleep(1)
-    except Exception:
-        pass
-    submitted = False
+
+    if not _travis_preset:
+        if not (start_el and end_el):
+            raise RuntimeError("UI_DRIVE: date inputs not found on search page")
+        start_el.fill(begin.strftime("%m/%d/%Y"))
+        end_el.fill(end.strftime("%m/%d/%Y"))
+        # If the date panel was a popover, it can overlay the Search
+        # button — close it first.
+        try:
+            page.keyboard.press("Escape")
+            time.sleep(1)
+        except Exception:
+            pass
     btn = page.query_selector("button[aria-label='Search']")
     if btn:
         try:
@@ -205,10 +247,19 @@ def _ui_drive_search(page, begin: date, end: date):
                 submitted = True
             except Exception:
                 pass
-    if not submitted:
+    if not submitted and end_el is not None:
         try:
             end_el.press("Enter")
             submitted = True
+        except Exception:
+            pass
+    if not submitted:
+        # preset path (no end_el): press Enter from the keyword box
+        try:
+            kb = page.query_selector("#basicSearchInputBox")
+            if kb:
+                kb.press("Enter")
+                submitted = True
         except Exception:
             pass
     if not submitted:
