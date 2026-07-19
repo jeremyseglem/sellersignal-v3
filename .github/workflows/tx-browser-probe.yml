@@ -15,43 +15,72 @@ jobs:
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Test Travis URL-driven results (does it auto-execute?)
+      - name: Open Travis date combobox, capture the dropdown DOM
         run: |
           cat > probe.py << 'PYEOF'
           from playwright.sync_api import sync_playwright
           import time
-          # Does Travis auto-execute a URL-param search like Dallas does?
-          # If the grid renders rows from the URL alone, we can drop UI_DRIVE
-          # entirely and fetch results the clean way.
-          URL = ("https://travis.tx.publicsearch.us/results?"
-                 "department=RP&limit=50&offset=0&"
-                 "recordedDateRange=20260701%2C20260715&"
-                 "searchOcrText=false&searchType=quickSearch")
+          HOME = "https://travis.tx.publicsearch.us/"
           with sync_playwright() as p:
               b=p.chromium.launch(headless=True,args=["--disable-blink-features=AutomationControlled"])
               ctx=b.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
                   viewport={"width":1366,"height":900},locale="en-US")
               page=ctx.new_page()
-              # capture any XHR the results page fires to the backend API
-              seen=[]
-              page.on("request", lambda r: seen.append(r.url) if "/api/" in r.url or "search" in r.url.lower() else None)
-              print("GOTO", URL)
-              page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-              time.sleep(10)
-              try: page.wait_for_load_state("networkidle", timeout=15000)
+              print("GOTO",HOME)
+              page.goto(HOME,wait_until="domcontentloaded",timeout=60000)
+              time.sleep(8)
+              try: page.wait_for_load_state("networkidle",timeout=15000)
               except Exception: pass
-              body=page.content()
-              # publicsearch renders result rows as .tableRow / [data-tourid=searchResults]
-              rows = page.query_selector_all("[data-tourid='searchResults'] .tableRow, .tableRow, table tbody tr")
-              print("TITLE:", page.title())
-              print("BODY_LEN:", len(body))
-              print("RESULT_ROWS:", len(rows))
-              print("HAS_NO_RESULTS_MSG:", ("No results" in body or "no results" in body))
-              print("\n--- API/search requests observed ---")
-              for u in sorted(set(seen))[:25]:
-                  print(" ", u)
-              page.screenshot(path="travis_results.png", full_page=True)
+
+              tog = page.query_selector("#date-range-select")
+              print("TOGGLE present:", bool(tog))
+              tog.click(timeout=5000)
+              time.sleep(2)
+
+              # After opening: dump the FULL set of inputs/buttons/options now
+              # in the DOM (downshift portal included), plus any menu container.
+              js = """() => {
+                const out=[];
+                for (const el of document.querySelectorAll(
+                    'input,button,[role=option],[role=menu],[role=listbox],[class*=menu],[class*=date],[class*=downshift]')){
+                  const r=el.getBoundingClientRect();
+                  out.push({tag:el.tagName,role:el.getAttribute('role'),
+                    type:el.getAttribute('type'),aria:el.getAttribute('aria-label'),
+                    placeholder:el.getAttribute('placeholder'),id:el.id||null,
+                    name:el.getAttribute('name'),
+                    cls:(el.className&&el.className.toString().slice(0,90))||null,
+                    text:(el.innerText||'').trim().slice(0,45)||null,
+                    vis:!!(r.width||r.height)});
+                }
+                return out;}"""
+              import json
+              ctrls = page.evaluate(js)
+              print(f"\n===== AFTER OPEN ({len(ctrls)}) =====")
+              for c in ctrls:
+                  hay=" ".join(str(c.get(k) or "") for k in
+                      ("role","aria","placeholder","id","name","text","cls")).lower()
+                  if any(w in hay for w in ("date","recorded","range","from","to",
+                          "start","end","custom","calendar","menu","option","downshift","picker")):
+                      print(json.dumps(c))
+
+              # also try selecting a "Custom" option if the dropdown is a preset list
+              for txt in ("Custom","Custom Range","Date Range","Specific"):
+                  opt = page.query_selector(f"[role=option]:has-text('{txt}')") or page.query_selector(f"text={txt}")
+                  if opt:
+                      print(f"\nOPTION '{txt}' found — clicking")
+                      try:
+                          opt.click(timeout=4000); time.sleep(2)
+                          ctrls2=page.evaluate(js)
+                          print(f"===== AFTER '{txt}' ({len(ctrls2)}) =====")
+                          for c in ctrls2:
+                              hay=" ".join(str(c.get(k) or "") for k in ("aria","placeholder","id","name","text")).lower()
+                              if any(w in hay for w in ("date","from","to","start","end","mm/dd","recorded")):
+                                  print(json.dumps(c))
+                      except Exception as e: print("  option click failed:",e)
+                      break
+
+              page.screenshot(path="travis_dropdown.png",full_page=True)
               b.close()
           PYEOF
           python probe.py
@@ -59,6 +88,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: travis-results
-          path: travis_results.png
+          name: travis-dropdown
+          path: travis_dropdown.png
           if-no-files-found: ignore
