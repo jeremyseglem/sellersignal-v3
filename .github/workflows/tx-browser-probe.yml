@@ -1,12 +1,5 @@
 name: TX Browser Probe
 
-# Selector-capture probe for the Travis (publicsearch.us) search page.
-# dallas_recorder's UI-drive routine (shared by Travis) fails with
-# "date inputs not found on search page" — the tenant changed its markup.
-# Runs a real headless browser, tries to expand the date panel, and prints
-# every candidate input/button's tag+aria+placeholder+id+class to the LOG
-# so the fix can target the real current selectors. Read-only.
-
 on:
   workflow_dispatch:
 
@@ -22,67 +15,43 @@ jobs:
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Probe Travis search page selectors
+      - name: Test Travis URL-driven results (does it auto-execute?)
         run: |
           cat > probe.py << 'PYEOF'
           from playwright.sync_api import sync_playwright
-          import time, json
-          HOME = "https://travis.tx.publicsearch.us/"
-          def dump(page, label):
-              js = """() => {
-                const out=[];
-                for (const el of document.querySelectorAll('input,button,[role=button]')){
-                  out.push({tag:el.tagName,type:el.getAttribute('type'),
-                    aria:el.getAttribute('aria-label'),placeholder:el.getAttribute('placeholder'),
-                    id:el.id||null,name:el.getAttribute('name'),
-                    dataTourid:el.getAttribute('data-tourid'),
-                    cls:(el.className&&el.className.toString().slice(0,80))||null,
-                    text:(el.innerText||'').trim().slice(0,40)||null,
-                    visible:!!(el.offsetWidth||el.offsetHeight)});
-                }
-                return out;}"""
-              ctrls = page.evaluate(js)
-              print(f"\n===== CONTROLS [{label}] ({len(ctrls)}) =====")
-              for c in ctrls:
-                  hay=" ".join(str(c.get(k) or "") for k in
-                      ("aria","placeholder","id","name","dataTourid","text","cls")).lower()
-                  if any(w in hay for w in ("date","recorded","search","range","from","to","start","end")):
-                      print(json.dumps(c))
+          import time
+          # Does Travis auto-execute a URL-param search like Dallas does?
+          # If the grid renders rows from the URL alone, we can drop UI_DRIVE
+          # entirely and fetch results the clean way.
+          URL = ("https://travis.tx.publicsearch.us/results?"
+                 "department=RP&limit=50&offset=0&"
+                 "recordedDateRange=20260701%2C20260715&"
+                 "searchOcrText=false&searchType=quickSearch")
           with sync_playwright() as p:
               b=p.chromium.launch(headless=True,args=["--disable-blink-features=AutomationControlled"])
               ctx=b.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
                   viewport={"width":1366,"height":900},locale="en-US")
               page=ctx.new_page()
-              print("GOTO",HOME)
-              page.goto(HOME,wait_until="domcontentloaded",timeout=60000)
-              time.sleep(8)
-              try: page.wait_for_load_state("networkidle",timeout=15000)
+              # capture any XHR the results page fires to the backend API
+              seen=[]
+              page.on("request", lambda r: seen.append(r.url) if "/api/" in r.url or "search" in r.url.lower() else None)
+              print("GOTO", URL)
+              page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+              time.sleep(10)
+              try: page.wait_for_load_state("networkidle", timeout=15000)
               except Exception: pass
-              for sel in ("button[aria-label='Dismiss announcement']","button[aria-label='Close']"):
-                  el=page.query_selector(sel)
-                  if el:
-                      try: el.click(); time.sleep(1)
-                      except Exception: pass
-              print("TITLE:",page.title())
-              dump(page,"initial")
-              for sel in ("#date-range-select","button[aria-label='Recorded Date']",
-                          "button[aria-label='select date range']",
-                          "[data-tourid='searchDateRange']",
-                          "button:has-text('Recorded Date')","button:has-text('Date')"):
-                  el=page.query_selector(sel)
-                  if el:
-                      print(f"\nTOGGLE FOUND: {sel} clicking")
-                      try: el.click(timeout=5000)
-                      except Exception:
-                          try: page.evaluate("e=>e.click()",el)
-                          except Exception as e: print("  click failed:",e)
-                      time.sleep(2)
-                      dump(page,f"after {sel}")
-                      break
-              else:
-                  print("\nNO TOGGLE matched")
-              page.screenshot(path="travis_search.png",full_page=True)
+              body=page.content()
+              # publicsearch renders result rows as .tableRow / [data-tourid=searchResults]
+              rows = page.query_selector_all("[data-tourid='searchResults'] .tableRow, .tableRow, table tbody tr")
+              print("TITLE:", page.title())
+              print("BODY_LEN:", len(body))
+              print("RESULT_ROWS:", len(rows))
+              print("HAS_NO_RESULTS_MSG:", ("No results" in body or "no results" in body))
+              print("\n--- API/search requests observed ---")
+              for u in sorted(set(seen))[:25]:
+                  print(" ", u)
+              page.screenshot(path="travis_results.png", full_page=True)
               b.close()
           PYEOF
           python probe.py
@@ -90,6 +59,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: travis-probe
-          path: travis_search.png
+          name: travis-results
+          path: travis_results.png
           if-no-files-found: ignore
