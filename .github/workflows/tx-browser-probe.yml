@@ -1,10 +1,11 @@
 name: TX Browser Probe
 
-# Rung 2 test: does a REAL headless browser (Playwright Chromium) clear the
-# Cloudflare managed challenge / conditional captcha that raw curl could not?
-# This mirrors the KC approach: render like a browser, let the page resolve its
-# own challenge, then read the rendered DOM. Screenshots saved as artifacts.
-# Read-only: navigates and screenshots, writes nothing to any database.
+# Selector-capture probe for the Travis (publicsearch.us) search page.
+# dallas_recorder's UI-drive routine (shared by Travis) fails with
+# "date inputs not found on search page" — the tenant changed its markup.
+# Runs a real headless browser, tries to expand the date panel, and prints
+# every candidate input/button's tag+aria+placeholder+id+class to the LOG
+# so the fix can target the real current selectors. Read-only.
 
 on:
   workflow_dispatch:
@@ -17,66 +18,78 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install Playwright
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
-
-      - name: Probe portals with a real browser
+      - name: Probe Travis search page selectors
         run: |
           cat > probe.py << 'PYEOF'
           from playwright.sync_api import sync_playwright
-          import time
-
-          TARGETS = [
-              ("travis_tccsearch", "https://www.tccsearch.org/"),
-              ("dallas_recorder",  "https://dallas.tx.publicsearch.us/"),
-              ("harris_recorder",  "https://harris.tx.publicsearch.us/"),
-          ]
-
+          import time, json
+          HOME = "https://travis.tx.publicsearch.us/"
+          def dump(page, label):
+              js = """() => {
+                const out=[];
+                for (const el of document.querySelectorAll('input,button,[role=button]')){
+                  out.push({tag:el.tagName,type:el.getAttribute('type'),
+                    aria:el.getAttribute('aria-label'),placeholder:el.getAttribute('placeholder'),
+                    id:el.id||null,name:el.getAttribute('name'),
+                    dataTourid:el.getAttribute('data-tourid'),
+                    cls:(el.className&&el.className.toString().slice(0,80))||null,
+                    text:(el.innerText||'').trim().slice(0,40)||null,
+                    visible:!!(el.offsetWidth||el.offsetHeight)});
+                }
+                return out;}"""
+              ctrls = page.evaluate(js)
+              print(f"\n===== CONTROLS [{label}] ({len(ctrls)}) =====")
+              for c in ctrls:
+                  hay=" ".join(str(c.get(k) or "") for k in
+                      ("aria","placeholder","id","name","dataTourid","text","cls")).lower()
+                  if any(w in hay for w in ("date","recorded","search","range","from","to","start","end")):
+                      print(json.dumps(c))
           with sync_playwright() as p:
-              browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-              ctx = browser.new_context(
-                  user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/125.0.0.0 Safari/537.36"),
-                  viewport={"width": 1366, "height": 900},
-                  locale="en-US",
-              )
-              page = ctx.new_page()
-              for name, url in TARGETS:
-                  print("=" * 60)
-                  print(f"PROBE: {name}  {url}")
-                  try:
-                      page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                      # Give Cloudflare's managed challenge time to auto-resolve
-                      time.sleep(12)
-                      try:
-                          page.wait_for_load_state("networkidle", timeout=15000)
+              b=p.chromium.launch(headless=True,args=["--disable-blink-features=AutomationControlled"])
+              ctx=b.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width":1366,"height":900},locale="en-US")
+              page=ctx.new_page()
+              print("GOTO",HOME)
+              page.goto(HOME,wait_until="domcontentloaded",timeout=60000)
+              time.sleep(8)
+              try: page.wait_for_load_state("networkidle",timeout=15000)
+              except Exception: pass
+              for sel in ("button[aria-label='Dismiss announcement']","button[aria-label='Close']"):
+                  el=page.query_selector(sel)
+                  if el:
+                      try: el.click(); time.sleep(1)
+                      except Exception: pass
+              print("TITLE:",page.title())
+              dump(page,"initial")
+              for sel in ("#date-range-select","button[aria-label='Recorded Date']",
+                          "button[aria-label='select date range']",
+                          "[data-tourid='searchDateRange']",
+                          "button:has-text('Recorded Date')","button:has-text('Date')"):
+                  el=page.query_selector(sel)
+                  if el:
+                      print(f"\nTOGGLE FOUND: {sel} clicking")
+                      try: el.click(timeout=5000)
                       except Exception:
-                          pass
-                      title = page.title()
-                      body = page.content()
-                      cf = any(m in body for m in ["Just a moment", "cf-mitigated", "challenge-platform", "Checking your browser"])
-                      print(f"TITLE: {title}")
-                      print(f"BODY_LEN: {len(body)}")
-                      print(f"CF_STILL_PRESENT: {cf}")
-                      if cf:
-                          print(f"VERDICT: STILL CHALLENGED after browser render")
-                      else:
-                          print(f"VERDICT: CLEARED — rendered real content")
-                      page.screenshot(path=f"{name}.png", full_page=False)
-                  except Exception as e:
-                      print(f"ERROR: {e}")
-              browser.close()
+                          try: page.evaluate("e=>e.click()",el)
+                          except Exception as e: print("  click failed:",e)
+                      time.sleep(2)
+                      dump(page,f"after {sel}")
+                      break
+              else:
+                  print("\nNO TOGGLE matched")
+              page.screenshot(path="travis_search.png",full_page=True)
+              b.close()
           PYEOF
           python probe.py
-
-      - name: Upload screenshots
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: portal-screenshots
-          path: "*.png"
+          name: travis-probe
+          path: travis_search.png
           if-no-files-found: ignore
