@@ -33,9 +33,20 @@ jobs:
               try: page.wait_for_load_state("networkidle",timeout=15000)
               except Exception: pass
 
+              for sel in ("button[aria-label='Dismiss announcement']",
+                          "button[aria-label='Close']",".announcement button"):
+                  el=page.query_selector(sel)
+                  if el:
+                      try: el.click(timeout=3000); time.sleep(1); print("dismissed",sel)
+                      except Exception: pass
               tog = page.query_selector("#date-range-select")
               print("TOGGLE present:", bool(tog))
-              tog.click(timeout=5000)
+              try:
+                  tog.click(timeout=5000)
+              except Exception:
+                  try: tog.click(force=True,timeout=5000); print("clicked force")
+                  except Exception:
+                      page.evaluate("e=>e.click()",tog); print("clicked via JS dispatch")
               time.sleep(2)
 
               # After opening: dump the FULL set of inputs/buttons/options now
