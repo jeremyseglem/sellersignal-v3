@@ -80,11 +80,19 @@ def main():
     # through" ~5-7 days behind today, so windows ending at today return 0 rows
     # for the most recent days. Trail the end of the window by LAG_DAYS so we
     # harvest days that have actually posted. Window = [end-LAG-DAYS, end-LAG].
-    lag = int(os.environ.get("LAG_DAYS", "10"))
+    # Travis's date control is a relative preset ("Last 1 Week"), NOT a
+    # fillable range — so the window MUST be recent for the preset span to
+    # overlap it. End at today (the preset already excludes un-posted very
+    # recent days) and span 8 days so the client-side filter keeps the full
+    # "Last 1 Week" grid with a day of margin. LAG_DAYS honored only if set
+    # explicitly (legacy override).
+    lag = int(os.environ.get("LAG_DAYS", "0"))
+    days = int(os.environ.get("DAYS", "8"))
     end = datetime.now().date() - timedelta(days=lag)
-    begin = end - timedelta(days=DAYS)
+    begin = end - timedelta(days=days)
     seen = existing_refs() if WRITE else set()
-    print(f"[travis_recorder] window {begin}..{end} chunk={CHUNK_DAYS}d "
+    print(f"[travis_recorder] preset-sweep window {begin}..{end} "
+          f"preset_option={dr.TRAVIS_PRESET_OPTION} "
           f"write={WRITE} already_in_db={len(seen)}")
 
     all_rows, total_grid_rows, estate_rows, err = [], 0, 0, 0
@@ -99,26 +107,38 @@ def main():
                   timeout=60000)
         time.sleep(10)
 
-        for cstart, cend in daterange_chunks(begin, end, CHUNK_DAYS):
-            try:
-                grid_rows = 0
-                estate_in_chunk = 0
-                for row in dr.iter_window_rows(page, cstart, cend):
-                    grid_rows += 1
-                    total_grid_rows += 1
-                    sig = dr.to_signal_row(row)
-                    if sig:
-                        estate_in_chunk += 1
-                        estate_rows += 1
-                        # upsert semantics (merge-duplicates): re-runs
-                        # UPDATE existing rows, which is how previously
-                        # written signals gain resolved_parcels.
-                        all_rows.append(sig)
-                print(f"  {cstart}..{cend}: {grid_rows} grid rows, {estate_in_chunk} estate")
-            except Exception as e:
-                err += 1
-                print(f"  {cstart}..{cend} ERR {type(e).__name__}: {e}")
-            time.sleep(1.5)
+        # Travis's date control is a react-downshift preset list (no
+        # fillable date inputs), so we can't chunk arbitrary windows. Do
+        # ONE preset sweep (dr.TRAVIS_PRESET_OPTION = "Last 1 Week") and
+        # filter the returned grid to [begin, end] on recorded_date here.
+        # begin/end passed to iter_window_rows are ignored by the preset
+        # path but kept for signature compatibility.
+        seen_refs = set()
+        try:
+            for row in dr.iter_window_rows(page, begin, end):
+                total_grid_rows += 1
+                rd = row.get("recorded_date")
+                try:
+                    rd_date = datetime.strptime(rd, "%m/%d/%Y").date() if rd else None
+                except Exception:
+                    rd_date = None
+                # keep rows within the target window (or undated, to be safe)
+                if rd_date is not None and not (begin <= rd_date <= end):
+                    continue
+                ref = row.get("doc_number") or row.get("document_ref")
+                if ref and ref in seen_refs:
+                    continue
+                if ref:
+                    seen_refs.add(ref)
+                sig = dr.to_signal_row(row)
+                if sig:
+                    estate_rows += 1
+                    all_rows.append(sig)
+            print(f"  preset sweep {begin}..{end}: {total_grid_rows} grid rows, "
+                  f"{estate_rows} estate (after date filter)")
+        except Exception as e:
+            err += 1
+            print(f"  preset sweep ERR {type(e).__name__}: {e}")
         b.close()
 
     print(f"[travis_recorder] grid_rows={total_grid_rows} estate_instruments={estate_rows} "

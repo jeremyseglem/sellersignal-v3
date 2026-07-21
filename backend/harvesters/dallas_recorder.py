@@ -60,6 +60,12 @@ RESULTS_URL = "https://dallas.tx.publicsearch.us/results"
 # same column structure the Dallas parser reads. Dallas keeps URL mode.
 UI_DRIVE = False
 HOME_URL = "https://dallas.tx.publicsearch.us/"
+# Travis-only: which react-downshift date preset to select when the tenant
+# has no fillable date inputs. Option ids (captured 2026-07-19):
+# 1=Last 24 Hours, 2=Last 3 Days, 3=Last 1 Week, 4=Last 2 Weeks,
+# 5=Last 1 Month. A daily task uses "Last 1 Week" (3) for gap safety;
+# the runner filters the returned grid to its target window client-side.
+TRAVIS_PRESET_OPTION = 3
 # Overridable by county runners that reuse this platform-generic module
 # (e.g. run_travis_recorder.py sets RESULTS_URL + SOURCE_TYPE for Travis).
 SOURCE_TYPE = "tx_dallas_recorder"
@@ -191,10 +197,10 @@ def _ui_drive_search(page, begin: date, end: date):
             # "Last 3 Days" == option-2. Select by stable id; the option
             # renders in the downshift portal, so click via JS to bypass
             # any visibility/hit-test flakiness.
-            opt = page.query_selector("#date-range-select-listbox-option-2")
+            opt = page.query_selector(f"#date-range-select-listbox-option-{TRAVIS_PRESET_OPTION}")
             if opt is None:
                 raise RuntimeError(
-                    "UI_DRIVE: Travis preset date option-2 ('Last 3 Days') "
+                    f"UI_DRIVE: Travis preset option-{TRAVIS_PRESET_OPTION} "
                     "not found — combobox options changed again; re-probe.")
             try:
                 opt.click(timeout=6000)
