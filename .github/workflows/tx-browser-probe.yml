@@ -15,90 +15,70 @@ jobs:
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Open Travis date combobox, capture the dropdown DOM
+      - name: Probe what enables Travis Search
         run: |
           cat > probe.py << 'PYEOF'
           from playwright.sync_api import sync_playwright
           import time
           HOME = "https://travis.tx.publicsearch.us/"
+          def btn(page):
+              b=(page.query_selector("button[aria-label='Search']")
+                 or page.query_selector("button[type='submit']")
+                 or page.query_selector("button:has-text('Search')"))
+              if not b: return "NO BUTTON"
+              return (f"disabled={b.get_attribute('disabled')} "
+                      f"aria-disabled={b.get_attribute('aria-disabled')} "
+                      f"cls={(b.get_attribute('class') or '')[:50]}")
+          def results(page,label):
+              body=page.content()
+              rows=page.query_selector_all(".tableRow, table tbody tr, [data-tourid='searchResults'] .tableRow")
+              print(f"[{label}] url={page.url[:120]}")
+              print(f"[{label}] rows={len(rows)} no_results={'No results' in body or 'no results' in body.lower()}")
           with sync_playwright() as p:
-              b=p.chromium.launch(headless=True,args=["--disable-blink-features=AutomationControlled"])
-              ctx=b.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              br=p.chromium.launch(headless=True,args=["--disable-blink-features=AutomationControlled"])
+              ctx=br.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
                   viewport={"width":1366,"height":900},locale="en-US")
               page=ctx.new_page()
-              print("GOTO",HOME)
               page.goto(HOME,wait_until="domcontentloaded",timeout=60000)
               time.sleep(8)
-              try: page.wait_for_load_state("networkidle",timeout=15000)
-              except Exception: pass
-
-              for sel in ("button[aria-label='Dismiss announcement']",
-                          "button[aria-label='Close']",".announcement button"):
-                  el=page.query_selector(sel)
-                  if el:
-                      try: el.click(timeout=3000); time.sleep(1); print("dismissed",sel)
+              for s in ("button[aria-label='Close']","button[aria-label='Dismiss announcement']"):
+                  e=page.query_selector(s)
+                  if e:
+                      try: e.click(); time.sleep(1)
                       except Exception: pass
-              tog = page.query_selector("#date-range-select")
-              print("TOGGLE present:", bool(tog))
-              try:
-                  tog.click(timeout=5000)
+              print("STATE initial:", btn(page))
+              tog=page.query_selector("#date-range-select")
+              try: tog.click(force=True,timeout=5000)
+              except Exception: page.evaluate("e=>e.click()",tog)
+              time.sleep(1.5)
+              opt=page.query_selector("#date-range-select-listbox-option-3")
+              try: opt.click(timeout=5000)
+              except Exception: page.evaluate("e=>e.click()",opt)
+              time.sleep(1.5)
+              print("STATE after preset:", btn(page))
+              kb=page.query_selector("#basicSearchInputBox")
+              kb.fill("AFFIDAVIT OF DEATH")
+              time.sleep(1)
+              print("STATE after doctype keyword:", btn(page))
+              sb=(page.query_selector("button[aria-label='Search']")
+                  or page.query_selector("button:has-text('Search')"))
+              try: sb.click(timeout=6000)
               except Exception:
-                  try: tog.click(force=True,timeout=5000); print("clicked force")
-                  except Exception:
-                      page.evaluate("e=>e.click()",tog); print("clicked via JS dispatch")
-              time.sleep(2)
-
-              # After opening: dump the FULL set of inputs/buttons/options now
-              # in the DOM (downshift portal included), plus any menu container.
-              js = """() => {
-                const out=[];
-                for (const el of document.querySelectorAll(
-                    'input,button,[role=option],[role=menu],[role=listbox],[class*=menu],[class*=date],[class*=downshift]')){
-                  const r=el.getBoundingClientRect();
-                  out.push({tag:el.tagName,role:el.getAttribute('role'),
-                    type:el.getAttribute('type'),aria:el.getAttribute('aria-label'),
-                    placeholder:el.getAttribute('placeholder'),id:el.id||null,
-                    name:el.getAttribute('name'),
-                    cls:(el.className&&el.className.toString().slice(0,90))||null,
-                    text:(el.innerText||'').trim().slice(0,45)||null,
-                    vis:!!(r.width||r.height)});
-                }
-                return out;}"""
-              import json
-              ctrls = page.evaluate(js)
-              print(f"\n===== AFTER OPEN ({len(ctrls)}) =====")
-              for c in ctrls:
-                  hay=" ".join(str(c.get(k) or "") for k in
-                      ("role","aria","placeholder","id","name","text","cls")).lower()
-                  if any(w in hay for w in ("date","recorded","range","from","to",
-                          "start","end","custom","calendar","menu","option","downshift","picker")):
-                      print(json.dumps(c))
-
-              # also try selecting a "Custom" option if the dropdown is a preset list
-              for txt in ("Custom","Custom Range","Date Range","Specific"):
-                  opt = page.query_selector(f"[role=option]:has-text('{txt}')") or page.query_selector(f"text={txt}")
-                  if opt:
-                      print(f"\nOPTION '{txt}' found — clicking")
-                      try:
-                          opt.click(timeout=4000); time.sleep(2)
-                          ctrls2=page.evaluate(js)
-                          print(f"===== AFTER '{txt}' ({len(ctrls2)}) =====")
-                          for c in ctrls2:
-                              hay=" ".join(str(c.get(k) or "") for k in ("aria","placeholder","id","name","text")).lower()
-                              if any(w in hay for w in ("date","from","to","start","end","mm/dd","recorded")):
-                                  print(json.dumps(c))
-                      except Exception as e: print("  option click failed:",e)
-                      break
-
-              page.screenshot(path="travis_dropdown.png",full_page=True)
-              b.close()
+                  try: sb.click(force=True,timeout=6000)
+                  except Exception: kb.press("Enter")
+              time.sleep(9)
+              try: page.wait_for_load_state("networkidle",timeout=12000)
+              except Exception: pass
+              results(page,"doctype search")
+              page.screenshot(path="travis_submit.png",full_page=True)
+              br.close()
           PYEOF
           python probe.py
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: travis-dropdown
-          path: travis_dropdown.png
+          name: travis-submit
+          path: travis_submit.png
           if-no-files-found: ignore
