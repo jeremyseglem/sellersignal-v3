@@ -57,9 +57,27 @@ jobs:
               except Exception: page.evaluate("e=>e.click()",opt)
               time.sleep(1.5)
               print("STATE after preset:", btn(page))
-              kb=page.query_selector("#basicSearchInputBox")
-              kb.fill("AFFIDAVIT OF DEATH")
-              time.sleep(1)
+              # dump every text input's live attributes (id may have shifted)
+              inputs=page.evaluate("""() => Array.from(document.querySelectorAll('input')).map(el=>({
+                  id:el.id||null,name:el.getAttribute('name'),type:el.getAttribute('type'),
+                  placeholder:el.getAttribute('placeholder'),aria:el.getAttribute('aria-label'),
+                  disabled:el.disabled,readonly:el.readOnly,
+                  cls:(el.className&&el.className.toString().slice(0,60))||null,
+                  vis:!!(el.offsetWidth||el.offsetHeight)}))""")
+              import json
+              print("=== INPUTS ===")
+              for i in inputs: print(json.dumps(i))
+              kb=(page.query_selector("#basicSearchInputBox")
+                  or page.query_selector("input[placeholder*='doc type' i]")
+                  or page.query_selector("input[type='text']:not([disabled])"))
+              print("keyword box found:", bool(kb))
+              if kb:
+                  try:
+                      kb.click(timeout=5000); page.keyboard.type("AFFIDAVIT OF DEATH", delay=40)
+                      print("typed via keyboard")
+                  except Exception as e:
+                      print("type failed:", type(e).__name__, e)
+                  time.sleep(1.5)
               print("STATE after doctype keyword:", btn(page))
               sb=(page.query_selector("button[aria-label='Search']")
                   or page.query_selector("button:has-text('Search')"))
