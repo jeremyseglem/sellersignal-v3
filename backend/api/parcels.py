@@ -66,7 +66,12 @@ def _gate(zip_code, authorization, x_admin_key):
     _require_zip_access(_user_from_authorization(authorization), zip_code)
 
 
-@router.get("/{pin}")
+# NOTE: :path converter — CT parcel PINs contain slashes
+# (e.g. "50580-31/11/353"). Starlette decodes %2F before routing, so a
+# single-segment {pin} 404s on every CT territory (all 9 of them: the
+# dossier never opened when a lead was clicked). :path matches them.
+# The more specific /{pin}/why route is registered ahead of this one.
+@router.get("/{pin:path}")
 async def get_parcel(
     pin: str,
     authorization: Optional[str] = Header(None),
@@ -79,6 +84,17 @@ async def get_parcel(
     If no deep investigation exists, includes a why_not_selling forensic read
     derived from structural features (zero API cost).
     """
+    # The :path converter above is greedy, so it also captures
+    # "/{pin}/why" (that route is registered later in this module and can
+    # no longer be reached on its own). Delegate explicitly rather than
+    # reordering 340 lines — and this keeps /why working for slash-bearing
+    # CT pins too, which it never did before.
+    if pin.endswith("/why"):
+        return await get_why_not_selling_endpoint(
+            pin=pin[: -len("/why")],
+            authorization=authorization,
+            x_admin_key=x_admin_key,
+        )
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
