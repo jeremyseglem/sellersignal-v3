@@ -1,4 +1,9 @@
-name: TX Browser Probe
+name: TX Browser Probe (manual diagnostic — safe to ignore failures)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only, writes nothing.
+# Used 2026-07-21 to root-cause the Travis recorder (result: the tenant
+# soft-blocks automated browsers — see MANIFESTO). Failures here are NOT
+# production incidents.
 
 on:
   workflow_dispatch:
