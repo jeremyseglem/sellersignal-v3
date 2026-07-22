@@ -128,7 +128,10 @@ export const briefings = {
 
 export const map = {
   get: (zip, includeUninvestigated = true) =>
-    authedRequest(`/map/${zip}?include_uninvestigated=${includeUninvestigated}`),
+    // slim=1 drops address/owner/value (fetched on click via the dossier)
+    // so the WHOLE zip fits in one response — the old 5000-row default
+    // truncated 81 of 100 territories into an arbitrary subset of dots.
+    authedRequest(`/map/${zip}?include_uninvestigated=${includeUninvestigated}&slim=1`),
   bounds: (zip) => authedRequest(`/map/${zip}/bounds`),
   streetView: (pin, size = '640x400') =>
     authedRequest(`/map/streetview/${pin}?size=${size}`),

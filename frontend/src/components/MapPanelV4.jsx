@@ -277,9 +277,14 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
       }
       earthRefreshRef.current = refreshEarthLayers;
       try {
+        // Kick the deck.gl chunk downloads off IN PARALLEL with the
+        // earth-config round trip instead of after it — these are ~600KB
+        // of dynamic imports and there's no reason they should wait on a
+        // config fetch that doesn't feed them.
+        const deckReady = loadDeck();
         const cfg = await mapApi.earthConfig();      // 403/404 → catch → satellite
-        if (!cfg?.key) throw new Error('earth not configured');
-        await loadDeck();
+        if (!cfg?.key) { deckReady.catch(() => {}); throw new Error('earth not configured'); }
+        await deckReady;
         earthKey = cfg.key;
         overlayRef.current = new deckMods.MapboxOverlay({
           interleaved: true,

@@ -303,7 +303,12 @@ async def get_map_data(
     zip_code: str = Depends(require_live_zip),
     include_uninvestigated: bool = Query(True,
         description="Include parcels with no investigation data"),
-    limit: int = Query(5000, ge=1, le=20000),
+    limit: Optional[int] = Query(None, ge=1, le=50000,
+        description="Row cap. Defaults to 30000 when slim=1, else 5000."),
+    slim: bool = Query(False,
+        description="Omit address/owner_name/value (only needed on click — "
+                    "the dossier endpoint supplies them). Cuts the payload "
+                    "~64% gzipped so a whole ZIP fits in one response."),
     authorization: Optional[str] = Header(None),
     x_admin_key: Optional[str] = Header(None),
 ):
@@ -322,6 +327,16 @@ async def get_map_data(
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
+
+    # The old hard default of 5000 silently truncated 81 of 100 live
+    # territories (85255 showed 21% of its parcels), which reads on the
+    # map as a random smattering of dots — PostgREST returns rows
+    # unordered, so the surviving 5000 are an arbitrary slice. Slim mode
+    # drops the three heavy string/number fields the map never renders,
+    # making a whole-ZIP response SMALLER than the old truncated one
+    # (~0.26MB gz for 20k parcels vs ~0.72MB for 5k full rows).
+    if limit is None:
+        limit = 30000 if slim else 5000
 
     try:
         # Paginated fetch to beat Supabase PostgREST server cap (typically 1000)
@@ -389,18 +404,20 @@ async def get_map_data(
                 continue
 
             stats[cat] = stats.get(cat, 0) + 1
-            out.append({
+            row = {
                 'pin':           p['pin'],
-                'address':       p.get('address'),
-                'owner_name':    p.get('owner_name'),
-                'value':         p.get('total_value'),
                 'lat':           float(p['lat']) if p.get('lat') else None,
                 'lng':           float(p['lng']) if p.get('lng') else None,
                 'band':          p.get('band'),
                 'signal_family': p.get('signal_family'),
                 'category':      cat,
                 'pressure':      pressure,
-            })
+            }
+            if not slim:
+                row['address'] = p.get('address')
+                row['owner_name'] = p.get('owner_name')
+                row['value'] = p.get('total_value')
+            out.append(row)
 
         # Bbox outlier filter — drop parcels whose coords sit > ~10 mi
         # from the ZIP's median centroid. These are KC ingest
