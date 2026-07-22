@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
+**Last updated:** 2026-07-22 (production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -506,6 +506,27 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-07-22 — PRODUCTION OUTAGE: all 104 territories 500'd (h2 pool) + CT dossier 404 (slash PINs)
+
+**Symptom (Jeremy):** "api error 500 on a number of territories", map pins missing everywhere, clicking a lead zoomed the map but opened no dossier.
+
+**Outage root cause — postgrest hardcodes HTTP/2 (commit `fad8edc`).** `postgrest==0.17.2`'s `SyncPostgrestClient.create_session` hardcodes `http2=True`. `backend/api/db.py` returns ONE `@lru_cache`'d client, so every API request handler AND all 7 background tasks multiplexed over a SINGLE HTTP/2 connection to Supabase. When that connection went bad (stream exhaustion under task load, or a server GOAWAY), every subsequent request through the shared client failed — `ConnectionTerminated error_code:1/9`, `Invalid input StreamInputs.SEND_HEADERS in state 5`. Briefings, map, and parcel endpoints all 500'd together because they share the client.
+
+This is the true mechanism behind Active Issue #11 ("background-task contention on Supabase HTTP/2 stream pool"), which had been treated as intermittent flakiness for two months. It became constant after the platform grew to 104 ZIPs + a 7th background task (ct_probate_autofill).
+
+**Fix:** `_force_http1_pool()` in `backend/api/db.py` monkeypatches `create_session` to `http2=False` with an explicit `httpx.Limits` pool (40 max / 20 keepalive / 30s expiry), applied before `create_client`. HTTP/1.1 gives httpx independent pooled connections — a broken connection fails ONE request instead of poisoning the process. Verified against the real installed library before shipping (patch applies, session constructs, transport is `HTTPTransport`). Pure transport change; PostgREST semantics identical.
+
+**Verification:** swept all 104 live territories → 104/104 HTTP 200. Then RESUMED canonicalize_autofill (paused as a band-aid during triage) and re-tested under that load — briefings stayed 200. That's the real proof: task storms no longer take down the API.
+
+**Second, unrelated bug — CT dossier 404 (commit `f2392f0`).** CT parcel PINs contain slashes (`50580-31/11/353`, `33620-07-1216/S`). Starlette decodes `%2F` before routing, so the single-segment `@router.get("/{pin}")` never matched and returned a bare routing 404 — the dossier never opened in ANY of the 9 CT territories. KC/AZ/TX PINs have no slashes, which is why the bug was CT-only and invisible until CT launched. Fix: `/{pin:path}` converter, plus explicit delegation for `/{pin}/why` (the greedy `:path` route would otherwise swallow it) — which incidentally makes `/why` work for slash PINs for the first time.
+
+Verified post-deploy: dossier + why = 200 on all 6 CT ZIPs with leads (06830/06840/06880/06897/06883/06807) and regression-clean on 98004, 98116, 98036, 85258, 75219, 78703.
+
+**Ops note — Railway deploy lag.** `f2392f0` sat undeployed for ~15 min while `fad8edc` was already live. Diagnosed with a clean discriminator: a single-segment unknown pin returns the HANDLER 404 (`Parcel X not found`) while a multi-segment path returns the ROUTING 404 (`Not Found`). Use that pattern to tell "not deployed" from "broken" instead of guessing. (Precedent: 2026-05-19/20 Railway webhook rate-limiting silently skipped commits.)
+
+**Lesson.** Two months of intermittent 500s, auth retries, and "contention" workarounds were all one hardcoded `http2=True` in a dependency. When a failure mode recurs across unrelated subsystems (auth, briefings, canon, matcher) the shared substrate is the suspect, not each subsystem.
+
 
 ### 2026-07-21 — Sun Belt signal diagnosis: Travis recorder soft-blocked; Maricopa name pollution; the recorder-vs-docket ceiling
 
