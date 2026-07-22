@@ -48,47 +48,65 @@ jobs:
                       try: e.click(); time.sleep(1)
                       except Exception: pass
               print("STATE initial:", btn(page))
-              tog=page.query_selector("#date-range-select")
-              try: tog.click(force=True,timeout=5000)
-              except Exception: page.evaluate("e=>e.click()",tog)
-              time.sleep(1.5)
-              opt=page.query_selector("#date-range-select-listbox-option-3")
-              try: opt.click(timeout=5000)
-              except Exception: page.evaluate("e=>e.click()",opt)
-              time.sleep(1.5)
-              print("STATE after preset:", btn(page))
-              # dump every text input's live attributes (id may have shifted)
-              inputs=page.evaluate("""() => Array.from(document.querySelectorAll('input')).map(el=>({
-                  id:el.id||null,name:el.getAttribute('name'),type:el.getAttribute('type'),
-                  placeholder:el.getAttribute('placeholder'),aria:el.getAttribute('aria-label'),
-                  disabled:el.disabled,readonly:el.readOnly,
-                  cls:(el.className&&el.className.toString().slice(0,60))||null,
-                  vis:!!(el.offsetWidth||el.offsetHeight)}))""")
-              import json
-              print("=== INPUTS ===")
-              for i in inputs: print(json.dumps(i))
-              kb=(page.query_selector("#basicSearchInputBox")
-                  or page.query_selector("input[placeholder*='doc type' i]")
-                  or page.query_selector("input[type='text']:not([disabled])"))
-              print("keyword box found:", bool(kb))
-              if kb:
+              # THE GATE: basicSearchInputBox is disabled until a DEPARTMENT
+              # is chosen. Open the react-select and dump its options.
+              dept = page.query_selector("#react-select-282-input") or page.query_selector("[aria-label='Change department']")
+              print("dept control found:", bool(dept))
+              if dept:
+                  try: dept.click(timeout=5000)
+                  except Exception: page.evaluate("e=>e.click()",dept)
+                  time.sleep(2)
+                  opts=page.evaluate("""() => Array.from(document.querySelectorAll('[role=option],[id*=react-select][id*=option]')).map(el=>({
+                      id:el.id||null,text:(el.innerText||'').trim().slice(0,40)}))""")
+                  import json
+                  print("=== DEPARTMENT OPTIONS ===")
+                  for o in opts: print(json.dumps(o))
+                  # pick Real Property / Official Public Records
+                  picked=None
+                  for want in ("Real Property","Official Public Records","Land Records","All"):
+                      el=page.query_selector(f"[role=option]:has-text('{want}')")
+                      if el:
+                          try:
+                              el.click(timeout=4000); picked=want
+                          except Exception:
+                              page.evaluate("e=>e.click()",el); picked=want
+                          break
+                  print("picked department:", picked)
+                  time.sleep(2)
+              print("STATE after department:", btn(page))
+              kbs=page.evaluate("""() => {const el=document.querySelector('#basicSearchInputBox');
+                  return el?{disabled:el.disabled,placeholder:el.getAttribute('placeholder')}:null}""")
+              print("keyword box now:", kbs)
+              kb=page.query_selector("#basicSearchInputBox")
+              if kb and kbs and not kbs.get("disabled"):
                   try:
-                      kb.click(timeout=5000); page.keyboard.type("AFFIDAVIT OF DEATH", delay=40)
-                      print("typed via keyboard")
-                  except Exception as e:
-                      print("type failed:", type(e).__name__, e)
+                      kb.click(timeout=5000); page.keyboard.type("AFFIDAVIT OF DEATH",delay=40)
+                      print("typed doctype")
+                  except Exception as e: print("type failed:",type(e).__name__)
+                  time.sleep(1)
+              # now select date preset
+              tog=page.query_selector("#date-range-select")
+              if tog:
+                  try: tog.click(force=True,timeout=5000)
+                  except Exception: page.evaluate("e=>e.click()",tog)
                   time.sleep(1.5)
-              print("STATE after doctype keyword:", btn(page))
-              sb=(page.query_selector("button[aria-label='Search']")
-                  or page.query_selector("button:has-text('Search')"))
+                  opt=page.query_selector("#date-range-select-listbox-option-3")
+                  if opt:
+                      try: opt.click(timeout=5000)
+                      except Exception: page.evaluate("e=>e.click()",opt)
+                      time.sleep(1.5)
+              print("STATE final:", btn(page))
+              sb=(page.query_selector("button[aria-label='Search']") or page.query_selector("button:has-text('Search')"))
               try: sb.click(timeout=6000)
               except Exception:
                   try: sb.click(force=True,timeout=6000)
-                  except Exception: kb.press("Enter")
+                  except Exception:
+                      try: page.keyboard.press("Enter")
+                      except Exception: pass
               time.sleep(9)
               try: page.wait_for_load_state("networkidle",timeout=12000)
               except Exception: pass
-              results(page,"doctype search")
+              results(page,"final search")
               page.screenshot(path="travis_submit.png",full_page=True)
               br.close()
           PYEOF
