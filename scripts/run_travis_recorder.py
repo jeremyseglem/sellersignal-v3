@@ -141,8 +141,21 @@ def main():
             print(f"  preset sweep ERR {type(e).__name__}: {e}")
         b.close()
 
+    # LOUD FAILURE: a sweep that returns zero grid rows means the portal is
+    # not serving us results (soft-block on automated browsers — confirmed
+    # 2026-07-21: search box renders disabled=true for 60s+, readyState
+    # complete, no CF challenge, department preset; /results fires no API
+    # call). Exiting 0 here is what let this harvester report "success"
+    # while writing nothing for weeks. Fail so the Action goes red.
+    if total_grid_rows == 0:
+        print("[travis_recorder] FATAL: 0 grid rows returned — portal is not "
+              "serving results to this client (soft-block). See MANIFESTO "
+              "'Travis recorder soft-block' entry; the fix is the Travis "
+              "County probate DOCKET source, not this recorder.")
     print(f"[travis_recorder] grid_rows={total_grid_rows} estate_instruments={estate_rows} "
           f"new_mappable={len(all_rows)} errors={err}")
+    if total_grid_rows == 0:
+        sys.exit(1)
 
     if DCAD_ZIP and os.path.exists(DCAD_ZIP):
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
