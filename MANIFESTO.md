@@ -1269,7 +1269,10 @@ Until then: rematch should only be triggered during low-traffic windows, with a 
 
 **Partial mitigation 2026-05-21:** Added `POST /api/harvest/rematch-reset-scoped?source_type=X&signal_type=Y&confirm=true` for targeted re-runs that don't disturb other signal classes. Used today to re-process the 191 Snohomish probate signals after the prop_type fix without touching KC. Doesn't solve the underlying "rematch is sync + destructive" problem for the global case, but removes the need to use the global endpoint for many real-world scoped fixes.
 
-### 11. Pre-existing background-task contention on Supabase HTTP/2 stream pool
+### ~~11. Pre-existing background-task contention on Supabase HTTP/2 stream pool~~ **RESOLVED 2026-07-22**
+
+Root cause was NOT contention per se: `postgrest==0.17.2` hardcodes `http2=True`, so all API handlers and all background tasks shared ONE multiplexed HTTP/2 connection. A single bad connection failed every in-flight and subsequent request. Fixed by pinning the PostgREST transport to pooled HTTP/1.1 in `backend/api/db.py` (`_force_http1_pool()`, commit `fad8edc`). Verified 104/104 territories healthy with canonicalize_autofill running. The auth retry-on-RemoteProtocolError (`56a82a4`) and other contention workarounds can stay as belt-and-braces but should no longer fire. Original text below for reference:
+
 
 scopi-autofill hits `'code': '57014', 'message': 'canceling statement due to statement timeout'` periodically (`_fetch_pending_pins` query). canonicalize_autofill hits `RemoteProtocolError: Server disconnected` periodically on its ticks. Both back off and retry; not blocking. The auth retry shipped 2026-05-19 (commit `56a82a4`) protects user sign-ins from this storm.
 
