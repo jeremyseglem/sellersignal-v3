@@ -102,6 +102,9 @@ _MARKET_STATE = {
     'WA_SNOHOMISH': 'WA',
     'AZ_MARICOPA':  'AZ',
     'TX_DALLAS':    'TX',
+    'TX_TRAVIS':    'TX',   # was missing — same 'Phoenix, WA' bug class
+    'MT_GALLATIN':  'MT',
+    'MT_FLATHEAD':  'MT',
 }
 
 

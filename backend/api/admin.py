@@ -910,6 +910,10 @@ async def register_zip(
         market_key = "CT_FAIRFIELD"
         if city is None:
             city = CT_ZIP_TO_CITY[zip_code]
+    if zip_code in MT_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = MT_ZIP_MARKET[zip_code]
+        if city is None:
+            city = MT_ZIP_TO_CITY[zip_code]
 
     # Default city from the KC map for known KC ZIPs
     if city is None:
@@ -918,7 +922,8 @@ async def register_zip(
                 or COLLIN_ZIP_TO_CITY.get(zip_code)
                 or MARICOPA_ZIP_TO_CITY.get(zip_code)
                 or DALLAS_ZIP_TO_CITY.get(zip_code)
-                or TRAVIS_ZIP_TO_CITY.get(zip_code))
+                or TRAVIS_ZIP_TO_CITY.get(zip_code)
+                or MT_ZIP_TO_CITY.get(zip_code))
         if city is None and market_key == "WA_KING":
             raise HTTPException(
                 400,
@@ -1202,6 +1207,13 @@ async def onboard_zip(
         if state in (None, "WA"):
             state = "CT"
 
+    # Montana (Gallatin/Flathead) — same auto-detect/opt-out shape.
+    is_mt = zip_code in MT_ZIP_TO_CITY
+    if is_mt and market_key == "WA_KING":
+        market_key = MT_ZIP_MARKET[zip_code]
+        if state in (None, "WA"):
+            state = "MT"
+
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
     #   KC:        wa-king-{zip}-owners.json
@@ -1212,6 +1224,8 @@ async def onboard_zip(
         seed_prefix = "az-maricopa"
     elif is_ct:
         seed_prefix = "ct-fairfield"
+    elif is_mt:
+        seed_prefix = "mt"
     elif is_collin:
         seed_prefix = "tx-collin"
     elif is_travis:
@@ -1631,6 +1645,31 @@ CT_ZIP_TO_CITY = {
     "06880": "Westport",
     "06897": "Wilton",
     "06883": "Weston",
+}
+
+# Montana Phase 1 (2026-07-23) — Bozeman/Big Sky/Whitefish.
+# Seed files: data/seeds/mt-{zip}-owners.json (built by
+# scripts/build_mt_owners.py against the MSL statewide Cadastral
+# FeatureServer with ZCTA spatial join; DOR's own CityStateZip field is
+# unreliable). Seeds carry lat/lng at build time — no geometry backfill.
+# Big Sky (59716) straddles Gallatin + Madison counties (~7:1 Madison
+# parcel-side); its market_key is MT_GALLATIN but the court harvester
+# must sweep BOTH counties' district courts for 59716 coverage.
+MT_ZIP_TO_CITY = {
+    "59715": "Bozeman",
+    "59718": "Bozeman",
+    "59714": "Belgrade",
+    "59730": "Gallatin Gateway",
+    "59716": "Big Sky",
+    "59937": "Whitefish",
+}
+MT_ZIP_MARKET = {
+    "59715": "MT_GALLATIN",
+    "59718": "MT_GALLATIN",
+    "59714": "MT_GALLATIN",
+    "59730": "MT_GALLATIN",
+    "59716": "MT_GALLATIN",
+    "59937": "MT_FLATHEAD",
 }
 
 COLLIN_ZIP_TO_CITY = {

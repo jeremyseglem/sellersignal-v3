@@ -363,6 +363,42 @@ def diag_ocr_check(
     }
 
 
+@router.get("/diag/mt-portal")
+def diag_mt_portal(
+    path: Optional[str] = None,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """
+    Montana FullCourt portal reachability + structure probe (2026-07-23).
+
+    The dcportal WAF rejects non-browser fingerprints from some egresses
+    (Claude sandbox: 'Request Rejected'); an operator browser passes with
+    no login/CAPTCHA. This endpoint reports exactly what RAILWAY's egress
+    sees — status, page title, cookies, form field names, nav links — so
+    the search/litigants parsers in harvesters/mt_district_court.py get
+    built against observed HTML, never guessed field names.
+
+    No args: bootstrap probe of start.do.
+    ?path=/fullcourtweb/...: bootstrap, then follow one portal-relative
+    path with session cookies (walk court-selection/search one hop at a
+    time). Read-only against the portal; writes nothing.
+    """
+    _require_admin(x_admin_key)
+    from backend.harvesters import mt_district_court as mt
+    probe = mt.diag_follow(path) if path else mt.diag_bootstrap()
+    return {
+        "ok": probe.ok,
+        "status": probe.status,
+        "title": probe.title,
+        "final_url": probe.final_url,
+        "cookies": probe.cookies,
+        "forms": probe.forms,
+        "links": probe.links,
+        "error": probe.error,
+        "html_head": probe.html_head,
+    }
+
+
 @router.get("/diag/parties-count")
 def diag_parties_count(
     x_admin_key: Optional[str] = Header(None),
