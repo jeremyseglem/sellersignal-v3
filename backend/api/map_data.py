@@ -202,6 +202,72 @@ _LOT_PAGE = 1000        # KC-statewide/Maricopa clamp at 1000; uniform page size
 _LOT_PIN_BATCH = 150    # pins per POST IN(...) — ~3KB where clause, in body
 
 
+
+_LOT_TABLE = 'lot_polygons_v3'
+_lot_table_missing = False      # set once if schema/032 isn't applied
+
+
+def _load_stored_lots(supa, zip_code: str) -> dict:
+    """Return {pin: geometry} from lot_polygons_v3, or {} if unavailable.
+
+    Returns {} (not an error) when schema/032 hasn't been applied yet, so
+    the caller transparently falls back to the live ArcGIS crawl.
+    """
+    global _lot_table_missing
+    if _lot_table_missing:
+        return {}
+    out, off = {}, 0
+    try:
+        while True:
+            page = (supa.table(_LOT_TABLE).select('pin, geom')
+                    .eq('zip_code', zip_code)
+                    .range(off, off + 999).execute()).data or []
+            for r in page:
+                if r.get('geom'):
+                    out[str(r['pin'])] = r['geom']
+            if len(page) < 1000 or off >= 60000:
+                break
+            off += 1000
+    except Exception as e:
+        msg = str(e)
+        if 'does not exist' in msg or 'PGRST205' in msg or '42P01' in msg:
+            _lot_table_missing = True
+            log.warning('[lot-polygons] %s not present — apply schema/032 to '
+                        'stop re-crawling county ArcGIS on every request',
+                        _LOT_TABLE)
+        else:
+            log.warning('[lot-polygons] stored read failed for %s: %s',
+                        zip_code, e)
+        return {}
+    return out
+
+
+def _store_lots(supa, zip_code: str, market: str, polys: dict) -> int:
+    """Upsert fetched geometry. Best-effort: never breaks the response."""
+    global _lot_table_missing
+    if _lot_table_missing or not polys:
+        return 0
+    rows = [{'zip_code': zip_code, 'pin': str(pin), 'geom': geom,
+             'market_key': market or None}
+            for pin, geom in polys.items() if geom]
+    written = 0
+    try:
+        for i in range(0, len(rows), 500):
+            (supa.table(_LOT_TABLE)
+             .upsert(rows[i:i + 500], on_conflict='zip_code,pin')
+             .execute())
+            written += len(rows[i:i + 500])
+    except Exception as e:
+        msg = str(e)
+        if 'does not exist' in msg or 'PGRST205' in msg or '42P01' in msg:
+            _lot_table_missing = True
+            log.warning('[lot-polygons] %s not present — apply schema/032',
+                        _LOT_TABLE)
+        else:
+            log.warning('[lot-polygons] store failed for %s: %s', zip_code, e)
+    return written
+
+
 @router.get("/{zip_code}/lot-polygons")
 async def lot_polygons(zip_code: str,
                        authorization: str | None = Header(None),
@@ -216,6 +282,15 @@ async def lot_polygons(zip_code: str,
     empty = {'zip_code': zip_code, 'polygons': {}, 'cached': False}
     if not supa:
         return empty
+
+    # Persisted geometry first (schema/032). The live county crawl below
+    # takes 20-55s per ZIP and was previously repeated after every Railway
+    # redeploy, which is the bulk of the Earth-view load time.
+    stored = _load_stored_lots(supa, zip_code)
+    if stored:
+        _LOT_CACHE[zip_code] = (_time.time(), stored)
+        return {'zip_code': zip_code, 'polygons': stored,
+                'cached': True, 'source': 'db'}
     try:
         cov = (supa.table('zip_coverage_v3').select('market_key')
                .eq('zip_code', zip_code).limit(1).execute()).data
@@ -292,7 +367,10 @@ async def lot_polygons(zip_code: str,
 
         polys = await asyncio.to_thread(_fetch_lots)
         _LOT_CACHE[zip_code] = (_time.time(), polys)
-        return {'zip_code': zip_code, 'polygons': polys, 'cached': False}
+        if polys:
+            await asyncio.to_thread(_store_lots, supa, zip_code, market, polys)
+        return {'zip_code': zip_code, 'polygons': polys, 'cached': False,
+                'source': 'arcgis'}
     except Exception as e:
         log.warning("[lot-polygons] %s failed: %s", zip_code, e)
         return empty
