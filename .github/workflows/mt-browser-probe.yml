@@ -97,64 +97,48 @@ jobs:
               links(page, "gallatin-portal")
               forms(page, "gallatin-portal")
 
-              # Direct .do navigation (menu links are JS-collapsed; hrefs
-              # captured from 02_gallatin_portal artifact).
               BASE = "https://dcportal.pubcourts.mt.gov/fullcourtweb"
-              page.goto(f"{BASE}/judgmentOrderIndexSearch.do?searched=false",
-                        wait_until="domcontentloaded", timeout=60000)
-              time.sleep(5)
-              dump(page, "03_judgment_search_form")
-              forms(page, "judgment-search-form")
 
-              # Submit a date-range sweep for a recent 7-day window using the
-              # form's own fields (fill every visible date-ish input pair).
-              fields = page.evaluate("""() => Array.from(document.querySelectorAll('input'))
-                  .map(el => ({name: el.getAttribute('name'), id: el.id||null,
-                               type: el.getAttribute('type')}))""")
-              print("judgment form inputs:", json.dumps(fields)[:1500])
-              import datetime as dt
-              end_d = dt.date.today() - dt.timedelta(days=1)
-              beg_d = end_d - dt.timedelta(days=7)
-              filled = page.evaluate("""(dates) => {
-                  const out = [];
-                  for (const el of document.querySelectorAll('input')) {
-                      const n = (el.getAttribute('name')||'') + ' ' + (el.id||'');
-                      if (/order.*date|date.*from|begin|start/i.test(n)) { el.value = dates[0]; out.push([n,'FROM']); }
-                      else if (/date.*to|end|thru|through/i.test(n)) { el.value = dates[1]; out.push([n,'TO']); }
-                  }
-                  return out }""", [beg_d.strftime("%m/%d/%Y"), end_d.strftime("%m/%d/%Y")])
-              print("filled date fields:", filled)
-              sub = page.query_selector("input[type='submit'], button[type='submit'], input[name*='earch'], input[alt*='earch']")
-              if sub:
-                  try: sub.click()
-                  except Exception: page.evaluate("e=>e.click()", sub)
-                  page.wait_for_load_state("domcontentloaded"); time.sleep(8)
-              dump(page, "04_judgment_results")
-              # results table rows
-              rows = page.evaluate("""() => Array.from(document.querySelectorAll('table tr'))
-                  .slice(0, 12).map(tr => Array.from(tr.querySelectorAll('td,th'))
-                  .map(td => (td.innerText||'').trim().slice(0,30)))""")
-              print("=== judgment results rows ==="); print(json.dumps(rows, indent=1)[:3000])
+              # DP case enumeration: formatCaseType/Year/Number + hidden
+              # retrieveAction submit (field names from 06_civil_case_lookup
+              # capture). Walk candidate sequence numbers until a real case
+              # renders, then dump it with litigants shown.
+              def lookup(case_num):
+                  page.goto(f"{BASE}/civilCase.do?CourtCaseId=0",
+                            wait_until="domcontentloaded", timeout=60000)
+                  time.sleep(3)
+                  page.evaluate("""(n) => {
+                      const f = document.forms['civilCaseForm'];
+                      f.querySelector("input[name='formatCaseType']").value = 'DP';
+                      f.querySelector("input[name='formatCaseYear']").value = '2026';
+                      f.querySelector("input[name='formatCaseNumber']").value = n;
+                      const lit = f.querySelector("input[name='reportBean.showLitigants'][type='checkbox']");
+                      if (lit && !lit.checked) lit.click();
+                      const b = f.querySelector("input[name='retrieveAction']");
+                      b.click(); }""", case_num)
+                  page.wait_for_load_state("domcontentloaded"); time.sleep(5)
+                  body = page.evaluate("() => (document.body.innerText||'').slice(0,400)")
+                  found = ('DP-' in body or 'Probate' in body or 'Estate' in body) and 'not found' not in body.lower()
+                  print(f"lookup DP-2026-{case_num}: url={page.url[:90]} found={found} body[:150]={body[:150]!r}")
+                  return found
 
-              # Open the first case link in the results, capture litigants.
-              cl = page.query_selector("table a[href*='Case']") or page.query_selector("table a")
-              if cl:
+              hit = None
+              for n in ("0000010", "0000050", "0000100", "0000150", "0000200", "0000025"):
                   try:
-                      cl.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(6)
-                      dump(page, "05_case_detail")
-                      lit = page.evaluate("""() => Array.from(document.querySelectorAll('table tr'))
-                          .slice(0, 25).map(tr => Array.from(tr.querySelectorAll('td,th'))
-                          .map(td => (td.innerText||'').trim().slice(0,35)))""")
-                      print("=== case detail tables ==="); print(json.dumps(lit, indent=1)[:4000])
+                      if lookup(n):
+                          hit = n
+                          break
                   except Exception as e:
-                      print("case detail failed:", e)
-
-              # Case-number lookup surface
-              page.goto(f"{BASE}/civilCase.do?CourtCaseId=0",
-                        wait_until="domcontentloaded", timeout=60000)
-              time.sleep(5)
-              dump(page, "06_civil_case_lookup")
-              forms(page, "civil-case-lookup")
+                      print(f"lookup {n} raised: {e}")
+              if hit:
+                  dump(page, "07_dp_case_detail")
+                  tables = page.evaluate("""() => Array.from(document.querySelectorAll('table'))
+                      .map(t => Array.from(t.querySelectorAll('tr')).slice(0, 15)
+                      .map(tr => Array.from(tr.querySelectorAll('td,th'))
+                      .map(td => (td.innerText||'').trim().slice(0,40))))""")
+                  print("=== DP case tables ==="); print(json.dumps(tables, indent=1)[:6000])
+              else:
+                  dump(page, "07_dp_lookup_miss")
 
               br.close()
           PYEOF
