@@ -55,6 +55,11 @@ COURTS = [c.strip() for c in
           (os.environ.get("COURTS") or "gallatin,flathead").split(",") if c.strip()]
 MAX_MISS = int(os.environ.get("MAX_MISS") or "25")
 MAX_CASES = int(os.environ.get("MAX_CASES") or "400")
+# FULL_SWEEP=1 forces the walk to start at seq 1 regardless of the resume
+# cursor, relying on the county-scoped skip index to hop over already-stored
+# sequences. Use to recover gaps below the cursor (e.g. Flathead 2026 1-100,
+# skipped by the pre-fix cross-court cursor contamination).
+FULL_SWEEP = os.environ.get("FULL_SWEEP", "0") == "1"
 TABLE = "raw_signals_v3"
 SOURCE = "mt_district_court"
 BASE = "https://dcportal.pubcourts.mt.gov/fullcourtweb"
@@ -186,9 +191,9 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
           f"county_code={county_code} year={YEAR}")
     select_court(page, tenant)
 
-    seq = start_sequence(refs, YEAR, county_code)
+    seq = 1 if FULL_SWEEP else start_sequence(refs, YEAR, county_code)
     print(f"[{court_key}] resume at DP-{YEAR}-{seq:07d} "
-          f"(refs_in_db_for_source={len(refs)})")
+          f"(full_sweep={FULL_SWEEP}, refs_in_db_for_source={len(refs)})")
 
     # Pre-index the DP sequences already stored for this year AND this court
     # so the resume walk skips them in O(1) (handles gaps if the cursor was
