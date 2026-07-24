@@ -507,6 +507,28 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-24 — Full-fleet audit + fix pass: KC login wall, Snohomish source migration, 98036/98296 enrichment, topics dedupe, lot-polygon hardening
+
+Fleet-wide diagnostic across all 106 live ZIPs (quality validator, per-source signal freshness, task health, lot-polygon state), followed by a fix pass. Findings and outcomes:
+
+**P0 — KC Superior Court BLOCKED BY LOGIN WALL (unresolved, needs operator action).** No new KC probate/divorce signals since 2026-04-24/23. Root cause: KC moved the Records Access Portal behind account login — `/node/411` search 307s to `/user/login` ("Create new account" offered), case-detail nodes 404 unauthenticated. Explains both the 3-month harvest gap and the case-parties autofill health-gating itself (`search_rows_page1: 0`). Fix path: operator creates a portal account (check their T&C for automated-access language), creds go to Railway env vars, `build_session()` gains a login step. All 34 KC ZIPs are serving progressively stale probate/divorce inventory until this lands.
+
+**Snohomish County retired both data sources; migrated (commits `a052b6a`+).** `snoco.org/proptax/` (SCOPI) now redirects to the Assessor homepage — every SCOPI tenure fetch fails ("VIEWSTATE not found"); replacement is a DNN app at `wa-snohomish.publicaccessnow.com` (not yet reverse-engineered). The attribute-rich `Parcels` FeatureServer is token-gated (499) — but the same data is public under `CADASTRAL__parcels_timezone` (same schema, original `SITUSTTYP` field spelling). Swapped the URL in all five sites (arcgis ingest, geometry_backfill, admin register default, map_data lot config, seed builder) with parse-side tolerance for both spellings. Verified: 98020 lot polygons 0 → 8,322.
+
+**98036/98296 completed (were live with trust/llc/tenure buckets at ZERO).** Root cause chain: (a) tenure_years NULL on every parcel — and aging_trust/llc_long_hold/long_tenure all gate on tenure, so all three buckets zeroed; (b) seed builder's `SITUSZIP='{zip}'` equality misses ZIP+4 rows — original seeds were ~22% of the ZIP (2,812/12,812). Fixed WHERE to LIKE, rebuilt both seeds full-coverage from the new layer, joined tenure from the county's **Land Records bulk xlsx** (AGO item `30eb31ef...`, PIN → max(Sale1D/2D/3D)) at 97.7%/96.9% coverage, ran seed → reclassify → reband → refresh-counts. Buckets: 98036 trust/llc/tenure 0/0/0 → 100/100/100; 98296 → 100/72/100. SCOPI backlog collapsed 22,874 → 741 (dead-portal long tail — port the tenure scraper to PublicAccessNow or pause the task).
+
+**topics-citations workflow fixed (commit before `a052b6a`).** Nightly cron failed on Postgres 21000 — duplicate `(source_type, document_ref)` rows in one upsert batch (TOPICS lists amended citations twice). Batch dedupe in `write_rows` keep-last. Verified live: wrote 59 signals (61 deduped to 59), freshness 7/13 → 7/22. NOTE: the other five recorder scripts share the same write shape without dedupe — latent.
+
+**Dallas recorder is NOT broken — trailing by design.** `LAG_DAYS=10` because recordings post ~5-7 days behind; a green run on 7/23 wrote 122 signals through 7/13. Do not re-diagnose this as silent failure. Travis recorder remains hard-broken (portal soft-block, exit-1 on grid_rows=0) — own session needed. MT harvester is still diag-first scaffold (WAF blocks sandbox fingerprints) — own session needed.
+
+**KC reingest sweep (20 ZIPs, ~173k rows, 0 failures).** All never-reingested KC ZIPs got fresh owner_state/prop_type/values. Verdict on the low absentee buckets: LEGITIMATE — clean data + bucket cascade leaves single digits (98008: 3 → 7 post-reingest; matches May's 98053/98074 result). Not missing leads. Side effect: reingest added parcels (98116 +~1.8k, 98144 +~2.2k) whose canon backfills via canon-autofill round-robin — validator canon % dips on reingested ZIPs until it catches up.
+
+**Lot polygons: fleet warmed + partial-store hardening.** All 100 warmable ZIPs (AZ/CT/Collin/Travis/KC/Snohomish/Dallas) now persisted; MT has no lot source yet. Dallas GIS throttles concurrent crawls — warm it sequentially with spacing. Two map_data fixes: (1) stored partials under 50% of parcel count now top up missing pins instead of serving forever; exceptions fall back to stored instead of empty; (2) a `__complete__` marker row (JSONB sentinel geom) records crawl completion so legitimately low-coverage condo ZIPs (75219 Oak Lawn: true ceiling ~18%) don't re-crawl every deploy. Marker path verification pending next natural redeploy.
+
+**Verified non-issues:** 06883 Weston zero probate matches is genuine base rate — PD50 Westport Probate Court explicitly covers Weston in the CT sweep set. CT probate autofill's 18 morning ReadTimeouts self-recovered.
+
+**Still open after this session:** KC portal account (operator); Travis session; MT session; SCOPI port-or-pause decision; admin key + PAT rotation (both still live from July 13, heavy use today); MT lot-polygon source; canon catch-up on 98116/98144 (self-healing).
+
 ### 2026-07-22 (later) — Map fixes: every parcel visible + Earth load time
 
 Two pre-existing map complaints from Jeremy, both diagnosed to hard causes.
