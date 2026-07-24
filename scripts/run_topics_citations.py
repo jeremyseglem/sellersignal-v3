@@ -63,6 +63,12 @@ def existing_refs() -> set:
 def write_rows(rows: list) -> int:
     if not rows:
         return 0
+    # De-dupe within the batch on the upsert conflict key. TOPICS can list the
+    # same citation twice (amended/duplicate postings); two rows sharing
+    # (source_type, document_ref) in one INSERT .. ON CONFLICT command raise
+    # Postgres 21000 ("cannot affect row a second time"). Keep the last.
+    rows = list({(row.get("source_type"), row.get("document_ref")): row
+                 for row in rows}.values())
     r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLE}",
                       headers={**_headers(),
                                "Prefer": "resolution=merge-duplicates,return=minimal"},
