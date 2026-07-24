@@ -48,11 +48,13 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 WRITE = os.environ.get("WRITE", "0") == "1"
-YEAR = int(os.environ.get("YEAR", str(datetime.now().year)))
+# Env vars from the workflow can be set-but-empty (e.g. YEAR: '' default),
+# which overrides os.environ.get's own default — so coalesce with `or`.
+YEAR = int(os.environ.get("YEAR") or datetime.now().year)
 COURTS = [c.strip() for c in
-          os.environ.get("COURTS", "gallatin,flathead").split(",") if c.strip()]
-MAX_MISS = int(os.environ.get("MAX_MISS", "25"))
-MAX_CASES = int(os.environ.get("MAX_CASES", "400"))
+          (os.environ.get("COURTS") or "gallatin,flathead").split(",") if c.strip()]
+MAX_MISS = int(os.environ.get("MAX_MISS") or "25")
+MAX_CASES = int(os.environ.get("MAX_CASES") or "400")
 TABLE = "raw_signals_v3"
 SOURCE = "mt_district_court"
 BASE = "https://dcportal.pubcourts.mt.gov/fullcourtweb"
