@@ -1,0 +1,86 @@
+name: Travis Headed Probe (manual diagnostic — safe to ignore failures)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only, writes nothing.
+# 2026-07-21 root cause: travis.tx.publicsearch.us soft-blocks automated
+# browsers — the search input never enables under HEADLESS Chromium, while
+# the identical code passes on the Dallas tenant. Tenant-level bot check.
+# This probe tests the one variable never tried: HEADED Chromium under
+# xvfb, which routinely clears checks that headless fails.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  headedprobe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Playwright + xvfb
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y xvfb
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Headed probe under xvfb
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import time
+          HOME = "https://travis.tx.publicsearch.us/"
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=False,
+                  args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width": 1366, "height": 900}, locale="en-US")
+              page = ctx.new_page()
+              page.goto(HOME, wait_until="domcontentloaded", timeout=60000)
+              time.sleep(8)
+              for s in ("button[aria-label='Close']", "button[aria-label='Dismiss announcement']"):
+                  e = page.query_selector(s)
+                  if e:
+                      try: e.click(); time.sleep(1)
+                      except Exception: pass
+              # Same decisive poll as the 07-21 headless probe: does the
+              # search box ever ENABLE in headed mode?
+              enabled_at = None
+              for t in (0, 5, 10, 15, 20, 30, 45, 60):
+                  if t: time.sleep(5)
+                  st = page.evaluate("""() => {const el=document.querySelector('#basicSearchInputBox');
+                      return {disabled: el ? el.disabled : 'NO BOX',
+                              ready: document.readyState,
+                              loading: /Loading/i.test(document.body.innerText||'')}}""")
+                  print(f"t+{t}s: {st}")
+                  if st.get('disabled') is False and enabled_at is None:
+                      enabled_at = t
+                      break
+              print("SEARCH BOX ENABLED:", enabled_at is not None,
+                    f"(at t+{enabled_at}s)" if enabled_at is not None else "")
+              if enabled_at is not None:
+                  # Try an actual search: type a doc-type-ish term and submit,
+                  # then count grid rows. Proves end-to-end viability.
+                  try:
+                      page.fill("#basicSearchInputBox", "affidavit of death")
+                      time.sleep(1)
+                      btn = (page.query_selector("button[aria-label='Search']")
+                             or page.query_selector("button[type='submit']"))
+                      if btn: btn.click()
+                      time.sleep(12)
+                      rows = page.query_selector_all(
+                          ".tableRow, table tbody tr, [data-tourid='searchResults'] .tableRow")
+                      print("RESULT ROWS:", len(rows))
+                  except Exception as e:
+                      print("search attempt failed:", e)
+              page.screenshot(path="travis_headed.png", full_page=True)
+              br.close()
+          PYEOF
+          xvfb-run -a python probe.py
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: travis-headed
+          path: travis_headed.png
+          if-no-files-found: ignore
