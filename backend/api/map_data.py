@@ -286,11 +286,27 @@ async def lot_polygons(zip_code: str,
     # Persisted geometry first (schema/032). The live county crawl below
     # takes 20-55s per ZIP and was previously repeated after every Railway
     # redeploy, which is the bulk of the Earth-view load time.
+    #
+    # Partial-store guard (2026-07-24): a crawl that gets throttled upstream
+    # can return few features without erroring, storing a gross partial that
+    # then serves forever (seen: 75219 stuck at 1,504 of ~8,589). If stored
+    # coverage is under half the ZIP's parcels, fall through and top up the
+    # missing pins instead of returning the partial. Threshold is 50% (not
+    # higher) because condos legitimately have no lot polygon — Dallas ZIPs
+    # sit at 59-86% by design and must NOT re-crawl on every cache miss.
     stored = _load_stored_lots(supa, zip_code)
     if stored:
-        _LOT_CACHE[zip_code] = (_time.time(), stored)
-        return {'zip_code': zip_code, 'polygons': stored,
-                'cached': True, 'source': 'db'}
+        try:
+            _cnt = (supa.table('parcels_v3').select('pin', count='exact')
+                    .eq('zip_code', zip_code).limit(1).execute()).count or 0
+        except Exception:
+            _cnt = 0
+        if _cnt == 0 or len(stored) >= 0.5 * _cnt:
+            _LOT_CACHE[zip_code] = (_time.time(), stored)
+            return {'zip_code': zip_code, 'polygons': stored,
+                    'cached': True, 'source': 'db'}
+        log.info('[lot-polygons] %s stored partial (%d of %d parcels) — '
+                 'topping up missing pins', zip_code, len(stored), _cnt)
     try:
         cov = (supa.table('zip_coverage_v3').select('market_key')
                .eq('zip_code', zip_code).limit(1).execute()).data
@@ -327,7 +343,7 @@ async def lot_polygons(zip_code: str,
                         break
 
         def _fetch_lots():
-            out = {}
+            out = dict(stored)   # top-up mode: keep what's already persisted
             if cfg['mode'] == 'zip':
                 fields = cfg['out_fields'].split(',')
                 offset = 0
@@ -348,8 +364,12 @@ async def lot_polygons(zip_code: str,
                     offset += _LOT_PAGE
             else:  # pins mode
                 fld = cfg['pin_field']
-                for i in range(0, len(raw_pins), _LOT_PIN_BATCH):
-                    batch = raw_pins[i:i + _LOT_PIN_BATCH]
+                # In top-up mode only fetch pins we don't already have —
+                # keeps the upstream load minimal (Dallas throttles bursts).
+                todo = [p for p in raw_pins
+                        if ''.join(c for c in p if c.isdigit()) not in out]
+                for i in range(0, len(todo), _LOT_PIN_BATCH):
+                    batch = todo[i:i + _LOT_PIN_BATCH]
                     vals = ','.join(
                         ("'" + b.replace("'", "") + "'") if cfg['quoted']
                         else ''.join(c for c in b if c.isdigit())
@@ -373,6 +393,9 @@ async def lot_polygons(zip_code: str,
                 'source': 'arcgis'}
     except Exception as e:
         log.warning("[lot-polygons] %s failed: %s", zip_code, e)
+        if stored:   # a partial map beats an empty one
+            return {'zip_code': zip_code, 'polygons': stored,
+                    'cached': True, 'source': 'db-partial'}
         return empty
 
 
