@@ -215,15 +215,17 @@ def _load_stored_lots(supa, zip_code: str) -> dict:
     """
     global _lot_table_missing
     if _lot_table_missing:
-        return {}
-    out, off = {}, 0
+        return {}, False
+    out, off, complete = {}, 0, False
     try:
         while True:
             page = (supa.table(_LOT_TABLE).select('pin, geom')
                     .eq('zip_code', zip_code)
                     .range(off, off + 999).execute()).data or []
             for r in page:
-                if r.get('geom'):
+                if str(r.get('pin')) == '__complete__':
+                    complete = True     # marker row: a crawl finished for this ZIP
+                elif r.get('geom'):
                     out[str(r['pin'])] = r['geom']
             if len(page) < 1000 or off >= 60000:
                 break
@@ -238,8 +240,8 @@ def _load_stored_lots(supa, zip_code: str) -> dict:
         else:
             log.warning('[lot-polygons] stored read failed for %s: %s',
                         zip_code, e)
-        return {}
-    return out
+        return {}, False
+    return out, complete
 
 
 def _store_lots(supa, zip_code: str, market: str, polys: dict) -> int:
@@ -294,8 +296,16 @@ async def lot_polygons(zip_code: str,
     # missing pins instead of returning the partial. Threshold is 50% (not
     # higher) because condos legitimately have no lot polygon — Dallas ZIPs
     # sit at 59-86% by design and must NOT re-crawl on every cache miss.
-    stored = _load_stored_lots(supa, zip_code)
+    stored, _crawl_done = _load_stored_lots(supa, zip_code)
     if stored:
+        # A completed crawl is authoritative even at low coverage — condo-dense
+        # ZIPs (e.g. 75219 Oak Lawn, true ceiling ~18%) must not re-crawl on
+        # every cache miss. The coverage check below only guards ZIPs whose
+        # crawl never finished (aborted/throttled partial stores).
+        if _crawl_done:
+            _LOT_CACHE[zip_code] = (_time.time(), stored)
+            return {'zip_code': zip_code, 'polygons': stored,
+                    'cached': True, 'source': 'db'}
         try:
             _cnt = (supa.table('parcels_v3').select('pin', count='exact')
                     .eq('zip_code', zip_code).limit(1).execute()).count or 0
@@ -389,6 +399,15 @@ async def lot_polygons(zip_code: str,
         _LOT_CACHE[zip_code] = (_time.time(), polys)
         if polys:
             await asyncio.to_thread(_store_lots, supa, zip_code, market, polys)
+            try:   # crawl reached the end without raising — mark complete
+                (supa.table(_LOT_TABLE)
+                 .upsert([{'zip_code': zip_code, 'pin': '__complete__',
+                           'geom': {'__marker__': True},
+                           'market_key': market or None}],
+                         on_conflict='zip_code,pin').execute())
+            except Exception as _me:
+                log.warning('[lot-polygons] %s complete-marker write failed: %s',
+                            zip_code, _me)
         return {'zip_code': zip_code, 'polygons': polys, 'cached': False,
                 'source': 'arcgis'}
     except Exception as e:
