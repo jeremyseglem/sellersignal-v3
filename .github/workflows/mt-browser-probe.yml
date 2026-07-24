@@ -1,0 +1,131 @@
+name: MT Browser Probe (manual diagnostic — safe to ignore failures)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only, writes nothing.
+# The MT District Court portal (FullCourt Enterprise) sits behind F5 TSPD
+# bot defense: plain requests get a JS challenge from BOTH the Claude
+# sandbox AND Railway (verified 2026-07-24 via /api/harvest/diag/mt-portal).
+# This probe answers: does real Chromium in GitHub Actions clear TSPD, and
+# what do the court picker / Judgment Order Index Search / case detail
+# pages actually look like? Artifacts feed the parser build in
+# backend/harvesters/mt_district_court.py — never invent field names.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  browserprobe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Probe FullCourt portal under real Chromium
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import time, json, pathlib
+
+          START = "https://dcportal.pubcourts.mt.gov/fullcourtweb/start.do"
+          OUT = pathlib.Path("mtprobe"); OUT.mkdir(exist_ok=True)
+
+          def dump(page, name):
+              (OUT / f"{name}.html").write_text(page.content())
+              page.screenshot(path=str(OUT / f"{name}.png"), full_page=True)
+              print(f"[dump] {name}: url={page.url[:120]} title={page.title()[:80]!r}")
+
+          def links(page, label):
+              out = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
+                  .map(a => ({href: a.getAttribute('href'), text: (a.innerText||'').trim().slice(0,60)}))
+                  .filter(l => l.text)""")
+              print(f"=== links on {label} ({len(out)}) ===")
+              for l in out[:40]: print(json.dumps(l))
+              return out
+
+          def forms(page, label):
+              out = page.evaluate("""() => Array.from(document.querySelectorAll('form')).map(f => ({
+                  name: f.getAttribute('name'), action: f.getAttribute('action'),
+                  fields: Array.from(f.querySelectorAll('input,select,textarea'))
+                      .map(el => ({tag: el.tagName, name: el.getAttribute('name'),
+                                   type: el.getAttribute('type'), id: el.id||null})).slice(0,40)}))""")
+              print(f"=== forms on {label} ===")
+              print(json.dumps(out, indent=1)[:4000])
+              return out
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True,
+                  args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width": 1366, "height": 900}, locale="en-US")
+              page = ctx.new_page()
+              page.goto(START, wait_until="domcontentloaded", timeout=60000)
+              # TSPD challenge resolves via JS then reloads — give it time.
+              for t in range(12):
+                  time.sleep(5)
+                  body = page.evaluate("() => (document.body && document.body.innerText || '').slice(0, 300)")
+                  title = page.title()
+                  print(f"t+{(t+1)*5}s title={title!r} body[:120]={body[:120]!r}")
+                  if title or len(body) > 100:
+                      break
+              dump(page, "01_landing")
+              links(page, "landing")
+              forms(page, "landing")
+
+              # Court picker: FullCourt asks for a court selection in-session.
+              # Try selects first, then links containing 'Gallatin'.
+              sel = page.evaluate("""() => Array.from(document.querySelectorAll('select')).map(s => ({
+                  name: s.getAttribute('name'), id: s.id||null,
+                  options: Array.from(s.options).map(o => ({v:o.value, t:(o.text||'').trim().slice(0,50)})).slice(0,30)}))""")
+              print("=== selects on landing ==="); print(json.dumps(sel, indent=1)[:4000])
+
+              gal = page.query_selector("a:has-text('Gallatin')") or page.query_selector("option:has-text('Gallatin')")
+              if gal and gal.evaluate("el => el.tagName") == 'A':
+                  gal.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(4)
+                  dump(page, "02_after_gallatin_link")
+                  links(page, "after-gallatin"); forms(page, "after-gallatin")
+              else:
+                  # select-based picker: choose Gallatin option and submit first form
+                  picked = page.evaluate("""() => {
+                      for (const s of document.querySelectorAll('select')) {
+                          for (const o of s.options) {
+                              if (/gallatin/i.test(o.text)) { s.value = o.value;
+                                  s.dispatchEvent(new Event('change', {bubbles:true})); return o.text; } } }
+                      return null }""")
+                  print("picked court option:", picked)
+                  if picked:
+                      btn = page.query_selector("input[type='submit'], button[type='submit'], button:has-text('Go'), button:has-text('Continue')")
+                      if btn:
+                          btn.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(4)
+                      dump(page, "02_after_gallatin_select")
+                      links(page, "after-gallatin"); forms(page, "after-gallatin")
+
+              # Judgment Order Index Search + Case lookup: follow any link that matches.
+              for label, pat, name in (("judgment", "Judgment", "03_judgment_search"),
+                                       ("caselookup", "Case", "04_case_lookup")):
+                  ln = page.query_selector(f"a:has-text('{pat}')")
+                  if ln:
+                      try:
+                          ln.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(4)
+                          dump(page, name)
+                          forms(page, name)
+                          page.go_back(); page.wait_for_load_state("domcontentloaded"); time.sleep(3)
+                      except Exception as e:
+                          print(f"[{label}] navigation failed: {e}")
+                  else:
+                      print(f"[{label}] no link matching {pat!r} on current page")
+
+              br.close()
+          PYEOF
+          python probe.py
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt-probe
+          path: mtprobe/
+          if-no-files-found: ignore
