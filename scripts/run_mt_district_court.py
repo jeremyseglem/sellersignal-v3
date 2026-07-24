@@ -305,6 +305,14 @@ def main():
 
     print(f"\n[mt_district_court] TOTAL looked={totals['looked']} "
           f"signals={totals['signals']} wrote={totals['wrote']}")
+    if totals["looked"] == 0:
+        # Every court's sweep died (portal timeout / TSPD tar-pit / layout
+        # change) — a green run here masks a dead harvester, same failure
+        # mode as the Travis recorder (f618403). Fail the Action so the
+        # scheduled cron alarms instead of rotting silently.
+        print("[mt_district_court] FATAL: zero cases looked at across all "
+              "courts — failing loudly")
+        sys.exit(1)
     if not WRITE:
         print("[mt_district_court] DRY RUN — no writes. Sample rows:")
         for row in dry_samples:
