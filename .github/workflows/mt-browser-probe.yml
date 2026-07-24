@@ -63,7 +63,13 @@ jobs:
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
                   viewport={"width": 1366, "height": 900}, locale="en-US")
               page = ctx.new_page()
-              page.goto(START, wait_until="domcontentloaded", timeout=60000)
+              # TSPD tar-pits the initial navigation: don't wait for
+              # domcontentloaded (times out at 60s) — take the commit and
+              # let the challenge JS churn while we poll.
+              try:
+                  page.goto(START, wait_until="commit", timeout=120000)
+              except Exception as e:
+                  print("goto(commit) raised:", e)
               # TSPD challenge resolves via JS then reloads — give it time.
               for t in range(12):
                   time.sleep(5)
