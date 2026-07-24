@@ -146,7 +146,13 @@ def lookup_case(page, year: int, seq: int) -> str:
     failure. showLitigants is checked so the Litigants table renders."""
     page.goto(f"{BASE}/civilCase.do?CourtCaseId=0",
               wait_until="domcontentloaded", timeout=60000)
-    time.sleep(2)
+    # The case-lookup form must be present before we fill it. After a tenant
+    # switch the first hit can land on the dashboard or a redirect, so wait
+    # for the form explicitly rather than assuming it's there.
+    try:
+        page.wait_for_selector("form[name='civilCaseForm']", timeout=15000)
+    except Exception:
+        return page.content()  # caller treats missing form as a miss
     page.evaluate("""(args) => {
         const [yr, seq] = args;
         const f = document.forms['civilCaseForm'];
@@ -252,21 +258,29 @@ def main():
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True,
                               args=["--disable-blink-features=AutomationControlled"])
-        ctx = b.new_context(user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
-            viewport={"width": 1366, "height": 1000}, locale="en-US")
-        page = ctx.new_page()
         for court_key in COURTS:
             if court_key not in COURT_META:
                 print(f"[skip] unknown court key {court_key!r}")
                 continue
+            # Fresh context per court — FullCourt pins the selected tenant to
+            # the session, so switching courts in one context lands on the
+            # wrong (or a stale) court. A new context re-runs the anonymous
+            # tenant login cleanly. (First live run: flathead returned 0 with
+            # a shared context because civilCaseForm never rendered after the
+            # in-session switch.)
+            ctx = b.new_context(user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                viewport={"width": 1366, "height": 1000}, locale="en-US")
+            page = ctx.new_page()
             try:
                 res = sweep_court(page, court_key, refs, dry_samples)
                 for k in totals:
                     totals[k] += res[k]
             except Exception as e:
                 print(f"[{court_key}] SWEEP ERR {type(e).__name__}: {e}")
+            finally:
+                ctx.close()
         b.close()
 
     print(f"\n[mt_district_court] TOTAL looked={totals['looked']} "
