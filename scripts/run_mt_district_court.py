@@ -62,9 +62,16 @@ BASE = "https://dcportal.pubcourts.mt.gov/fullcourtweb"
 # Court key → (tenant display name, jurisdiction market_key). Gallatin and
 # Madison both fall under MT_GALLATIN territory; Flathead is MT_FLATHEAD.
 COURT_META = {
-    "gallatin": ("Gallatin District Court", "MT_GALLATIN"),
-    "madison":  ("Madison District Court", "MT_GALLATIN"),
-    "flathead": ("Flathead District Court", "MT_FLATHEAD"),
+    # court key → (tenant display name, jurisdiction market_key, county code)
+    # County code is parts[1] of document_ref (DP-{code}-{year}-{seq}-{suffix}).
+    # It scopes the resume cursor + skip index to THIS court — without it,
+    # another court's refs advance the cursor (first Flathead run resumed at
+    # seq 101 because Gallatin's max was 100, silently skipping Flathead
+    # 2026 cases 1-100). None = unknown until first run (no refs match, walk
+    # starts at seq 1; per-ref dedupe on write still protects).
+    "gallatin": ("Gallatin District Court", "MT_GALLATIN", "16"),
+    "madison":  ("Madison District Court", "MT_GALLATIN", None),
+    "flathead": ("Flathead District Court", "MT_FLATHEAD", "15"),
 }
 
 
@@ -84,16 +91,20 @@ def existing_refs() -> set:
     return {row["document_ref"] for row in r.json()}
 
 
-def start_sequence(refs: set, year: int) -> int:
-    """Resume cursor: 1 + highest DP sequence already stored for this year.
-    document_ref shape: DP-16-2026-0000050-II → sequence 50. Only DP refs
-    count — this walk enumerates DP case numbers, so a DR/DV divorce ref for
-    the same year must not advance the probate cursor."""
+def start_sequence(refs: set, year: int, county_code: str | None) -> int:
+    """Resume cursor: 1 + highest DP sequence already stored for this year
+    AND this court's county code. document_ref shape: DP-16-2026-0000050-II
+    → county 16, sequence 50. Only DP refs count — a DR/DV divorce ref must
+    not advance the probate cursor — and only THIS court's refs count: each
+    court has its own sequence space, so another court's refs must not
+    advance the cursor either. county_code=None (court never harvested)
+    matches nothing → walk starts at seq 1."""
     hi = 0
     for ref in refs:
         parts = ref.split("-")
-        # DP - 16 - YEAR - SEQ - suffix
-        if len(parts) >= 4 and parts[0] == "DP" and parts[2] == str(year):
+        # DP - {county} - YEAR - SEQ - suffix
+        if (len(parts) >= 4 and parts[0] == "DP" and parts[2] == str(year)
+                and county_code is not None and parts[1] == county_code):
             try:
                 hi = max(hi, int(parts[3]))
             except ValueError:
@@ -170,20 +181,24 @@ def lookup_case(page, year: int, seq: int) -> str:
 
 
 def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
-    tenant, jurisdiction = COURT_META[court_key]
-    print(f"\n[{court_key}] tenant={tenant!r} jurisdiction={jurisdiction} year={YEAR}")
+    tenant, jurisdiction, county_code = COURT_META[court_key]
+    print(f"\n[{court_key}] tenant={tenant!r} jurisdiction={jurisdiction} "
+          f"county_code={county_code} year={YEAR}")
     select_court(page, tenant)
 
-    seq = start_sequence(refs, YEAR)
+    seq = start_sequence(refs, YEAR, county_code)
     print(f"[{court_key}] resume at DP-{YEAR}-{seq:07d} "
           f"(refs_in_db_for_source={len(refs)})")
 
-    # Pre-index the DP sequences already stored for this year so the resume
-    # walk skips them in O(1) (handles gaps if the cursor was reset).
+    # Pre-index the DP sequences already stored for this year AND this court
+    # so the resume walk skips them in O(1) (handles gaps if the cursor was
+    # reset). Must be county-scoped like the cursor — otherwise Gallatin's
+    # stored seqs make Flathead's walk skip its own unharvested cases.
     stored_seqs = set()
     for ref in refs:
         parts = ref.split("-")
-        if len(parts) >= 4 and parts[0] == "DP" and parts[2] == str(YEAR):
+        if (len(parts) >= 4 and parts[0] == "DP" and parts[2] == str(YEAR)
+                and county_code is not None and parts[1] == county_code):
             try:
                 stored_seqs.add(int(parts[3]))
             except ValueError:
