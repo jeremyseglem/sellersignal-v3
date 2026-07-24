@@ -1758,6 +1758,13 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"wa-snohomish-{zip_code}-owners.json"
+    elif zip_code in MT_ZIP_TO_CITY:
+        # MT market_key varies by ZIP (MT_GALLATIN / MT_FLATHEAD); Big Sky
+        # 59716 is MT_GALLATIN on the parcel side though its parcels span
+        # Gallatin+Madison geographically. Seed files are mt-{zip}-owners.json.
+        market_key = MT_ZIP_MARKET.get(zip_code, "MT_GALLATIN")
+        city = MT_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"mt-{zip_code}-owners.json"
     else:
         market_key = "WA_KING"
         city = KC_ZIP_TO_CITY.get(zip_code, "Bellevue")
