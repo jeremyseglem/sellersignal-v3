@@ -173,3 +173,192 @@ def classify_order_type(order_type: str) -> Optional[str]:
     if any(m in t for m in DIVORCE_ORDER_MARKERS):
         return "divorce"
     return None
+
+
+# ── case-detail parser (built against captured HTML, 2026-07-24 probe v4) ─────
+#
+# civilCase.do renders a "Litigants" table with these exact columns (verified
+# from run 30103158817 artifact 07_dp_case_detail.html):
+#
+#   Sel | Litigant | Status | Role | Attorney | Case Relationship
+#   ''  | Olson, Brent M. | '' | Applicant | Weaver, David L. | N
+#   ''  | Olson, Andrew   | '' | Decedent  |                  | N
+#
+# and a "Case Information" label/value region carrying Case Subtype
+# ("Informal Intestate") and Filing Date ("03/20/2026"). The page caption is
+# the full case number (DP-16-2026-0000050-II).
+#
+# Probate role → PR mapping. On a Montana informal probate the appointed
+# fiduciary is the APPLICANT (petitioner for informal appointment) — that's
+# the living decision-maker to contact. The DECEDENT is the parcel-match key.
+
+_PR_ROLES = ("APPLICANT", "PERSONAL REPRESENTATIVE", "PETITIONER",
+             "CO-PERSONAL REPRESENTATIVE", "ADMINISTRATOR", "EXECUTOR")
+_DECEDENT_ROLES = ("DECEDENT", "DECEASED", "ESTATE")
+
+# Case-type prefixes on the MT case-number scheme. DP = District Probate.
+CASE_TYPE_SIGNAL = {"DP": "probate", "DR": "divorce", "DV": "divorce"}
+
+
+def _clean(cell: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", cell or "")).strip()
+
+
+def _tables(html: str) -> list:
+    return re.findall(r"<table\b[^>]*>.*?</table>", html, re.I | re.S)
+
+
+def _rows(table_html: str) -> list:
+    out = []
+    for tr in re.findall(r"<tr\b[^>]*>(.*?)</tr>", table_html, re.I | re.S):
+        cells = [_clean(c) for c in
+                 re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", tr, re.I | re.S)]
+        if any(cells):
+            out.append(cells)
+    return out
+
+
+def _case_info(html: str) -> dict:
+    """Pull label/value pairs from the Case Information region. Labels and
+    values alternate as sibling cells; we walk the flattened text between the
+    'Case Information' heading and the 'Litigants' heading."""
+    m = re.search(r"Case Information(.*?)Litigants", html, re.S)
+    info = {}
+    if not m:
+        return info
+    seg = re.sub(r"&nbsp;", " ", re.sub(r"<[^>]+>", "\n", m.group(1)))
+    lines = [x.strip() for x in seg.split("\n") if x.strip()]
+    wanted = {"Case Subtype": "case_subtype", "Filing Date": "filing_date",
+              "Judge": "judge"}
+    for i, ln in enumerate(lines):
+        if ln in wanted and i + 1 < len(lines):
+            nxt = lines[i + 1]
+            if nxt not in wanted:   # value must not be another known label
+                info[wanted[ln]] = nxt
+    return info
+
+
+def parse_case_detail(html: str) -> Optional[dict]:
+    """Parse a civilCase.do detail page into a structured case dict, or None
+    if it isn't a viewable case (auth wall / not found / no litigants)."""
+    if "not authorized to view" in html.lower():
+        return None
+    cap = re.search(r"\b([A-Z]{2}-\d{2}-\d{4}-\d{7}(?:-[A-Z]{1,3})?)", html)
+    case_no = cap.group(1) if cap else None
+    if not case_no:
+        return None
+
+    lit_rows = []
+    for t in _tables(html):
+        rows = _rows(t)
+        if rows and rows[0][:6] == ["Sel", "Litigant", "Status", "Role",
+                                    "Attorney", "Case Relationship"]:
+            lit_rows = rows[1:]
+            break
+    if not lit_rows:
+        return None
+
+    litigants = []
+    for r in lit_rows:
+        r = (r + [""] * 6)[:6]
+        _sel, name, status, role, attorney, rel = r
+        if not name:
+            continue
+        litigants.append({"name": name, "status": status, "role": role,
+                          "attorney": attorney, "relationship": rel})
+    if not litigants:
+        return None
+
+    info = _case_info(html)
+    prefix = case_no.split("-", 1)[0].upper()
+    return {
+        "case_number": case_no,
+        "case_type_prefix": prefix,
+        "signal_type": CASE_TYPE_SIGNAL.get(prefix),
+        "case_subtype": info.get("case_subtype"),
+        "filing_date": info.get("filing_date"),
+        "judge": info.get("judge"),
+        "litigants": litigants,
+    }
+
+
+def _mmddyyyy_to_iso(s: str) -> Optional[str]:
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", s or "")
+    if not m:
+        return None
+    mm, dd, yyyy = m.groups()
+    return f"{yyyy}-{int(mm):02d}-{int(dd):02d}"
+
+
+def _normalize_party_name(name: str) -> str:
+    """Light normalization mirroring the recorder harvester: uppercase, drop
+    punctuation noise, collapse whitespace. The matcher's canonicalizer does
+    the heavy lifting; this just stabilizes the stored normalized form."""
+    n = re.sub(r"[.,]", " ", (name or "").upper())
+    n = re.sub(r"\b(JR|SR|II|III|IV|ESQ)\b", " ", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def to_signal_row(case: dict, jurisdiction: str) -> Optional[dict]:
+    """Map a parsed case dict to a raw_signals_v3 row (matches the proven
+    Dallas-recorder shape). Returns None for non-probate/divorce cases or
+    cases missing a matchable decedent.
+
+    party_names[0] is the matcher's key. For probate that's the DECEDENT
+    (still on the assessor roll); the APPLICANT/PR is the contact. For divorce
+    both spouses are matchable owners.
+    """
+    sig = case.get("signal_type")
+    if sig not in ("probate", "divorce"):
+        return None
+    lits = case.get("litigants") or []
+
+    parties = []
+    if sig == "probate":
+        decedent = next((l for l in lits
+                         if any(r in (l["role"] or "").upper()
+                                for r in _DECEDENT_ROLES)), None)
+        pr = next((l for l in lits
+                   if any(r in (l["role"] or "").upper()
+                          for r in _PR_ROLES)), None)
+        if not decedent:
+            return None
+        parties.append({"raw": decedent["name"],
+                        "normalized": _normalize_party_name(decedent["name"]),
+                        "role": "decedent", "matchable": True})
+        if pr and pr["name"].upper() != decedent["name"].upper():
+            parties.append({"raw": pr["name"],
+                            "normalized": _normalize_party_name(pr["name"]),
+                            "role": "personal_representative",
+                            "matchable": False,
+                            "attorney": pr.get("attorney") or None})
+    else:  # divorce — both listed litigants are matchable owners
+        named = [l for l in lits if l.get("name")]
+        if not named:
+            return None
+        for l in named[:2]:
+            parties.append({"raw": l["name"],
+                            "normalized": _normalize_party_name(l["name"]),
+                            "role": "party", "matchable": True})
+
+    attorneys = sorted({l["attorney"] for l in lits if l.get("attorney")})
+
+    return {
+        "source_type": "mt_district_court",
+        "signal_type": sig,
+        "trust_level": "high",
+        "party_names": parties,
+        "event_date": _mmddyyyy_to_iso(case.get("filing_date") or ""),
+        "jurisdiction": jurisdiction,
+        "property_hint": None,
+        "document_ref": case["case_number"],
+        "raw_data": {
+            "case_number": case["case_number"],
+            "case_subtype": case.get("case_subtype"),
+            "filing_date": case.get("filing_date"),
+            "judge": case.get("judge"),
+            "litigants": lits,
+            "attorneys": attorneys,
+            "harvester": "mt_district_court",
+        },
+    }

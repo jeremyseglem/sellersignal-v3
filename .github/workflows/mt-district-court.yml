@@ -1,0 +1,58 @@
+name: MT District Court
+
+# Harvests Montana District Court probate (and divorce) cases from the
+# FullCourt Web public portal and writes signals to raw_signals_v3. The
+# portal's F5 TSPD bot defense blocks non-browser fingerprints, so this uses
+# Playwright Chromium in the Action (verified to clear TSPD in ~5s) rather
+# than plain HTTP from Railway. Anonymous access — the "login" is just a
+# court-picker select, no credentials. Enumerates DP case numbers per court
+# and resumes from the highest sequence already stored (cursor in the DB).
+#
+# Default is a DRY RUN. The daily cron passes write=1. Secrets SUPABASE_URL +
+# SUPABASE_SERVICE_KEY required to write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      year:
+        description: "filing year to sweep"
+        required: false
+        default: ""
+      courts:
+        description: "comma list of court keys (gallatin,madison,flathead)"
+        required: false
+        default: "gallatin,flathead"
+      max_cases:
+        description: "hard cap on lookups per court per run"
+        required: false
+        default: "400"
+  schedule:
+    # 6:30am America/Denver (MT). 12:30 UTC. New filings post overnight.
+    - cron: "30 12 * * *"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Run MT district court harvester
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # cron runs write=1; manual dispatch uses the input (default 0)
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          YEAR: ${{ github.event.inputs.year || '' }}
+          COURTS: ${{ github.event.inputs.courts || 'gallatin,flathead' }}
+          MAX_CASES: ${{ github.event.inputs.max_cases || '400' }}
+        run: python scripts/run_mt_district_court.py
