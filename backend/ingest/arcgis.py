@@ -128,12 +128,12 @@ MARKET_CONFIGS = {
     'WA_SNOHOMISH': {
         'url': (
             'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/'
-            'arcgis/rest/services/Parcels/FeatureServer/0/query'
+            'arcgis/rest/services/CADASTRAL__parcels_timezone/FeatureServer/0/query'
         ),
         'zip_field': 'SITUSZIP',
         'out_fields': (
             'PARCEL_ID,OWNERNAME,TAXPRNAME,'
-            'SITUSLINE1,SITUSHOUSE,SITUSPREFX,SITUSSTRT,SITUSSTTYP,'
+            'SITUSLINE1,SITUSHOUSE,SITUSPREFX,SITUSSTRT,SITUSTTYP,'
             'SITUSPOSTD,SITUSUNIT,SITUSCITY,SITUSSTATE,SITUSZIP,'
             'OWNERCITY,OWNERSTATE,'
             'MKLND,MKIMP,MKTTL,USECODE,GIS_ACRES,STATUS'
@@ -603,7 +603,7 @@ def _parse_feature_snohomish(feature: dict, zip_code: str, market_key: str, conf
         attrs.get('SITUSHOUSE'),
         attrs.get('SITUSPREFX'),
         attrs.get('SITUSSTRT'),
-        attrs.get('SITUSSTTYP'),
+        attrs.get('SITUSTTYP') or attrs.get('SITUSSTTYP'),
         attrs.get('SITUSPOSTD'),
         attrs.get('SITUSUNIT'),
     ]

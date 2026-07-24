@@ -161,7 +161,7 @@ _LOT_SOURCES = {
     },
     'WA_SNOHOMISH': {
         'mode': 'zip',
-        'url': 'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/arcgis/rest/services/Parcels/FeatureServer/0/query',
+        'url': 'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/arcgis/rest/services/CADASTRAL__parcels_timezone/FeatureServer/0/query',
         'zip_where': "SITUSZIP LIKE '{zip}%'",
         'out_fields': 'PARCEL_ID',
     },

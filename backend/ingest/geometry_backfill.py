@@ -82,7 +82,7 @@ MARKET_CONFIGS = {
         # Snohomish PINs.
         'url': (
             'https://services6.arcgis.com/z6WYi9VRHfgwgtyW/'
-            'arcgis/rest/services/Parcels/FeatureServer/0/query'
+            'arcgis/rest/services/CADASTRAL__parcels_timezone/FeatureServer/0/query'
         ),
         'pin_field': 'PARCEL_ID',
     },

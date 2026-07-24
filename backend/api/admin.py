@@ -943,7 +943,7 @@ async def register_zip(
     if source_url is None and market_key == "WA_SNOHOMISH":
         source_url = (
             "https://services6.arcgis.com/z6WYi9VRHfgwgtyW/"
-            "arcgis/rest/services/Parcels/FeatureServer/0"
+            "arcgis/rest/services/CADASTRAL__parcels_timezone/FeatureServer/0"
         )
 
     buf = io.StringIO()

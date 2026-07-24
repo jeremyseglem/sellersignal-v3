@@ -115,7 +115,7 @@ if not (TARGET_ZIP.isdigit() and len(TARGET_ZIP) == 5):
 PARCELS_URL = os.environ.get(
     "PARCELS_URL",
     "https://services6.arcgis.com/z6WYi9VRHfgwgtyW/arcgis/rest/services/"
-    "Parcels/FeatureServer/0",
+    "CADASTRAL__parcels_timezone/FeatureServer/0",
 )
 PAGE_SIZE = int(os.environ.get("PAGE_SIZE", "2000"))  # ArcGIS max per request
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "60"))
@@ -197,7 +197,7 @@ def compose_situs_address(attrs: dict) -> str:
         (attrs.get("SITUSHOUSE") or "").strip(),
         (attrs.get("SITUSPREFX") or "").strip(),
         (attrs.get("SITUSSTRT")  or "").strip(),
-        (attrs.get("SITUSSTTYP") or "").strip(),  # renamed from SITUSTTYP upstream
+        (attrs.get("SITUSTTYP") or attrs.get("SITUSSTTYP") or "").strip(),  # tolerant of both spellings
         (attrs.get("SITUSPOSTD") or "").strip(),
         (attrs.get("SITUSUNIT")  or "").strip(),
     ]
@@ -237,7 +237,7 @@ OUT_FIELDS = ",".join([
     "OWNERNAME",
     "TAXPRNAME",
     "SITUSLINE1", "SITUSHOUSE", "SITUSPREFX", "SITUSSTRT",
-    "SITUSSTTYP", "SITUSPOSTD", "SITUSUNIT",  # SITUSTTYP renamed upstream ~2026-07
+    "SITUSTTYP", "SITUSPOSTD", "SITUSUNIT",  # CADASTRAL__parcels_timezone uses the original SITUSTTYP name
     "SITUSCITY",  "SITUSSTATE", "SITUSZIP",
     "OWNERLINE1", "OWNERCITY",  "OWNERSTATE", "OWNERZIP",
     "USECODE", "MKTTL", "MKIMP", "MKLND",
