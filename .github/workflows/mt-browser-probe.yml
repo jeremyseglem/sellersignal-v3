@@ -82,48 +82,36 @@ jobs:
               links(page, "landing")
               forms(page, "landing")
 
-              # Court picker: FullCourt asks for a court selection in-session.
-              # Try selects first, then links containing 'Gallatin'.
-              sel = page.evaluate("""() => Array.from(document.querySelectorAll('select')).map(s => ({
-                  name: s.getAttribute('name'), id: s.id||null,
-                  options: Array.from(s.options).map(o => ({v:o.value, t:(o.text||'').trim().slice(0,50)})).slice(0,30)}))""")
-              print("=== selects on landing ==="); print(json.dumps(sel, indent=1)[:4000])
+              # Tenant login: the "login" form is just a court select
+              # (name=tenant) + hidden loginAction submit — no credentials.
+              # Verified from the 01_landing capture (option value equals the
+              # display name, e.g. 'Gallatin District Court').
+              page.select_option("select#tenant", "Gallatin District Court")
+              time.sleep(1)
+              page.evaluate("""() => {
+                  const f = document.forms['loginForm'];
+                  const b = f.querySelector("input[name='loginAction']");
+                  if (b) b.click(); else f.submit(); }""")
+              page.wait_for_load_state("domcontentloaded"); time.sleep(6)
+              dump(page, "02_gallatin_portal")
+              links(page, "gallatin-portal")
+              forms(page, "gallatin-portal")
 
-              gal = page.query_selector("a:has-text('Gallatin')") or page.query_selector("option:has-text('Gallatin')")
-              if gal and gal.evaluate("el => el.tagName") == 'A':
-                  gal.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(4)
-                  dump(page, "02_after_gallatin_link")
-                  links(page, "after-gallatin"); forms(page, "after-gallatin")
-              else:
-                  # select-based picker: choose Gallatin option and submit first form
-                  picked = page.evaluate("""() => {
-                      for (const s of document.querySelectorAll('select')) {
-                          for (const o of s.options) {
-                              if (/gallatin/i.test(o.text)) { s.value = o.value;
-                                  s.dispatchEvent(new Event('change', {bubbles:true})); return o.text; } } }
-                      return null }""")
-                  print("picked court option:", picked)
-                  if picked:
-                      btn = page.query_selector("input[type='submit'], button[type='submit'], button:has-text('Go'), button:has-text('Continue')")
-                      if btn:
-                          btn.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(4)
-                      dump(page, "02_after_gallatin_select")
-                      links(page, "after-gallatin"); forms(page, "after-gallatin")
-
-              # Judgment Order Index Search + Case lookup: follow any link that matches.
-              for label, pat, name in (("judgment", "Judgment", "03_judgment_search"),
-                                       ("caselookup", "Case", "04_case_lookup")):
+              # Capture every search surface reachable from the menu.
+              for pat, name in (("Judgment", "03_judgment_search"),
+                                ("Case", "04_case_lookup"),
+                                ("Search", "05_search_generic"),
+                                ("Calendar", "06_calendar")):
                   ln = page.query_selector(f"a:has-text('{pat}')")
-                  if ln:
-                      try:
-                          ln.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(4)
-                          dump(page, name)
-                          forms(page, name)
-                          page.go_back(); page.wait_for_load_state("domcontentloaded"); time.sleep(3)
-                      except Exception as e:
-                          print(f"[{label}] navigation failed: {e}")
-                  else:
-                      print(f"[{label}] no link matching {pat!r} on current page")
+                  if not ln:
+                      print(f"[{pat}] no matching link"); continue
+                  try:
+                      ln.click(); page.wait_for_load_state("domcontentloaded"); time.sleep(5)
+                      dump(page, name)
+                      forms(page, name)
+                      page.go_back(); page.wait_for_load_state("domcontentloaded"); time.sleep(3)
+                  except Exception as e:
+                      print(f"[{pat}] navigation failed: {e}")
 
               br.close()
           PYEOF
