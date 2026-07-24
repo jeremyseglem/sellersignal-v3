@@ -227,12 +227,22 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
         low = html.lower()
         if "not authorized to view" in low or "no matching" in low \
                 or "was not found" in low:
+            kind = ("unauth" if "not authorized" in low else "notfound")
+            print(f"  DP-{YEAR}-{seq:07d} miss:{kind}")
             miss_streak += 1
             seq += 1
             continue
 
         case = mt.parse_case_detail(html)
         if not case:
+            # No miss-string AND no parseable case detail — likely a TSPD
+            # challenge/tar-pit page or a layout change. Log length + a
+            # fingerprint so a wall of these is distinguishable from real
+            # sealed-case runs (which log miss:unauth).
+            print(f"  DP-{YEAR}-{seq:07d} miss:noparse len={len(html)} "
+                  f"title={html[html.find('<title>')+7:html.find('</title>')][:60]!r}"
+                  if '<title>' in html else
+                  f"  DP-{YEAR}-{seq:07d} miss:noparse len={len(html)} (no title)")
             miss_streak += 1
             seq += 1
             continue
