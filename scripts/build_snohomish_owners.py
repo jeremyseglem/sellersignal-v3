@@ -244,7 +244,7 @@ OUT_FIELDS = ",".join([
     "STATUS",
 ])
 
-WHERE = f"SITUSZIP='{TARGET_ZIP}'"
+WHERE = f"SITUSZIP LIKE '{TARGET_ZIP}%'"  # SITUSZIP carries ZIP+4 on many rows; equality undersizes the seed
 
 _log(f"fetching parcels for ZIP {TARGET_ZIP} from Snohomish Parcels FeatureServer...")
 
