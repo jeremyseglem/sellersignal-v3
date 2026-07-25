@@ -60,6 +60,8 @@ MAX_CASES = int(os.environ.get("MAX_CASES") or "400")
 # sequences. Use to recover gaps below the cursor (e.g. Flathead 2026 1-100,
 # skipped by the pre-fix cross-court cursor contamination).
 FULL_SWEEP = os.environ.get("FULL_SWEEP", "0") == "1"
+# Lookups per browser context before recycling (TSPD session budget ~100).
+RECYCLE_EVERY = int(os.environ.get("RECYCLE_EVERY") or "75")
 TABLE = "raw_signals_v3"
 SOURCE = "mt_district_court"
 BASE = "https://dcportal.pubcourts.mt.gov/fullcourtweb"
@@ -185,11 +187,13 @@ def lookup_case(page, year: int, seq: int) -> str:
     return page.content()
 
 
-def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
+def sweep_court(page, court_key: str, refs: set, dry_samples: list,
+                new_page=None) -> dict:
     tenant, jurisdiction, county_code = COURT_META[court_key]
     print(f"\n[{court_key}] tenant={tenant!r} jurisdiction={jurisdiction} "
           f"county_code={county_code} year={YEAR}")
-    select_court(page, tenant)
+    # NOTE: court selection happens in the caller's new_page() factory (both
+    # on initial page and on every mid-court recycle) — do not select here.
 
     seq = 1 if FULL_SWEEP else start_sequence(refs, YEAR, county_code)
     print(f"[{court_key}] resume at DP-{YEAR}-{seq:07d} "
@@ -217,6 +221,7 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
     # a flaky 25-lookup stretch advanced miss_streak and falsely concluded
     # "year exhausted" at seq 126 when the real frontier was ~400+.
     ERR_ABORT = 8
+    _last_recycle_at = [0]
     miss_streak, err_streak, looked, wrote, sigs = 0, 0, 0, 0, 0
     retried = set()
     batch = []
@@ -230,6 +235,17 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
         if seq in stored_seqs:   # already harvested this DP sequence
             seq += 1
             continue
+        # TSPD grants each browser session a budget of ~100 case lookups
+        # before serving 'Request Rejected' walls (observed 2026-07-25:
+        # three consecutive runs each died at ~100 lookups regardless of
+        # pacing). Recycle the context every RECYCLE_EVERY lookups to stay
+        # inside the budget and let a single run finish a whole year.
+        if new_page is not None and looked and looked % RECYCLE_EVERY == 0 \
+                and looked != _last_recycle_at[0]:
+            _last_recycle_at[0] = looked
+            print(f"[{court_key}] recycling browser context at looked={looked}")
+            page = new_page()
+            time.sleep(2.0)
         looked += 1
         try:
             html = lookup_case(page, YEAR, seq)
@@ -323,19 +339,43 @@ def main():
             # tenant login cleanly. (First live run: flathead returned 0 with
             # a shared context because civilCaseForm never rendered after the
             # in-session switch.)
-            ctx = b.new_context(user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
-                viewport={"width": 1366, "height": 1000}, locale="en-US")
-            page = ctx.new_page()
+            # Fresh context per court — FullCourt pins the selected tenant to
+            # the session, so switching courts in one context lands on the
+            # wrong (or a stale) court. A new context re-runs the anonymous
+            # tenant login cleanly. The same factory is handed to sweep_court
+            # so it can recycle mid-court every RECYCLE_EVERY lookups (TSPD
+            # session budget).
+            ctx_holder = [None]
+
+            def new_page():
+                if ctx_holder[0] is not None:
+                    try:
+                        ctx_holder[0].close()
+                    except Exception:
+                        pass
+                ctx_holder[0] = b.new_context(user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                    viewport={"width": 1366, "height": 1000}, locale="en-US")
+                pg = ctx_holder[0].new_page()
+                tenant = COURT_META[court_key][0]
+                select_court(pg, tenant)
+                return pg
+
             try:
-                res = sweep_court(page, court_key, refs, dry_samples)
+                page = new_page()
+                res = sweep_court(page, court_key, refs, dry_samples,
+                                  new_page=new_page)
                 for k in totals:
                     totals[k] += res[k]
             except Exception as e:
                 print(f"[{court_key}] SWEEP ERR {type(e).__name__}: {e}")
             finally:
-                ctx.close()
+                if ctx_holder[0] is not None:
+                    try:
+                        ctx_holder[0].close()
+                    except Exception:
+                        pass
         b.close()
 
     print(f"\n[mt_district_court] TOTAL looked={totals['looked']} "
