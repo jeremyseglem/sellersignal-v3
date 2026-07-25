@@ -77,7 +77,7 @@ COURT_META = {
     # 2026 cases 1-100). None = unknown until first run (no refs match, walk
     # starts at seq 1; per-ref dedupe on write still protects).
     "gallatin": ("Gallatin District Court", "MT_GALLATIN", "16"),
-    "madison":  ("Madison District Court", "MT_GALLATIN", None),
+    "madison":  ("Madison District Court", "MT_GALLATIN", "29"),
     "flathead": ("Flathead District Court", "MT_FLATHEAD", "15"),
 }
 
@@ -271,19 +271,32 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list,
 
         case = mt.parse_case_detail(html)
         if not case:
-            # No miss-string AND no parseable case detail — likely a TSPD
-            # challenge/tar-pit page or a layout change. Transient: treat
-            # like a nav error (retry once, then err_streak), NOT frontier
-            # evidence.
-            print(f"  DP-{YEAR}-{seq:07d} err:noparse len={len(html)} "
-                  f"title={html[html.find('<title>')+7:html.find('</title>')][:60]!r}"
-                  if '<title>' in html else
-                  f"  DP-{YEAR}-{seq:07d} err:noparse len={len(html)} (no title)")
-            if seq not in retried:
-                retried.add(seq)
-                time.sleep(3.0)
+            # Two distinct noparse shapes (observed 2026-07-25):
+            #  1. TSPD wall — tiny page, title 'Request Rejected' (len~255).
+            #     Transient: retry once, then err_streak (never frontier).
+            #  2. Beyond-frontier — a FULL FullCourt 'Civil Case' page
+            #     (len~42k) with no case/litigants loaded. This is how the
+            #     portal answers a nonexistent DP sequence in some courts
+            #     (Madison ends this way; Flathead ends with miss:notfound).
+            #     GENUINE frontier evidence: advance miss_streak.
+            title = (html[html.find('<title>')+7:html.find('</title>')][:60]
+                     if '<title>' in html else '')
+            is_tspd = ('request rejected' in low or 'access denied' in low
+                       or len(html) < 2000)
+            if is_tspd:
+                print(f"  DP-{YEAR}-{seq:07d} err:noparse len={len(html)} "
+                      f"title={title!r}")
+                if seq not in retried:
+                    retried.add(seq)
+                    time.sleep(3.0)
+                    continue
+                err_streak += 1
+                seq += 1
                 continue
-            err_streak += 1
+            print(f"  DP-{YEAR}-{seq:07d} miss:emptycase len={len(html)} "
+                  f"title={title!r}")
+            err_streak = 0               # portal answered — errors cleared
+            miss_streak += 1
             seq += 1
             continue
 

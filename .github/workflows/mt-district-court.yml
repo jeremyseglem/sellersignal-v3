@@ -25,7 +25,7 @@ on:
       courts:
         description: "comma list of court keys (gallatin,madison,flathead)"
         required: false
-        default: "gallatin,flathead"
+        default: "gallatin,flathead,madison"
       max_cases:
         description: "hard cap on lookups per court per run"
         required: false
@@ -57,7 +57,7 @@ jobs:
           # cron runs write=1; manual dispatch uses the input (default 0)
           WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
           YEAR: ${{ github.event.inputs.year || '' }}
-          COURTS: ${{ github.event.inputs.courts || 'gallatin,flathead' }}
+          COURTS: ${{ github.event.inputs.courts || 'gallatin,flathead,madison' }}
           MAX_CASES: ${{ github.event.inputs.max_cases || '400' }}
           FULL_SWEEP: ${{ github.event.inputs.full_sweep || '0' }}
         run: python scripts/run_mt_district_court.py
