@@ -209,9 +209,24 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
             except ValueError:
                 pass
 
-    miss_streak, looked, wrote, sigs = 0, 0, 0, 0
+    # miss_streak counts GENUINE frontier evidence only (not-found / not-
+    # authorized). Transient failures (nav errors, TSPD/tar-pit noparse
+    # pages) go to err_streak instead: retry the seq once, then skip it,
+    # and abort the court loudly after ERR_ABORT consecutive failures.
+    # Conflating the two is what killed Flathead 2025 twice on 2026-07-24:
+    # a flaky 25-lookup stretch advanced miss_streak and falsely concluded
+    # "year exhausted" at seq 126 when the real frontier was ~400+.
+    ERR_ABORT = 8
+    miss_streak, err_streak, looked, wrote, sigs = 0, 0, 0, 0, 0
+    retried = set()
     batch = []
     while miss_streak < MAX_MISS and looked < MAX_CASES:
+        if err_streak >= ERR_ABORT:
+            print(f"[{court_key}] ABORT: {err_streak} consecutive transient "
+                  f"errors at DP-{YEAR}-{seq:07d} — portal unhealthy, not "
+                  f"advancing frontier. Cursor stays at last stored seq; "
+                  f"re-run recovers from there.")
+            break
         if seq in stored_seqs:   # already harvested this DP sequence
             seq += 1
             continue
@@ -220,7 +235,11 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
             html = lookup_case(page, YEAR, seq)
         except Exception as e:
             print(f"  DP-{YEAR}-{seq:07d} nav ERR {type(e).__name__}: {e}")
-            miss_streak += 1
+            if seq not in retried:
+                retried.add(seq)
+                time.sleep(3.0)          # brief pause, retry same seq once
+                continue
+            err_streak += 1
             seq += 1
             continue
 
@@ -229,6 +248,7 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
                 or "was not found" in low:
             kind = ("unauth" if "not authorized" in low else "notfound")
             print(f"  DP-{YEAR}-{seq:07d} miss:{kind}")
+            err_streak = 0               # portal answered — errors cleared
             miss_streak += 1
             seq += 1
             continue
@@ -236,18 +256,23 @@ def sweep_court(page, court_key: str, refs: set, dry_samples: list) -> dict:
         case = mt.parse_case_detail(html)
         if not case:
             # No miss-string AND no parseable case detail — likely a TSPD
-            # challenge/tar-pit page or a layout change. Log length + a
-            # fingerprint so a wall of these is distinguishable from real
-            # sealed-case runs (which log miss:unauth).
-            print(f"  DP-{YEAR}-{seq:07d} miss:noparse len={len(html)} "
+            # challenge/tar-pit page or a layout change. Transient: treat
+            # like a nav error (retry once, then err_streak), NOT frontier
+            # evidence.
+            print(f"  DP-{YEAR}-{seq:07d} err:noparse len={len(html)} "
                   f"title={html[html.find('<title>')+7:html.find('</title>')][:60]!r}"
                   if '<title>' in html else
-                  f"  DP-{YEAR}-{seq:07d} miss:noparse len={len(html)} (no title)")
-            miss_streak += 1
+                  f"  DP-{YEAR}-{seq:07d} err:noparse len={len(html)} (no title)")
+            if seq not in retried:
+                retried.add(seq)
+                time.sleep(3.0)
+                continue
+            err_streak += 1
             seq += 1
             continue
 
         miss_streak = 0  # a real case resets the frontier counter
+        err_streak = 0
         row = mt.to_signal_row(case, jurisdiction)
         if row:
             sigs += 1
