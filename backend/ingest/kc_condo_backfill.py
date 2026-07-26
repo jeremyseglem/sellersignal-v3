@@ -136,11 +136,20 @@ def backfill_condos_for_zip(supa, zip_code: str,
     """
     majors, unit_index = _ensure_extract_loaded()
 
-    rows = (supa.table("parcels_v3")
-                .select("pin,lat,lng,prop_type")
-                .eq("zip_code", zip_code)
-                .eq("market_key", "WA_KING")
-                .execute().data) or []
+    rows: list = []
+    PAGE = 1000
+    off = 0
+    while True:
+        page = (supa.table("parcels_v3")
+                    .select("pin,lat,lng,prop_type")
+                    .eq("zip_code", zip_code)
+                    .eq("market_key", "WA_KING")
+                    .range(off, off + PAGE - 1)
+                    .execute().data) or []
+        rows.extend(page)
+        if len(page) < PAGE:
+            break
+        off += PAGE
 
     units = [r for r in rows if unit_index.get(str(r["pin"]))]
     if not units:
