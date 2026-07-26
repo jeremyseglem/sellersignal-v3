@@ -162,42 +162,59 @@ def backfill_condos_for_zip(supa, zip_code: str,
 
     updated = pinned = no_geom = parent_pin_ok = 0
     parent_pin_supported = True
+
+    # Group units by complex — all units of one complex share the same
+    # payload (K + complex centroid + parent_pin), so one .in_() update
+    # per complex replaces thousands of per-row calls.
+    from collections import defaultdict
+    by_major: dict[str, list[dict]] = defaultdict(list)
     for r in units:
-        pin = str(r["pin"])
-        major = unit_index[pin]
-        payload: dict = {}
-        if (r.get("prop_type") or "").strip().upper() != "K":
-            payload["prop_type"] = "K"
+        by_major[unit_index[str(r["pin"])]].append(r)
+
+    for major, group in by_major.items():
         cen = centroids.get(major)
-        if cen and (r.get("lat") is None or r.get("lng") is None):
-            payload["lat"], payload["lng"] = cen
-            pinned += 1
-        elif not cen:
-            no_geom += 1
+        if not cen:
+            no_geom += len(group)
+        base = {"prop_type": "K"}
         if parent_pin_supported:
-            payload["parent_pin"] = major + "0000"
-        if not payload:
-            continue
-        if dry_run:
-            updated += 1
-            continue
-        try:
-            supa.table("parcels_v3").update(payload).eq("pin", pin).execute()
-            updated += 1
-            if "parent_pin" in payload:
-                parent_pin_ok += 1
-        except Exception as e:
-            if "parent_pin" in payload and "parent_pin" in str(e):
-                # Migration 033 not applied — retry without it, once, and
-                # stop attempting parent_pin for the rest of the run.
-                parent_pin_supported = False
-                payload.pop("parent_pin")
-                if payload:
+            base["parent_pin"] = major + "0000"
+
+        # Units needing lat/lng get centroid; units that already have
+        # geometry keep it (never clobber).
+        need_geo = [str(r["pin"]) for r in group
+                    if cen and (r.get("lat") is None or r.get("lng") is None)]
+        need_set = set(need_geo)
+        have_geo = [str(r["pin"]) for r in group
+                    if str(r["pin"]) not in need_set]
+
+        for pins, payload in ((need_geo,
+                               {**base, "lat": cen[0], "lng": cen[1]}
+                               if cen else base),
+                              (have_geo, base)):
+            if not pins:
+                continue
+            if dry_run:
+                updated += len(pins)
+                if "lat" in payload:
+                    pinned += len(pins)
+                continue
+            try:
+                supa.table("parcels_v3").update(payload) \
+                    .in_("pin", pins).execute()
+            except Exception as e:
+                if "parent_pin" in payload and "parent_pin" in str(e):
+                    parent_pin_supported = False
+                    payload = {k: v for k, v in payload.items()
+                               if k != "parent_pin"}
                     supa.table("parcels_v3").update(payload) \
-                        .eq("pin", pin).execute()
-                    updated += 1
-            else:
-                raise
+                        .in_("pin", pins).execute()
+                else:
+                    raise
+            updated += len(pins)
+            if "lat" in payload:
+                pinned += len(pins)
+            if "parent_pin" in payload:
+                parent_pin_ok += len(pins)
 
     return {
         "zip_code": zip_code,
