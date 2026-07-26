@@ -454,6 +454,31 @@ async def geometry_status_endpoint(
 
 # ─── Re-ingest property details from ArcGIS ──────────────────────────────
 
+@router.post("/backfill-condos/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def backfill_condos(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    dry_run: bool = False,
+):
+    """
+    KC condo-unit backfill (2026-07-26). Sets prop_type='K', pins units
+    at their complex parcel's centroid (PIN=Major+'0000' in KC ArcGIS),
+    and writes parent_pin for the building-pin map UX. Units are
+    identified against the bulk assessor extract (EXTR_CondoUnit2.csv),
+    which is the only county source that carries per-unit PINs — the
+    ArcGIS layer has one record per complex. WA_KING only.
+    Idempotent; lat/lng only written where NULL.
+    """
+    import asyncio
+    from backend.ingest.kc_condo_backfill import backfill_condos_for_zip
+    supa = get_supabase_client()
+    try:
+        return await asyncio.to_thread(
+            backfill_condos_for_zip, supa, zip_code, dry_run)
+    except Exception as e:
+        raise HTTPException(502, f"condo backfill failed: {e}")
+
+
 @router.post("/reingest-property-details/{zip_code}",
              dependencies=[Depends(require_admin)])
 async def reingest_property_details(
