@@ -1793,10 +1793,14 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
     else:
         market_key = "WA_KING"
         city = KC_ZIP_TO_CITY.get(zip_code, "Bellevue")
-        # 98004 uses the original baseline filename; new KC ZIPs use the
-        # generated filename pattern.
+        # 98004 historically used the original baseline filename. As of
+        # 2026-07-27 a regenerated full-coverage seed (condo units
+        # included) exists in the standard -owners.json pattern — prefer
+        # it when present; fall back to the baseline for safety.
         if zip_code == "98004":
-            seed_path = repo_root / "data" / "seeds" / "wa-king-98004.json"
+            gen = repo_root / "data" / "seeds" / "wa-king-98004-owners.json"
+            seed_path = gen if gen.exists() else (
+                repo_root / "data" / "seeds" / "wa-king-98004.json")
         else:
             seed_path = repo_root / "data" / "seeds" / f"wa-king-{zip_code}-owners.json"
 
