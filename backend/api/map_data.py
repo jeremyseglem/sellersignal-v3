@@ -13,6 +13,7 @@ Heat map coloring on the frontend uses the 'category' field:
   category=uninvestigated   → cool blue (lightest)
   category=avoid            → slate (blocker)
 """
+import asyncio
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from typing import Optional
 from backend.api.db import get_supabase_client
@@ -270,6 +271,77 @@ def _store_lots(supa, zip_code: str, market: str, polys: dict) -> int:
     return written
 
 
+_PARENT_TOPUP_DONE: set = set()   # zips checked this process
+
+
+def _topup_parent_lots(supa, zip_code: str, stored: dict) -> dict:
+    """
+    Completed lot crawls predate the building-pin UX and never matched
+    condo COMPLEX parcels (PIN = Major+'0000' — not in parcels_v3, so
+    _match_into dropped them). This top-up fetches just the missing
+    parent footprints for a ZIP's condo units via a targeted IN query,
+    persists them, and merges them into the served dict. WA_KING only.
+    Cheap no-op when the ZIP has no condos or parents already stored.
+    """
+    if zip_code in _PARENT_TOPUP_DONE:
+        return stored
+    try:
+        cov = (supa.table('zip_coverage_v3').select('market_key')
+               .eq('zip_code', zip_code).limit(1).execute()).data
+        market = (cov[0].get('market_key') or '') if cov else ''
+        if market != 'WA_KING':
+            _PARENT_TOPUP_DONE.add(zip_code)
+            return stored
+        k_pins, off = [], 0
+        while True:
+            page = (supa.table('parcels_v3').select('pin')
+                    .eq('zip_code', zip_code).eq('prop_type', 'K')
+                    .range(off, off + 999).execute()).data or []
+            k_pins.extend(str(r['pin']) for r in page)
+            if len(page) < 1000 or off >= 30000:
+                break
+            off += 1000
+        parents = {''.join(c for c in p if c.isdigit())[:6] + '0000'
+                   for p in k_pins
+                   if len(''.join(c for c in p if c.isdigit())) == 10}
+        missing = sorted(parents - set(stored.keys()))
+        if not missing:
+            _PARENT_TOPUP_DONE.add(zip_code)
+            return stored
+        import urllib.request, urllib.parse, json as _json
+        cfg = _LOT_SOURCES.get('WA_KING') or {}
+        url = cfg.get('url')
+        if not url:
+            return stored
+        added = {}
+        for i in range(0, len(missing), 100):
+            batch = missing[i:i + 100]
+            vals = ','.join(f"'{p}'" for p in batch)
+            body = urllib.parse.urlencode({
+                'where': f"PIN IN ({vals})",
+                'outFields': 'PIN', 'outSR': '4326', 'f': 'geojson',
+                'geometryPrecision': '6', 'returnGeometry': 'true'}).encode()
+            d = _json.loads(urllib.request.urlopen(
+                urllib.request.Request(url, data=body), timeout=45).read())
+            for f in d.get('features', []):
+                pn = ''.join(c for c in str((f.get('properties') or {})
+                                            .get('PIN') or '') if c.isdigit())
+                if pn in parents:
+                    added[pn] = f['geometry']
+        if added:
+            merged = dict(stored); merged.update(added)
+            _store_lots(supa, zip_code, 'WA_KING', merged)
+            _PARENT_TOPUP_DONE.add(zip_code)
+            log.info('[lot-polygons] %s parent-footprint top-up: +%d',
+                     zip_code, len(added))
+            return merged
+        _PARENT_TOPUP_DONE.add(zip_code)
+        return stored
+    except Exception as e:
+        log.warning('[lot-polygons] %s parent top-up failed: %s', zip_code, e)
+        return stored
+
+
 @router.get("/{zip_code}/lot-polygons")
 async def lot_polygons(zip_code: str,
                        authorization: str | None = Header(None),
@@ -303,6 +375,8 @@ async def lot_polygons(zip_code: str,
         # every cache miss. The coverage check below only guards ZIPs whose
         # crawl never finished (aborted/throttled partial stores).
         if _crawl_done:
+            stored = await asyncio.to_thread(
+                _topup_parent_lots, supa, zip_code, stored)
             _LOT_CACHE[zip_code] = (_time.time(), stored)
             return {'zip_code': zip_code, 'polygons': stored,
                     'cached': True, 'source': 'db'}
@@ -312,6 +386,8 @@ async def lot_polygons(zip_code: str,
         except Exception:
             _cnt = 0
         if _cnt == 0 or len(stored) >= 0.5 * _cnt:
+            stored = await asyncio.to_thread(
+                _topup_parent_lots, supa, zip_code, stored)
             _LOT_CACHE[zip_code] = (_time.time(), stored)
             return {'zip_code': zip_code, 'polygons': stored,
                     'cached': True, 'source': 'db'}
@@ -326,16 +402,31 @@ async def lot_polygons(zip_code: str,
             return empty
         # PostgREST caps responses at 1000 rows regardless of .limit() —
         # paginate with .range() (same pattern as get_map_data/briefings).
-        raw_pins, _off = [], 0
+        raw_pins, _k_pins, _off = [], [], 0
         while True:
-            page = (supa.table('parcels_v3').select('pin')
+            page = (supa.table('parcels_v3').select('pin,prop_type')
                     .eq('zip_code', zip_code)
                     .range(_off, _off + 999).execute()).data or []
-            raw_pins.extend(str(r['pin']) for r in page)
+            for r in page:
+                raw_pins.append(str(r['pin']))
+                if (r.get('prop_type') or '').strip().upper() == 'K':
+                    _k_pins.append(str(r['pin']))
             if len(page) < 1000 or _off >= 30000:
                 break
             _off += 1000
         pins = {''.join(c for c in p if c.isdigit()) for p in raw_pins}
+        # Condo units have no per-unit polygon; their complex ("common
+        # area") parcel — PIN = Major+'0000' in KC — carries the building
+        # footprint. Add those parent keys to the match set so the crawl
+        # keeps them; the frontend serves the parent polygon as every
+        # unit's property lines (building-pin UX, 2026-07-27).
+        parent_keys = set()
+        if market == 'WA_KING':
+            for kp in _k_pins:
+                kd = ''.join(c for c in kp if c.isdigit())
+                if len(kd) == 10:
+                    parent_keys.add(kd[:6] + '0000')
+        pins |= parent_keys
         if not raw_pins or not zip_code.isdigit():
             return empty
 

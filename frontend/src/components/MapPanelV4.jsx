@@ -313,7 +313,11 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
         const lots = d?.polygons || {};
         lotIndexRef.current = [];
         for (const f of featsRef.current) {
-          const g = lots[f.key];
+          // Buildings (grouped condo units) use the complex parcel's
+          // footprint (Major+'0000') as their property lines.
+          const g = (f.units && f.key.length === 10
+                     ? lots[f.key.slice(0, 6) + '0000'] || lots[f.key]
+                     : lots[f.key]);
           if (!g) continue;
           lotIndexRef.current.push({ i: f.i, pin: f.pin, bbox: geomBounds(g), geom: g });
         }
