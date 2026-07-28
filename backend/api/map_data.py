@@ -483,7 +483,8 @@ async def get_map_data(
 
         # Fetch all parcels in this ZIP
         parcels = _fetch_all('parcels_v3',
-            'pin, address, owner_name, total_value, lat, lng, band, signal_family')
+            'pin, address, owner_name, total_value, lat, lng, band, '
+            'signal_family, prop_type')
 
         if not parcels:
             return {
@@ -532,11 +533,19 @@ async def get_map_data(
                 'signal_family': p.get('signal_family'),
                 'category':      cat,
                 'pressure':      pressure,
+                'prop_type':     p.get('prop_type'),
             }
             if not slim:
                 row['address'] = p.get('address')
                 row['owner_name'] = p.get('owner_name')
                 row['value'] = p.get('total_value')
+            elif (p.get('prop_type') or '').strip().upper() == 'K':
+                # Building-pin UX: condo units render as one pin per
+                # building with a tap-to-open unit list, and the list
+                # needs unit addresses. Only K rows carry address in
+                # slim mode — bounded (~10-15% of rows), keeps whole-ZIP
+                # payloads small.
+                row['address'] = p.get('address')
             out.append(row)
 
         # Bbox outlier filter — drop parcels whose coords sit > ~10 mi

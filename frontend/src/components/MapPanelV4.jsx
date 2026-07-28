@@ -67,19 +67,50 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
     return m;
   }, [playbook]);
 
+  const CAT_RANK = { call_now: 3, build_now: 2, hold: 1, none: 0 };
   const feats = useMemo(() => {
+    // Building-pin UX (2026-07-27): condo units (prop_type K) share their
+    // complex's centroid — rendering each unit is pin confetti on one
+    // rooftop. Group K parcels by KC Major (pin[:6]); one representative
+    // pin per building carries a unit list + count. Category/family of
+    // the building = its highest-ranked unit, so a building with one
+    // call_now unit reads as call_now.
     const out = [];
+    const bldg = new Map(); // major -> building feat
     (mapData?.parcels || []).forEach((p, i) => {
       if (p.lat == null || p.lng == null) return;
+      const key = String(p.pin).replace(/\D/g, '');
+      const cat = catByPin.get(p.pin) || 'none';
+      const isCondo = String(p.prop_type || '').toUpperCase() === 'K';
+      if (isCondo && key.length === 10) {
+        const major = key.slice(0, 6);
+        let b = bldg.get(major);
+        if (!b) {
+          b = {
+            i, pin: p.pin, key, lat: p.lat, lng: p.lng,
+            cat, fam: p.signal_family || null,
+            units: [],
+          };
+          bldg.set(major, b);
+          out.push(b);
+        }
+        b.units.push({ pin: p.pin, address: p.address || String(p.pin),
+                       cat, fam: p.signal_family || null });
+        if ((CAT_RANK[cat] || 0) > (CAT_RANK[b.cat] || 0)) {
+          b.cat = cat; b.fam = p.signal_family || b.fam; b.pin = p.pin;
+        }
+        return;
+      }
       out.push({
         i,
         pin: p.pin,                                // untouched identity
-        key: String(p.pin).replace(/\D/g, ''),     // digit key for lot matching
+        key,                                       // digit key for lot matching
         lat: p.lat, lng: p.lng,
-        cat: catByPin.get(p.pin) || 'none',
-        fam: p.signal_family || null,
+        cat, fam: p.signal_family || null,
       });
     });
+    // re-index after grouping so feature ids stay dense + stable
+    out.forEach((f, idx) => { f.i = idx; });
     return out;
   }, [mapData, catByPin]);
   featsRef.current = feats;
@@ -100,6 +131,61 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
     }
     return null;
   }
+  const popupRef = useRef(null);
+  function openUnitList(feat, lngLat) {
+    try { if (popupRef.current) popupRef.current.remove(); } catch (e) {}
+    const map = mapRef.current;
+    if (!map) return;
+    const wrap = document.createElement('div');
+    wrap.style.cssText =
+      'max-height:220px;overflow-y:auto;min-width:210px;' +
+      'background:#14110C;border:1px solid #3A3226;border-radius:8px;' +
+      'font-family:\'DM Sans\',sans-serif;';
+    const head = document.createElement('div');
+    head.textContent = `${feat.units.length} residences in this building`;
+    head.style.cssText =
+      'padding:8px 12px;color:#C6A15B;font-size:11px;letter-spacing:0.08em;' +
+      'text-transform:uppercase;border-bottom:1px solid #2A2419;';
+    wrap.appendChild(head);
+    const rank = { call_now: 3, build_now: 2, hold: 1, none: 0 };
+    const units = [...feat.units].sort((a, b) => (rank[b.cat] || 0) - (rank[a.cat] || 0));
+    for (const u of units) {
+      const row = document.createElement('div');
+      row.style.cssText =
+        'padding:7px 12px;color:#E8E0D0;font-size:12.5px;cursor:pointer;' +
+        'display:flex;align-items:center;gap:8px;';
+      const dot = document.createElement('span');
+      dot.style.cssText =
+        'width:7px;height:7px;border-radius:50%;flex:0 0 auto;' +
+        `background:${u.cat === 'call_now' ? '#C6A15B' : u.cat === 'build_now' ? '#8A9A5B' : '#5A5346'};`;
+      const label = document.createElement('span');
+      label.textContent = u.address;
+      row.appendChild(dot); row.appendChild(label);
+      row.onmouseenter = () => { row.style.background = '#1E1912'; };
+      row.onmouseleave = () => { row.style.background = 'transparent'; };
+      row.onclick = () => {
+        try { popupRef.current && popupRef.current.remove(); } catch (e) {}
+        if (onPickPin) onPickPin(u.pin);
+      };
+      wrap.appendChild(row);
+    }
+    popupRef.current = new maplibregl.Popup({
+      closeButton: true, closeOnClick: true, maxWidth: '300px',
+      className: 'ss-unit-popup',
+    }).setLngLat(lngLat).setDOMContent(wrap).addTo(map);
+  }
+
+  function routeClick(lng, lat) {
+    const pin = resolveClick(lng, lat);
+    if (pin == null) return;
+    const feat = featsRef.current.find((f) => String(f.pin) === String(pin));
+    if (feat && feat.units && feat.units.length > 1) {
+      openUnitList(feat, { lng, lat });
+      return;
+    }
+    if (onPickPin) onPickPin(pin);
+  }
+
   function resolveClick(lng, lat) {
     const hit = pipFind(lng, lat);
     if (hit != null) return hit;
@@ -174,7 +260,8 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           features: feats.map((f) => ({
             type: 'Feature', id: f.i,
             geometry: { type: 'Point', coordinates: [f.lng, f.lat] },
-            properties: { idx: f.i, cat: f.cat, fam: f.fam },
+            properties: { idx: f.i, cat: f.cat, fam: f.fam,
+                          bcount: f.units ? f.units.length : 0 },
           })),
         },
       });
@@ -192,12 +279,31 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           'circle-stroke-color': GOLD,
         },
       });
+      map.addLayer({
+        id: 'p-badges', type: 'symbol', source: 'pts',
+        filter: ['>', ['get', 'bcount'], 1],
+        layout: {
+          'text-field': ['to-string', ['get', 'bcount']],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 12, 8, 16, 11],
+          'text-offset': [0, -1.1],
+          'text-allow-overlap': true,
+        },
+        paint: {
+          'text-color': GOLD,
+          'text-halo-color': 'rgba(13,11,7,0.95)',
+          'text-halo-width': 1.4,
+        },
+      });
       map.on('click', 'p-dots', (e) => {
         const f = e.features[0];
-        if (f && onPickPin) {
-          const feat = featsRef.current[f.properties.idx];
-          if (feat) onPickPin(feat.pin);
+        if (!f) return;
+        const feat = featsRef.current[f.properties.idx];
+        if (!feat) return;
+        if (feat.units && feat.units.length > 1) {
+          openUnitList(feat, e.lngLat);
+          return;
         }
+        if (onPickPin) onPickPin(feat.pin);
       });
       map.on('mouseenter', 'p-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', 'p-dots', () => { map.getCanvas().style.cursor = ''; });
@@ -290,9 +396,8 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           interleaved: true,
           getCursor: () => 'crosshair',
           onClick: (info) => {
-            if (!info.coordinate || !onPickPin) return;
-            const pin = resolveClick(info.coordinate[0], info.coordinate[1]);
-            if (pin != null) onPickPin(pin);
+            if (!info.coordinate) return;
+            routeClick(info.coordinate[0], info.coordinate[1]);
           },
           layers: earthLayers(earthKey),
         });
@@ -301,9 +406,8 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
         // clicks anywhere on the mesh — maplibre still owns events in
         // interleaved mode, so this fires even when no deck layer picks
         map.on('click', (e) => {
-          if (!earthOnRef.current || !onPickPin) return;
-          const pin = resolveClick(e.lngLat.lng, e.lngLat.lat);
-          if (pin != null) onPickPin(pin);
+          if (!earthOnRef.current) return;
+          routeClick(e.lngLat.lng, e.lngLat.lat);
         });
         map.getCanvas().style.cursor = 'crosshair';
         // ground yields to the mesh; labels re-lit; leads stay on top
