@@ -454,6 +454,29 @@ async def geometry_status_endpoint(
 
 # ─── Re-ingest property details from ArcGIS ──────────────────────────────
 
+@router.post("/geocode-address-fallback/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def geocode_address_fallback(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+    dry_run: bool = False,
+):
+    """
+    Census batch geocoder fallback (2026-07-28): pins parcels that have
+    an address but no county-source geometry (Dallas condo units — the
+    city layer collapses buildings into ACCT='MULTIPLE' polygons). Free,
+    keyless, one batch per call. Only writes lat/lng where NULL.
+    """
+    import asyncio
+    from backend.ingest.address_geocode_fallback import (
+        geocode_fallback_for_zip)
+    supa = get_supabase_client()
+    try:
+        return await asyncio.to_thread(
+            geocode_fallback_for_zip, supa, zip_code, dry_run)
+    except Exception as e:
+        raise HTTPException(502, f"geocode fallback failed: {e}")
+
+
 @router.post("/backfill-condos/{zip_code}",
              dependencies=[Depends(require_admin)])
 async def backfill_condos(
