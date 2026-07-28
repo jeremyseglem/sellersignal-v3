@@ -5326,6 +5326,114 @@ def diag_snohomish_matcher_truth_test(
     return results
 
 
+@router.post("/admin/run-matcher-market")
+def admin_run_matcher_market(
+    x_admin_key: Optional[str] = Header(None),
+    confirm: bool = False,
+    market_key: str = "AZ_MARICOPA",
+    source_type: str = "maricopa_probate_court",
+    signal_type: str = "probate",
+    limit: int = 1000,
+):
+    """
+    Generic market-scoped matcher (generalized from
+    run-matcher-snohomish-real). Loads owners only for the ZIPs in one
+    market_key (avoids the full-fleet parcel load that fails under HTTP/2
+    contention), matches UNMATCHED (source_type, signal_type) signals, and
+    persists match rows + marks signals. Built 2026-07-28 to land the
+    Maricopa probate docket signals; reusable for any future
+    court-docket → market pairing (Travis/Dallas/Collin). Requires
+    ?confirm=true. Idempotent.
+    """
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(
+            400, "Writes match rows + marks signals. Pass ?confirm=true.")
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+
+    from backend.harvesters import matcher as M
+    from datetime import datetime
+
+    cov = (supa.table('zip_coverage_v3').select('zip_code')
+           .eq('market_key', market_key).execute()).data or []
+    zips = sorted({r['zip_code'] for r in cov})
+    if not zips:
+        raise HTTPException(400, f"No live ZIPs for market_key={market_key}")
+
+    merged_owners, merged_use_codes, pin_to_zip, parcels_per_zip = {}, {}, {}, {}
+    for ZIP in zips:
+        owners_db, use_codes = M._load_owners_db(supa, ZIP)
+        parcels_per_zip[ZIP] = len(owners_db)
+        for pin, info in owners_db.items():
+            merged_owners[pin] = info
+            merged_use_codes[pin] = use_codes[pin]
+            pin_to_zip[pin] = ZIP
+
+    signals = (supa.table('raw_signals_v3')
+               .select('id, document_ref, party_names, source_type, '
+                       'signal_type, matched_at')
+               .eq('source_type', source_type)
+               .eq('signal_type', signal_type)
+               .is_('matched_at', 'null')
+               .limit(limit).execute()).data or []
+
+    dispatcher = M._DISPATCH.get(signal_type)
+    if not dispatcher:
+        raise HTTPException(400, f"No dispatcher for signal_type={signal_type}")
+
+    stats = {"market_key": market_key, "zips": len(zips),
+             "signals_in_scope": len(signals), "signals_processed": 0,
+             "signals_with_matches": 0, "match_rows_written": 0,
+             "zip_distribution": {z: 0 for z in zips}, "errors": []}
+
+    for sig in signals:
+        try:
+            parties = [p for p in (sig.get('party_names') or [])
+                       if not (isinstance(p, dict)
+                               and str(p.get('role', '')).startswith('predeceased_'))]
+            if not parties:
+                (supa.table('raw_signals_v3')
+                 .update({'matched_at': datetime.utcnow().isoformat(),
+                          'match_count': 0}).eq('id', sig['id']).execute())
+                stats["signals_processed"] += 1
+                continue
+            candidates = dispatcher(sig, merged_owners, merged_use_codes)
+            gate_strengths, filtered = {}, []
+            for c in candidates:
+                strength = M._surname_gate(c["parcel_id"], merged_owners, parties)
+                if strength is None:
+                    continue
+                gate_strengths[c["parcel_id"]] = strength
+                filtered.append(c)
+            match_rows = []
+            for c in filtered:
+                disp_str = c.get("trigger_hint", {}).get("match_strength", "strict")
+                gate_str = gate_strengths[c["parcel_id"]]
+                final_str = "weak" if (disp_str == "weak" or gate_str == "weak") else "strict"
+                match_rows.append({"raw_signal_id": sig['id'], "pin": c["parcel_id"],
+                                   "match_strength": final_str,
+                                   "match_method": f"legacy::{signal_type}"})
+            if match_rows:
+                (supa.table('raw_signal_matches_v3')
+                 .upsert(match_rows, on_conflict='raw_signal_id,pin').execute())
+                for mr in match_rows:
+                    stats["match_rows_written"] += 1
+                    z = pin_to_zip.get(mr["pin"], "?")
+                    stats["zip_distribution"][z] = stats["zip_distribution"].get(z, 0) + 1
+                stats["signals_with_matches"] += 1
+            (supa.table('raw_signals_v3')
+             .update({'matched_at': datetime.utcnow().isoformat(),
+                      'match_count': len(match_rows)}).eq('id', sig['id']).execute())
+            stats["signals_processed"] += 1
+        except Exception as e:
+            stats["errors"].append({"signal_id": sig.get('id'), "error": str(e)[:200]})
+
+    stats["parcels_per_zip"] = parcels_per_zip
+    return stats
+
+
 @router.post("/admin/run-matcher-snohomish-real")
 def admin_run_matcher_snohomish_real(
     x_admin_key: Optional[str] = Header(None),
