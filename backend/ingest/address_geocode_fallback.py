@@ -82,6 +82,34 @@ def geocode_fallback_for_zip(supa, zip_code: str,
             continue
 
     matched = len(coords)
+
+    # Tier 2 — Google Geocoding for Census misses. TIGER can't resolve
+    # some Dallas corridors as written ("6335 W NORTHWEST HWY" →
+    # No_Match); Google can. Uses the Street View / Maps key already in
+    # Railway env. ~$5 per 1,000 — bounded by the residual size.
+    import os
+    gkey = (os.environ.get("GOOGLE_STREET_VIEW_API_KEY")
+            or os.environ.get("GOOGLE_MAPS_API_KEY"))
+    google_matched = 0
+    misses = [r for r in todo[:9500] if str(r["pin"]) not in coords]
+    if gkey and misses and not dry_run:
+        with httpx.Client(timeout=20) as c:
+            for r in misses:
+                q = (f"{_street_only(r['address'])}, "
+                     f"{r.get('city') or ''} {r.get('state') or ''} "
+                     f"{zip_code}")
+                try:
+                    g = c.get("https://maps.googleapis.com/maps/api/"
+                              "geocode/json",
+                              params={"address": q, "key": gkey}).json()
+                    res = (g.get("results") or [])
+                    if res:
+                        loc = res[0]["geometry"]["location"]
+                        coords[str(r["pin"])] = (loc["lat"], loc["lng"])
+                        google_matched += 1
+                except Exception:
+                    continue
+
     if dry_run:
         return {"zip_code": zip_code, "candidates": len(todo),
                 "matched": matched, "updated": 0, "dry_run": True}
@@ -99,4 +127,5 @@ def geocode_fallback_for_zip(supa, zip_code: str,
             updated += len(chunk)
 
     return {"zip_code": zip_code, "candidates": len(todo),
-            "matched": matched, "updated": updated, "dry_run": False}
+            "matched": matched, "google_matched": google_matched,
+            "updated": updated, "dry_run": False}
