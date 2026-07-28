@@ -5334,6 +5334,8 @@ def admin_run_matcher_market(
     source_type: str = "maricopa_probate_court",
     signal_type: str = "probate",
     limit: int = 1000,
+    zip_code: Optional[str] = None,
+    mark_only: bool = False,
 ):
     """
     Generic market-scoped matcher (generalized from
@@ -5356,11 +5358,37 @@ def admin_run_matcher_market(
     from backend.harvesters import matcher as M
     from datetime import datetime
 
+    if mark_only:
+        # After per-ZIP match passes have written all match rows, flip the
+        # in-scope unmatched signals to matched_at using their actual
+        # match-row count. No owner load — fast, closes out the batch.
+        sigs = (supa.table('raw_signals_v3').select('id')
+                .eq('source_type', source_type).eq('signal_type', signal_type)
+                .is_('matched_at', 'null').limit(limit).execute()).data or []
+        marked = 0
+        for s in sigs:
+            cnt = (supa.table('raw_signal_matches_v3')
+                   .select('pin', count='exact')
+                   .eq('raw_signal_id', s['id']).execute()).count or 0
+            (supa.table('raw_signals_v3')
+             .update({'matched_at': datetime.utcnow().isoformat(),
+                      'match_count': cnt}).eq('id', s['id']).execute())
+            marked += 1
+        return {"mark_only": True, "marked": marked}
+
     cov = (supa.table('zip_coverage_v3').select('zip_code')
            .eq('market_key', market_key).execute()).data or []
     zips = sorted({r['zip_code'] for r in cov})
+    if zip_code:
+        zips = [z for z in zips if z == zip_code]
     if not zips:
         raise HTTPException(400, f"No live ZIPs for market_key={market_key}")
+    # Per-ZIP mode (zip_code set): only load that ZIP's owners (fast — avoids
+    # the 25-ZIP full-market load that overruns the request window). Matches
+    # are upserted, but signals are NOT marked matched_at, so a later pass on
+    # another ZIP can still add its matches. Full-market mode (no zip_code)
+    # marks signals as before.
+    mark_done = zip_code is None
 
     merged_owners, merged_use_codes, pin_to_zip, parcels_per_zip = {}, {}, {}, {}
     for ZIP in zips:
@@ -5394,9 +5422,10 @@ def admin_run_matcher_market(
                        if not (isinstance(p, dict)
                                and str(p.get('role', '')).startswith('predeceased_'))]
             if not parties:
-                (supa.table('raw_signals_v3')
-                 .update({'matched_at': datetime.utcnow().isoformat(),
-                          'match_count': 0}).eq('id', sig['id']).execute())
+                if mark_done:
+                    (supa.table('raw_signals_v3')
+                     .update({'matched_at': datetime.utcnow().isoformat(),
+                              'match_count': 0}).eq('id', sig['id']).execute())
                 stats["signals_processed"] += 1
                 continue
             candidates = dispatcher(sig, merged_owners, merged_use_codes)
@@ -5423,9 +5452,10 @@ def admin_run_matcher_market(
                     z = pin_to_zip.get(mr["pin"], "?")
                     stats["zip_distribution"][z] = stats["zip_distribution"].get(z, 0) + 1
                 stats["signals_with_matches"] += 1
-            (supa.table('raw_signals_v3')
-             .update({'matched_at': datetime.utcnow().isoformat(),
-                      'match_count': len(match_rows)}).eq('id', sig['id']).execute())
+            if mark_done:
+                (supa.table('raw_signals_v3')
+                 .update({'matched_at': datetime.utcnow().isoformat(),
+                          'match_count': len(match_rows)}).eq('id', sig['id']).execute())
             stats["signals_processed"] += 1
         except Exception as e:
             stats["errors"].append({"signal_id": sig.get('id'), "error": str(e)[:200]})
