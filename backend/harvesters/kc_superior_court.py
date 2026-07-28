@@ -86,6 +86,11 @@ class KCSuperiorCourtHarvester(BaseHarvester):
     ) -> Iterator[RawSignal]:
         until = until or date.today()
 
+        # One authenticated session for the whole run — login is required
+        # for case search since the 2026-04 portal change.
+        session = self.build_session()
+        self.login(session)
+
         for case_key in self.case_types:
             case_url_code, case_select_code, signal_type = CASE_TYPES[case_key]
             log.info(
@@ -93,7 +98,8 @@ class KCSuperiorCourtHarvester(BaseHarvester):
                 f"{since.isoformat()} → {until.isoformat()}"
             )
             yield from self._harvest_type(
-                case_url_code, case_select_code, signal_type, since, until
+                case_url_code, case_select_code, signal_type, since, until,
+                session=session,
             )
 
     # ─── Internals ─────────────────────────────────────────────────────
@@ -105,8 +111,11 @@ class KCSuperiorCourtHarvester(BaseHarvester):
         signal_type: str,
         since: date,
         until: date,
+        session: Optional[requests.Session] = None,
     ) -> Iterator[RawSignal]:
-        session = self.build_session()
+        if session is None:
+            session = self.build_session()
+            self.login(session)
         form_ctx = self._open_search_form(session, case_url_code)
 
         # Page 1 = POST search
@@ -179,11 +188,43 @@ class KCSuperiorCourtHarvester(BaseHarvester):
 
         return {
             "form_build_id":    hidden("form_build_id"),
+            "form_token":       hidden("form_token"),
             "form_id":          hidden("form_id")         or "ecp_search_extend",
             "formId":           hidden("formId")          or "13341",
             "eCourtFormCode":   hidden("eCourtFormCode")  or "S-Case_Public_Portal_Types_1_2_3_4",
             "ecpFormId":        hidden("ecpFormId")       or "7",
         }
+
+    def login(self, session: requests.Session) -> bool:
+        """Authenticate against the KC portal. Since ~2026-04-23 the case
+        search requires a logged-in session — anonymous search returns a
+        login wall. Credentials come from KC_PORTAL_USER / KC_PORTAL_PASS
+        env vars. Returns True on success. Idempotent: safe to call once
+        per harvest run before opening the search form."""
+        import os
+        user = os.environ.get("KC_PORTAL_USER")
+        pw = os.environ.get("KC_PORTAL_PASS")
+        if not user or not pw:
+            raise RuntimeError(
+                "KC_PORTAL_USER / KC_PORTAL_PASS not set — the KC portal "
+                "requires login for case search since 2026-04-23.")
+        r = session.get(f"{BASE}/user/login", timeout=40)
+        soup = BeautifulSoup(r.text, "html.parser")
+        def h(name):
+            i = soup.find("input", attrs={"name": name})
+            return i.get("value", "") if i else ""
+        resp = session.post(f"{BASE}/user/login", data={
+            "name": user, "pass": pw,
+            "form_build_id": h("form_build_id"),
+            "form_id": h("form_id") or "user_login_form",
+            "op": "Log in",
+        }, timeout=40, allow_redirects=True)
+        ok = "check_logged_in=1" in resp.url or "user/logout" in resp.text
+        if not ok:
+            raise RuntimeError(
+                "KC portal login failed — check KC_PORTAL_USER/PASS "
+                "(account may be locked or credentials rotated).")
+        return True
 
     def _post_search(
         self,
@@ -213,9 +254,13 @@ class KCSuperiorCourtHarvester(BaseHarvester):
             ("data(223968_op)",         "EQUALS"),
             ("data(223968_incnull)",    "false"),
             ("data(223968)",            ""),
-            # Filing Date range — data(223972) + _right
+            # Filing Date range. Since the 2026-04 portal redesign the date
+            # field's operator menu only offers equals/blank (no BETWEEN —
+            # that 500s). The working range shape is EQUALS with the "from"
+            # in data(223972) and the "to" in the companion data(223972_right)
+            # field. Verified 2026-07-28 against a logged-in session.
             ("data(223972_op)",         "EQUALS"),
-            ("data(223972_incnull)",    ""),
+            ("data(223972_incnull)",    "false"),
             ("data(223972)",            from_str),
             ("data(223972_right)",      to_str),
             # Name fields (blank)
@@ -236,6 +281,7 @@ class KCSuperiorCourtHarvester(BaseHarvester):
             ("ecpFormId",               form_ctx["ecpFormId"]),
             ("op",                      "Search"),
             ("form_build_id",           form_ctx["form_build_id"]),
+            ("form_token",              form_ctx.get("form_token", "")),
             ("form_id",                 form_ctx["form_id"]),
         ]
 
