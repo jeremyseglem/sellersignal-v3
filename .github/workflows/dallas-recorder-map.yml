@@ -11,7 +11,7 @@ jobs:
   map:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install Playwright
@@ -89,7 +89,7 @@ jobs:
                   print("   POST:", x["post"][:300])
           PYEOF
           python map.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: dallas-map

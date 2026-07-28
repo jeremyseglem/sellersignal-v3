@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install deps
@@ -47,7 +47,7 @@ jobs:
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
       - name: Cache Greenwich owner roll (refreshed weekly)
         id: roll-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/ct-roll.csv.gz
           key: ct-roll-${{ steps.wk.outputs.week }}

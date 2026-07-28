@@ -32,8 +32,8 @@ jobs:
   harvest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install deps
@@ -45,7 +45,7 @@ jobs:
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
       - name: Cache DCAD bulk roll (refreshed weekly)
         id: dcad-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/dcad2026.zip
           key: dcad-current-${{ steps.wk.outputs.week }}

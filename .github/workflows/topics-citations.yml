@@ -26,8 +26,8 @@ jobs:
   harvest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install deps
@@ -37,7 +37,7 @@ jobs:
         run: echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
       - name: Cache DCAD bulk roll (refreshed weekly)
         id: dcad-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/dcad2026.zip
           key: dcad-current-${{ steps.wk.outputs.week }}
@@ -51,7 +51,7 @@ jobs:
           ls -la /tmp/dcad2026.zip
       - name: Cache TCAD appraisal roll (refreshed weekly)
         id: tcad-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/tcad-roll.zip
           key: tcad-roll-${{ steps.wk.outputs.week }}
@@ -67,7 +67,7 @@ jobs:
             || { echo "::error::TCAD roll download is not a valid zip"; rm -f /tmp/tcad-roll.zip; exit 1; }
       - name: Cache Collin county owner roll (refreshed weekly)
         id: collin-roll-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/collin-roll.csv.gz
           key: collin-roll-${{ steps.wk.outputs.week }}
