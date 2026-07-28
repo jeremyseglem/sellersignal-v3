@@ -28,8 +28,10 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend",
                                 "harvesters"))
+sys.path.insert(0, os.path.dirname(__file__))
 import maricopa_probate_court as mp   # noqa: E402
 import requests                        # noqa: E402
+from lib_county_resolve import CountyOwnerIndex  # noqa: E402
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -106,6 +108,57 @@ def fetch_case(session: requests.Session, year: int, seq: int) -> str:
     return r.text
 
 
+def build_or_load_roll() -> "CountyOwnerIndex | None":
+    """Build the county-wide owner roll once per run (or reuse a cached
+    copy). Resolution against the full ~1.6M-parcel Assessor roll is what
+    makes probate matches ACCURATE for trust-owned luxury parcels: the
+    county's own record ties 'Marsha Nitchman' to 'NITCHMAN FAMILY TRUST',
+    so the app-side matcher matches by parcel identity — no fuzzy
+    surname-only guessing, zero false positives. Without resolution the
+    2-token name gate rejects every trust-owned estate."""
+    import subprocess
+    roll_path = os.environ.get("MARICOPA_ROLL", "/tmp/maricopa-roll.csv.gz")
+    if not os.path.exists(roll_path):
+        print(f"[maricopa_probate] building county roll → {roll_path} "
+              f"(~1.6M parcels, one-time per run)")
+        builder = os.path.join(os.path.dirname(__file__),
+                               "build_maricopa_county_roll.py")
+        env = {**os.environ, "OUT": roll_path}
+        r = subprocess.run([sys.executable, builder], env=env,
+                           capture_output=True, text=True, timeout=3600)
+        if r.returncode != 0 or not os.path.exists(roll_path):
+            print(f"[maricopa_probate] roll build FAILED: {r.stderr[-400:]}")
+            return None
+    try:
+        idx = CountyOwnerIndex.from_maricopa_roll(roll_path)
+        print(f"[maricopa_probate] county roll loaded: {idx.total} owner rows")
+        return idx
+    except Exception as e:
+        print(f"[maricopa_probate] roll load failed: {e}")
+        return None
+
+
+def attach_resolution(row: dict, roll: "CountyOwnerIndex | None") -> dict:
+    """Resolve the decedent against the county roll and attach
+    resolved_parcels in the shape the app matcher's Layer 0 reads
+    (acct/est_of/strength). Sets county_resolution_ran so a surname
+    coincidence in a live ZIP can never produce a fuzzy match — resolution
+    is authoritative about what the decedent owns."""
+    if roll is None:
+        return row
+    decedent = row["party_names"][0]["raw"]
+    # Assessor owner names are surname-first; the resolver tokenizes both
+    # orders but the decedent string here is "First [Middle] Last".
+    hits = roll.resolve(decedent, order="first_last")
+    resolved = [{"acct": h["acct"], "est_of": h["est_of"],
+                 "strength": h["strength"], "zip": h.get("zip"),
+                 "owner_name": h.get("owner_name")}
+                for h in hits]
+    row["raw_data"]["resolved_parcels"] = resolved
+    row["raw_data"]["county_resolution_ran"] = True
+    return row
+
+
 def main():
     print(f"[maricopa_probate] year={YEAR} write={WRITE} "
           f"max_miss={MAX_MISS} max_cases={MAX_CASES} full_sweep={FULL_SWEEP}")
@@ -120,6 +173,9 @@ def main():
     session = requests.Session()
     session.headers.update(UA)
     session.headers["Referer"] = f"{mp.BASE}/caseSearch.asp"
+
+    roll = build_or_load_roll()
+    resolved_in_zips = 0
 
     miss_streak = err_streak = looked = wrote = estates = guardianships = 0
     retried = set()
@@ -161,9 +217,13 @@ def main():
             row = mp.to_signal_row(case)
             if row:
                 estates += 1
+                row = attach_resolution(row, roll)
+                nres = len(row["raw_data"].get("resolved_parcels") or [])
+                if nres:
+                    resolved_in_zips += 1
                 st = row["raw_data"]["pr_status"]
                 print(f"  PB{YEAR}-{seq:06d} ESTATE dec={row['party_names'][0]['raw'][:24]} "
-                      f"[{st}] {row['event_date']}")
+                      f"[{st}] {row['event_date']} resolved={nres}")
                 batch.append(row)
         elif kind == "guardianship":
             guardianships += 1
@@ -178,8 +238,8 @@ def main():
         wrote += write_rows(batch)
 
     print(f"\n[maricopa_probate] looked={looked} estates={estates} "
-          f"guardianships={guardianships} wrote={wrote} "
-          f"stopped_at=PB{YEAR}-{seq:06d} miss_streak={miss_streak}")
+          f"guardianships={guardianships} resolved_to_county_parcels={resolved_in_zips} "
+          f"wrote={wrote} stopped_at=PB{YEAR}-{seq:06d} miss_streak={miss_streak}")
 
     if looked == 0:
         print("[maricopa_probate] FATAL: zero cases looked at — failing loudly")

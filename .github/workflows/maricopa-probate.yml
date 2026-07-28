@@ -44,6 +44,15 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: pip install requests beautifulsoup4
+      - name: Week key for Maricopa roll cache
+        id: rollkey
+        run: echo "week=$(date +%Y-%U)" >> "$GITHUB_OUTPUT"
+      - name: Cache Maricopa county roll
+        id: roll-cache
+        uses: actions/cache@v5
+        with:
+          path: /tmp/maricopa-roll.csv.gz
+          key: maricopa-roll-${{ steps.rollkey.outputs.week }}
       - name: Run Maricopa probate harvester
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -53,4 +62,5 @@ jobs:
           YEAR: ${{ github.event.inputs.year || '' }}
           MAX_CASES: ${{ github.event.inputs.max_cases || '600' }}
           FULL_SWEEP: ${{ github.event.inputs.full_sweep || '0' }}
+          MARICOPA_ROLL: /tmp/maricopa-roll.csv.gz
         run: python scripts/run_maricopa_probate.py
