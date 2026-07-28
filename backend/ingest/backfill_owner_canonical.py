@@ -59,6 +59,9 @@ def _fetch_all_parcels(supa, zip_code: str, page: int = 1000) -> list[dict]:
     return out
 
 
+RETRY_CONF_CEILING = 0.2   # <= this = API-failure fallback row, retryable
+
+
 def _fetch_existing_pins(supa, zip_code: str, page: int = 1000,
                          zip_pins: list[str] | None = None) -> set[str]:
     """Return the set of this ZIP's PINs that already have a canonical row.
@@ -87,13 +90,21 @@ def _fetch_existing_pins(supa, zip_code: str, page: int = 1000,
             offset += page
         return out
     CHUNK = 400  # keeps the in_() URL well under request-size limits
+    # POISONED-RETRY GUARD (2026-07-28): the canonicalizer's API-failure
+    # fallback stores entity='unknown' rows at confidence 0.0-0.2. Treating
+    # those as "existing" made transient Anthropic/httpx failures permanent
+    # (seen at scale on the 10 re-seeded KC ZIPs: 60-80% unknown after the
+    # 07-27 deploy storm). Rows at confidence <= RETRY_CONF_CEILING are NOT
+    # existing — the backfill re-attempts them. Genuine hard parses score
+    # >= 0.3 from Haiku, so real low-confidence results still stick.
     for i in range(0, len(zip_pins), CHUNK):
         chunk = zip_pins[i:i + CHUNK]
         res = (supa.table('owner_canonical_v3')
-               .select('pin')
+               .select('pin,confidence')
                .in_('pin', chunk)
                .execute())
-        out.update(r['pin'] for r in (res.data or []))
+        out.update(r['pin'] for r in (res.data or [])
+                   if (r.get('confidence') or 0) > RETRY_CONF_CEILING)
     return out
 
 
@@ -191,7 +202,12 @@ def backfill_zip(zip_code: str, dry_run: bool = False,
             total_tokens_in += result.get('_tokens_in', 0) or 0
             total_tokens_out += result.get('_tokens_out', 0) or 0
             if '_error' in result:
+                # API failure — record it, do NOT persist the unknown
+                # fallback row. Storing it poisoned the retry path (the pin
+                # looked "done" forever). The pin stays unprocessed and the
+                # next backfill pass retries it.
                 errors.append({'pin': pin, 'msg': result['_error']})
+                continue
 
             if result.get('confidence', 0) < 0.5:
                 low_conf.append({'pin': pin, 'raw': raw,
@@ -234,7 +250,10 @@ def backfill_zip(zip_code: str, dry_run: bool = False,
                 total_tokens_in += result.get('_tokens_in', 0) or 0
                 total_tokens_out += result.get('_tokens_out', 0) or 0
                 if '_error' in result:
+                    # API failure — never persist the fallback row (see
+                    # serial path note; poisoned-retry guard 2026-07-28).
                     errors.append({'pin': pin, 'msg': result['_error']})
+                    continue
 
                 if result.get('confidence', 0) < 0.5:
                     low_conf.append({'pin': pin, 'raw': raw,
