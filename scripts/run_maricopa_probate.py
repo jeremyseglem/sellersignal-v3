@@ -40,6 +40,11 @@ YEAR = int(os.environ.get("YEAR") or datetime.now().year)
 MAX_MISS = int(os.environ.get("MAX_MISS") or "40")
 MAX_CASES = int(os.environ.get("MAX_CASES") or "600")
 FULL_SWEEP = os.environ.get("FULL_SWEEP", "0") == "1"
+# RERESOLVE=1 re-processes cases already in the DB (ignores the skip index)
+# to attach/refresh county resolution on existing signals — the write is a
+# merge-duplicate upsert so it overwrites raw_data cleanly. Use once after
+# adding resolution to backfill signals harvested before it existed.
+RERESOLVE = os.environ.get("RERESOLVE", "0") == "1"
 ERR_ABORT = 10
 
 TABLE = "raw_signals_v3"
@@ -186,7 +191,7 @@ def main():
             print(f"[maricopa_probate] ABORT: {err_streak} consecutive errors "
                   f"at PB{YEAR}-{seq:06d} — portal unhealthy, cursor preserved.")
             break
-        if seq in stored_seqs:
+        if seq in stored_seqs and not RERESOLVE:
             seq += 1
             continue
         looked += 1

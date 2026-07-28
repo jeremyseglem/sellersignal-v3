@@ -30,6 +30,10 @@ on:
         description: "1 to start at seq 1 and skip stored (gap recovery)"
         required: false
         default: "0"
+      reresolve:
+        description: "1 to re-process stored cases and attach county resolution"
+        required: false
+        default: "0"
   schedule:
     # 6:00am America/Phoenix (AZ, no DST). 13:00 UTC. New filings post overnight.
     - cron: "0 13 * * *"
@@ -62,5 +66,6 @@ jobs:
           YEAR: ${{ github.event.inputs.year || '' }}
           MAX_CASES: ${{ github.event.inputs.max_cases || '600' }}
           FULL_SWEEP: ${{ github.event.inputs.full_sweep || '0' }}
+          RERESOLVE: ${{ github.event.inputs.reresolve || '0' }}
           MARICOPA_ROLL: /tmp/maricopa-roll.csv.gz
         run: python scripts/run_maricopa_probate.py
