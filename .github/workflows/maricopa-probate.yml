@@ -1,0 +1,56 @@
+name: Maricopa Probate Court
+
+# Enumerates Maricopa County Superior Court probate cases (PB{year}-{seq})
+# from the public docket and writes decedent-estate signals to
+# raw_signals_v3. Unlike the recorder harvesters this is COURT data — it
+# yields the decedent + personal representative / petitioner, the same
+# lead grade as KC probate. Guardianship / conservatorship cases (also
+# filed under PB) are classified out.
+#
+# Plain HTTP GET — no captcha gates the docket search, no browser needed.
+# Default is a DRY RUN; the daily cron passes write=1. Secrets
+# SUPABASE_URL + SUPABASE_SERVICE_KEY required to write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      year:
+        description: "filing year to sweep (blank = current)"
+        required: false
+        default: ""
+      max_cases:
+        description: "hard cap on lookups per run"
+        required: false
+        default: "600"
+      full_sweep:
+        description: "1 to start at seq 1 and skip stored (gap recovery)"
+        required: false
+        default: "0"
+  schedule:
+    # 6:00am America/Phoenix (AZ, no DST). 13:00 UTC. New filings post overnight.
+    - cron: "0 13 * * *"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install requests beautifulsoup4
+      - name: Run Maricopa probate harvester
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # cron runs write=1; manual dispatch uses the input (default 0)
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          YEAR: ${{ github.event.inputs.year || '' }}
+          MAX_CASES: ${{ github.event.inputs.max_cases || '600' }}
+          FULL_SWEEP: ${{ github.event.inputs.full_sweep || '0' }}
+        run: python scripts/run_maricopa_probate.py

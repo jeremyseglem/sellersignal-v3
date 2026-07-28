@@ -439,6 +439,7 @@ SOURCE_MARKET_SCOPE: dict = {
     'wa_state_courts':      {'WA_SNOHOMISH'},   # Snohomish daily reports
     'obituary_rss':         {'WA_KING', 'WA_SNOHOMISH'},  # WA-region obit sources
     'az_maricopa_recorder': {'AZ_MARICOPA'},
+    'maricopa_probate_court': {'AZ_MARICOPA'},  # Superior Court probate docket (decedent estates)
     'tx_dallas_recorder':   {'TX_DALLAS'},
     'tx_travis_recorder':   {'TX_TRAVIS'},
     'tx_collin_recorder':   {'TX_COLLIN'},
