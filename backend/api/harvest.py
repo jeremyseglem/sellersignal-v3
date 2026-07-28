@@ -5326,6 +5326,50 @@ def diag_snohomish_matcher_truth_test(
     return results
 
 
+@router.get("/diag/name-format-probe")
+def diag_name_format_probe(
+    x_admin_key: Optional[str] = Header(None),
+    market_key: str = "AZ_MARICOPA",
+    source_type: str = "maricopa_probate_court",
+    signal_type: str = "probate",
+    zip_code: Optional[str] = None,
+    n: int = 8,
+):
+    """Diagnostic (2026-07-28): dump a few stored decedent names next to a
+    few parcel owner names for a market, plus what _extract_surnames yields
+    for each. Reveals surname-first vs surname-last format mismatches that
+    silently zero out the surname gate. Read-only."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    from backend.harvesters import matcher as M
+
+    sigs = (supa.table('raw_signals_v3')
+            .select('document_ref, party_names')
+            .eq('source_type', source_type).eq('signal_type', signal_type)
+            .limit(n).execute()).data or []
+    decedents = []
+    for s in sigs:
+        parties = s.get('party_names') or []
+        raw = parties[0].get('raw', '') if parties else ''
+        decedents.append({"ref": s['document_ref'], "raw": raw,
+                          "surnames": sorted(M._extract_surnames(raw))})
+
+    cov = (supa.table('zip_coverage_v3').select('zip_code')
+           .eq('market_key', market_key).execute()).data or []
+    zips = sorted({r['zip_code'] for r in cov})
+    z = zip_code or (zips[0] if zips else None)
+    owners_sample = []
+    if z:
+        owners_db, _ = M._load_owners_db(supa, z)
+        for pin, info in list(owners_db.items())[:n]:
+            nm = info.get('owner_name', '')
+            owners_sample.append({"pin": pin, "owner_name": nm,
+                                  "surnames": sorted(M._extract_surnames(nm))})
+
+    return {"market_key": market_key, "sample_zip": z,
+            "decedents": decedents, "owners": owners_sample}
+
+
 @router.post("/admin/run-matcher-market")
 def admin_run_matcher_market(
     x_admin_key: Optional[str] = Header(None),
