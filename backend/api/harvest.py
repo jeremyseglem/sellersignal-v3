@@ -5370,6 +5370,57 @@ def diag_name_format_probe(
             "decedents": decedents, "owners": owners_sample}
 
 
+@router.get("/diag/decedent-surname-crosscheck")
+def diag_decedent_surname_crosscheck(
+    x_admin_key: Optional[str] = Header(None),
+    market_key: str = "AZ_MARICOPA",
+    source_type: str = "maricopa_probate_court",
+    signal_type: str = "probate",
+):
+    """Diagnostic: build the set of all decedent surnames from stored
+    signals, build the set of all owner surnames across the market's ZIPs,
+    and report the intersection. Answers definitively whether the zero-match
+    is geography (few/no shared surnames → decedents don't own here) or a
+    gate bug (many shared surnames but 0 matches). Read-only, but loads all
+    market owners so it can run long."""
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    from backend.harvesters import matcher as M
+
+    sigs = (supa.table('raw_signals_v3')
+            .select('party_names')
+            .eq('source_type', source_type).eq('signal_type', signal_type)
+            .limit(2000).execute()).data or []
+    dec_surnames = set()
+    for s in sigs:
+        parties = s.get('party_names') or []
+        if parties:
+            dec_surnames |= M._extract_surnames(parties[0].get('raw', ''))
+
+    cov = (supa.table('zip_coverage_v3').select('zip_code')
+           .eq('market_key', market_key).execute()).data or []
+    zips = sorted({r['zip_code'] for r in cov})
+    owner_surnames = set()
+    owners_by_zip = {}
+    for z in zips:
+        owners_db, _ = M._load_owners_db(supa, z)
+        zs = set()
+        for info in owners_db.values():
+            zs |= M._extract_surnames(info.get('owner_name', ''))
+        owners_by_zip[z] = len(owners_db)
+        owner_surnames |= zs
+
+    overlap = dec_surnames & owner_surnames
+    return {
+        "decedent_surnames": len(dec_surnames),
+        "owner_surnames": len(owner_surnames),
+        "overlap_count": len(overlap),
+        "overlap_sample": sorted(overlap)[:40],
+        "zips_loaded": len(zips),
+        "parcels_total": sum(owners_by_zip.values()),
+    }
+
+
 @router.post("/admin/run-matcher-market")
 def admin_run_matcher_market(
     x_admin_key: Optional[str] = Header(None),
