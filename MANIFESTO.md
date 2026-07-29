@@ -507,6 +507,36 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-29 — SESSION WRAP / next-chat handoff
+
+Consolidated state after this session (details in the dated entries below). Opening a new chat for next steps.
+
+**Shipped & working this session:**
+- **Flat satellite map** (scuttled 3D Earth) — user-confirmed "loads well and works well." Esri imagery + street/place labels, pin per property, click-anywhere-on-parcel opens dossier. Do NOT reintroduce deck.gl 3D.
+- **Recurring Railway OOM fixed at the source** — the rematch_autofill background task was loading a whole market's parcels (~300k rows) into memory every tick on the single worker. Now streams per-ZIP (~13k peak). The "Deploy Ran Out of Memory" emails should stop.
+- **Arizona probate live: 131 leads across 24/25 Maricopa ZIPs** — new Superior Court docket harvester + county-wide decedent resolution against the 1.75M-row Assessor roll (matches by parcel identity, zero false positives). Daily cron. This is the recorder→docket template that transfers to any market with an open docket.
+- **KC Superior Court harvester runnable** — login-wall fix + runner + daily workflow built; dry-run verified 503 signals (327 probate + 176 divorce) in 14 days.
+- **Canon poisoned-retry fix** — API-failure fallback rows no longer freeze pins as unknown.
+
+**Fleet health baseline:** 106 ZIPs clean — structural buckets full everywhere, geometry 99.95-100%. New-ZIP onboarding won't inherit debt.
+
+**Open items — JEREMY'S SIDE:**
+1. **KC_PORTAL_USER / KC_PORTAL_PASS as GitHub ACTIONS SECRETS** (repo Settings → Secrets → Actions — NOT Railway; the harvester runs in Actions). Then dispatch `kc-superior-court.yml` with `since_days=120 write=1` once → drains 3 months of KC probate + divorce across 34 ZIPs. Biggest remaining lead unlock.
+2. **Key rotation** (admin key, GitHub PAT, KC portal password) — overdue, heavy session exposure. Do after backlogs drain.
+
+**Open items — CLAUDE'S SIDE (next chat):**
+- After KC secrets set: dispatch the KC backlog drain, then matcher + refresh-counts across 34 KC ZIPs.
+- Apply `schema/033_parent_pin.sql` in Supabase dashboard (convenience-only), then re-run backfill-condos per ZIP for parent_pin writes.
+
+**Tabled for discussion (do NOT build without explicit go):**
+- **Probate/divorce bucket merge** — Jeremy wants them merged ("divorces so few, a separate tab looks silly"). BUT divorce only looked empty because the KC harvester was dead since April — the 14-day test pulled 176 divorces. Decision deferred until KC divorce volume is visible post-drain; if merged, label deliberately ("Life Events"/"Court Signals"), don't bury divorce.
+- **Next territories / new markets** — Jeremy leaning toward expansion. Approach: docket-accessibility recon FIRST (Maricopa was the win, Texas the cautionary tale). Palm Beach FL likely open (Maricopa-style quick win); Hamptons, Nashville, Chicago North Shore, Boston, Fairfax VA, central NJ each need recon.
+
+**Parked (genuinely blocked):**
+- **Texas court dockets** — all three markets locked: Dallas Odyssey reCAPTCHA + attorney-only accounts, Travis Odyssey F5-blocked + tccsearch Cloudflare + re:SearchTX registration broken (Jeremy confirmed "won't even let me create an account"). TX stays recorder-only. Not worth forcing.
+
+---
+
 ### 2026-07-29 — V4 map: scuttled 3D Earth for flat satellite (SHIPPED, user-confirmed working)
 
 The Google photorealistic 3D ("Earth") map had an unfixable class of bug: MapLibre's flat layers (pins/streets/outlines at z=0) desynced per-frame from the deck.gl 3D terrain mesh, so overlays slid across the terrain on pan/zoom, AND terrain-draped layers lose the pick buffer so nothing was clickable. Three code-only fix attempts failed (invisible pins → black void → still-drifting). DECISION: scuttle 3D entirely — the requirement is "click any property, see details, pins visible," which a flat map delivers reliably and 3D fought at every turn.
