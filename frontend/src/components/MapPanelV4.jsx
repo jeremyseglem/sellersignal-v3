@@ -339,6 +339,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           MapboxOverlay: mb.MapboxOverlay,
           Tile3DLayer: geo.Tile3DLayer,
           GeoJsonLayer: lyr.GeoJsonLayer,
+          ScatterplotLayer: lyr.ScatterplotLayer,
           TerrainExtension: ext ? (ext._TerrainExtension || ext.TerrainExtension) : null,
         };
         return deckMods;
@@ -361,6 +362,42 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
             data: { type: 'FeatureCollection', features: lotIndexRef.current.map((l) => ({ type: 'Feature', geometry: l.geom })) },
             stroked: true, filled: false, getLineColor: [198, 161, 91, 70],
             getLineWidth: 1, lineWidthUnits: 'pixels', beforeId: firstSymbol,
+            extensions: [new TerrainExtension()],
+          }));
+        }
+        // Pins must be draped onto the 3D terrain too, or they render on the
+        // flat z=0 plane and slide across the elevated mesh during pan/zoom
+        // (the "everything non-terrain drifts" bug). Render them as a deck
+        // ScatterplotLayer with TerrainExtension so they share the terrain's
+        // camera/depth — locked to their real positions, and pickable.
+        const ScatterplotLayer = deckMods.ScatterplotLayer;
+        if (ScatterplotLayer && TerrainExtension && featsRef.current.length) {
+          const CAT_RGB = {
+            call_now: [198, 161, 91], build_now: [138, 154, 91],
+            hold: [120, 110, 84], none: [90, 83, 70],
+          };
+          const CAT_ALPHA = { call_now: 255, build_now: 217, hold: 153, none: 0 };
+          layers.push(new ScatterplotLayer({
+            id: 'pins3d',
+            data: featsRef.current,
+            getPosition: (f) => [f.lng, f.lat],
+            getFillColor: (f) => {
+              const rgb = CAT_RGB[f.cat] || CAT_RGB.none;
+              return [rgb[0], rgb[1], rgb[2], CAT_ALPHA[f.cat] ?? 0];
+            },
+            getRadius: (f) => (f.cat === 'call_now' ? 8 : f.cat === 'build_now' ? 6 : f.cat === 'hold' ? 4.5 : 3),
+            radiusUnits: 'pixels', radiusMinPixels: 2, radiusMaxPixels: 14,
+            stroked: true, getLineColor: [13, 11, 7, 230], lineWidthUnits: 'pixels', getLineWidth: 0.6,
+            pickable: true,
+            onClick: (info) => {
+              if (!info || !info.object) return;
+              const f = info.object;
+              if (f.units && f.units.length > 1) {
+                openUnitList(f, { lng: f.lng, lat: f.lat });
+              } else if (onPickPin) {
+                onPickPin(f.pin);
+              }
+            },
             extensions: [new TerrainExtension()],
           }));
         }
@@ -414,27 +451,19 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           routeClick(e.lngLat.lng, e.lngLat.lat);
         });
         map.getCanvas().style.cursor = 'crosshair';
-        // ground yields to the mesh; labels re-lit; leads stay on top
+        // In Earth mode the pins are now drawn by deck's terrain-draped
+        // 'pins3d' layer (locked to the mesh). Hide the flat MapLibre p-dots,
+        // badges, and symbol/label layers — those render on the z=0 plane and
+        // were the layers sliding across the terrain on pan/zoom.
         for (const l of map.getStyle().layers) {
           try {
-            if (l.type === 'symbol') {
-              map.setPaintProperty(l.id, 'text-color', '#FFFFFF');
-              map.setPaintProperty(l.id, 'text-halo-color', 'rgba(0,0,0,0.95)');
-              map.setPaintProperty(l.id, 'text-halo-width', 2.2);
-            } else if (l.id !== 'p-dots' && ['fill', 'line', 'background'].includes(l.type)) {
+            if (l.type === 'symbol' || ['fill', 'line', 'background'].includes(l.type)) {
               map.setLayoutProperty(l.id, 'visibility', 'none');
             }
           } catch (e) {}
         }
-        try {
-          map.setPaintProperty('p-dots', 'circle-opacity',
-            ['match', ['get', 'cat'], 'call_now', 1, 'build_now', 0.85, 'hold', 0.6, 0]);
-          map.setPaintProperty('p-dots', 'circle-stroke-width',
-            ['case', ['boolean', ['feature-state', 'sel'], false], 2.4,
-              ['match', ['get', 'cat'], 'call_now', 1, 0]]);
-          map.setPaintProperty('p-dots', 'circle-stroke-color',
-            ['case', ['boolean', ['feature-state', 'sel'], false], GOLD, 'rgba(13,11,7,0.9)']);
-        } catch (e) {}
+        try { map.setLayoutProperty('p-dots', 'visibility', 'none'); } catch (e) {}
+        try { map.setLayoutProperty('p-badges', 'visibility', 'none'); } catch (e) {}
         if (creditRef.current) creditRef.current.style.display = 'block';
         map.easeTo({ pitch: 58, duration: 1200 });
       } catch (e) {
