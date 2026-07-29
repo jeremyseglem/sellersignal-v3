@@ -195,7 +195,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
       const dd = dx * dx + dy * dy;
       if (dd < bd) { bd = dd; best = f.pin; }
     }
-    return bd < 45 * 45 ? best : null;
+    return bd < 120 * 120 ? best : null;
   }
 
   useEffect(() => {
@@ -366,11 +366,13 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
             extensions: [new TerrainExtension()],
           }));
         }
-        // Pins draped onto the 3D terrain (flat z=0 pins slid across the
-        // elevated mesh on pan/zoom). Terrain-locked, pickable, and always
-        // visible — every category gets a fill so no pin disappears.
+        // Pins as a PICKABLE billboarded ScatterplotLayer. NOT terrain-
+        // draped: draped layers render to a texture and lose the pick buffer
+        // — that's why clicking was dead in 3D. billboard:true keeps pins
+        // screen-facing at their true lng/lat; deck's picking maps the 3D
+        // click straight to the feature (no flat-plane pip offset).
         const ScatterplotLayer = deckMods.ScatterplotLayer;
-        if (ScatterplotLayer && TerrainExtension && featsRef.current.length) {
+        if (ScatterplotLayer && featsRef.current.length) {
           const CAT_RGB = {
             call_now: [212, 175, 105], build_now: [150, 168, 100],
             hold: [150, 140, 112], none: [120, 112, 96],
@@ -378,6 +380,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           layers.push(new ScatterplotLayer({
             id: 'pins3d',
             data: featsRef.current,
+            billboard: true,
             getPosition: (f) => [f.lng, f.lat],
             getFillColor: (f) => {
               const rgb = CAT_RGB[f.cat] || CAT_RGB.none;
@@ -386,17 +389,17 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
             getRadius: (f) => (f.cat === 'call_now' ? 9 : f.cat === 'build_now' ? 7 : f.cat === 'hold' ? 5.5 : 4),
             radiusUnits: 'pixels', radiusMinPixels: 3, radiusMaxPixels: 16,
             stroked: true, getLineColor: [13, 11, 7, 235], lineWidthUnits: 'pixels', getLineWidth: 1,
-            pickable: true,
+            pickable: true, autoHighlight: true, highlightColor: [233, 205, 143, 90],
             onClick: (info) => {
-              if (!info || !info.object) return;
+              if (!info || !info.object) return true;
               const f = info.object;
               if (f.units && f.units.length > 1) {
                 openUnitList(f, { lng: f.lng, lat: f.lat });
               } else if (onPickPin) {
                 onPickPin(f.pin);
               }
+              return true;
             },
-            extensions: [new TerrainExtension()],
           }));
         }
         return layers;
@@ -435,19 +438,20 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           interleaved: true,
           getCursor: () => 'crosshair',
           onClick: (info) => {
-            if (!info.coordinate) return;
+            // pins3d has its own onClick for pin picks. Here handle clicks
+            // that DIDN'T hit a pin (empty terrain / a property lot) via the
+            // lng/lat resolver so lot outlines are still clickable.
+            if (info && info.layer && info.layer.id === 'pins3d') return;
+            if (!info || !info.coordinate) return;
             routeClick(info.coordinate[0], info.coordinate[1]);
           },
           layers: earthLayers(earthKey),
         });
         map.addControl(overlayRef.current);
         earthOnRef.current = true;
-        // clicks anywhere on the mesh — maplibre still owns events in
-        // interleaved mode, so this fires even when no deck layer picks
-        map.on('click', (e) => {
-          if (!earthOnRef.current) return;
-          routeClick(e.lngLat.lng, e.lngLat.lat);
-        });
+        // Click handling is entirely on the overlay onClick above: it routes
+        // pin picks (pins3d) to the dossier and empty/terrain clicks to the
+        // lng/lat lot resolver. A second map-level handler would double-fire.
         map.getCanvas().style.cursor = 'crosshair';
         // Keep the street basemap AND labels visible: the 3D tiles sit on
         // top of the ground plane, and the flat basemap is the fallback when
