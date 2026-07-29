@@ -1211,6 +1211,8 @@ async def onboard_zip(
             or TRAVIS_ZIP_TO_CITY.get(zip_code)
             or COLLIN_ZIP_TO_CITY.get(zip_code)
             or CT_ZIP_TO_CITY.get(zip_code)
+            or PBC_ZIP_TO_CITY.get(zip_code)
+            or MT_ZIP_TO_CITY.get(zip_code)
             or "Bellevue"
         )
 
@@ -1267,6 +1269,13 @@ async def onboard_zip(
         if state in (None, "WA"):
             state = "MT"
 
+    # Palm Beach County FL — same auto-detect/opt-out shape.
+    is_pbc = zip_code in PBC_ZIP_TO_CITY
+    if is_pbc and market_key == "WA_KING":
+        market_key = "FL_PALM_BEACH"
+        if state in (None, "WA"):
+            state = "FL"
+
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
     #   KC:        wa-king-{zip}-owners.json
@@ -1277,6 +1286,8 @@ async def onboard_zip(
         seed_prefix = "az-maricopa"
     elif is_ct:
         seed_prefix = "ct-fairfield"
+    elif is_pbc:
+        seed_prefix = "fl-palmbeach"
     elif is_mt:
         seed_prefix = "mt"
     elif is_collin:
