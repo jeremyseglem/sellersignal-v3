@@ -958,6 +958,10 @@ async def register_zip(
         market_key = "CT_FAIRFIELD"
         if city is None:
             city = CT_ZIP_TO_CITY[zip_code]
+    if zip_code in PBC_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "FL_PALM_BEACH"
+        if city is None:
+            city = PBC_ZIP_TO_CITY[zip_code]
     if zip_code in MT_ZIP_TO_CITY and market_key == "WA_KING":
         market_key = MT_ZIP_MARKET[zip_code]
         if city is None:
@@ -967,6 +971,7 @@ async def register_zip(
     if city is None:
         city = (KC_ZIP_TO_CITY.get(zip_code)
                 or CT_ZIP_TO_CITY.get(zip_code)
+                or PBC_ZIP_TO_CITY.get(zip_code)
                 or COLLIN_ZIP_TO_CITY.get(zip_code)
                 or MARICOPA_ZIP_TO_CITY.get(zip_code)
                 or DALLAS_ZIP_TO_CITY.get(zip_code)
@@ -1740,6 +1745,25 @@ TRAVIS_ZIP_TO_CITY = {
     "78735": "Austin",            # Barton Creek
 }
 
+# Palm Beach County FL wave 1 (2026-07-29) — market_key FL_PALM_BEACH,
+# state FL. Seed files: data/seeds/fl-palmbeach-{zip}-owners.json (built
+# by scripts/build_pbc_owners.py against the PBC Property Appraiser
+# Parcels_and_Property_Details FeatureServer with ZCTA spatial join from
+# data/zip_polygons/fl.json — the layer has no situs-ZIP column). Seeds
+# carry lat/lng at build time — no geometry backfill. USPS localities
+# matter for letter copy. Signals: Landmark recorder adapter + eCaseView
+# probate/family docket harvester to follow (recon 2026-07-29).
+PBC_ZIP_TO_CITY = {
+    "33480": "Palm Beach",          # the island — flagship
+    "33483": "Delray Beach",        # coastal Delray + Gulf Stream
+    "33487": "Boca Raton",          # coastal north Boca + Highland Beach
+    "33432": "Boca Raton",          # downtown / Royal Palm Yacht Club
+    "33405": "West Palm Beach",     # SoSo
+    "33408": "North Palm Beach",    # Lost Tree / Juno / Singer Island
+    "33477": "Jupiter",             # Admirals Cove / Jupiter beaches
+    "33410": "Palm Beach Gardens",  # Frenchman's / PGA corridor
+}
+
 
 @router.post("/seed-from-json/{zip_code}",
              dependencies=[Depends(require_admin)])
@@ -1802,6 +1826,10 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "CT_FAIRFIELD"
         city = CT_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"ct-fairfield-{zip_code}-owners.json"
+    elif zip_code in PBC_ZIP_TO_CITY:
+        market_key = "FL_PALM_BEACH"
+        city = PBC_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"fl-palmbeach-{zip_code}-owners.json"
     elif zip_code in SNO_ZIP_TO_CITY:
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
@@ -3776,6 +3804,8 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/tx-dallas-{zip_code}-owners.json")
     if market_key == 'WA_SNOHOMISH':
         candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
+    if market_key == 'FL_PALM_BEACH' or zip_code.startswith('334'):
+        candidates.append(f"data/seeds/fl-palmbeach-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-king-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     for rel in candidates:
