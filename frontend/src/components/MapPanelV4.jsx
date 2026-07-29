@@ -356,42 +356,47 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
         tileSize: 256, maxzoom: 19, attribution: 'Imagery © Esri',
       });
-      // Satellite sits under the pins/outlines but over the dark basemap.
+      // Satellite sits under the pins but over the dark basemap.
       map.addLayer({
         id: 'sat', type: 'raster', source: 'sat',
         paint: { 'raster-opacity': 1, 'raster-saturation': -0.06, 'raster-contrast': 0.04 },
       }, 'p-dots');
 
-      // Visible property outlines (must-have): draw the lot fabric as a line
-      // layer beneath the pins. Loaded from lotPolygons; also feeds click
-      // resolution via lotIndexRef (set above).
-      map.addSource('lots', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      // Street + place names: the Esri satellite raster is imagery only (no
+      // text), so overlay the transparent Reference layer (roads, highways,
+      // place labels on a transparent background — built to sit over
+      // imagery). Sits above satellite, below the pins.
+      map.addSource('labels', {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256, maxzoom: 19,
+      });
       map.addLayer({
-        id: 'lots-outline', type: 'line', source: 'lots',
-        paint: {
-          'line-color': '#FFD98A',
-          'line-width': ['interpolate', ['linear'], ['zoom'], 13, 0.8, 16, 2, 19, 3],
-          'line-opacity': 0.9,
-        },
+        id: 'labels', type: 'raster', source: 'labels',
+        paint: { 'raster-opacity': 0.95 },
       }, 'p-dots');
-      // Selected-parcel highlight outline.
+      map.addSource('places', {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256, maxzoom: 19,
+      });
+      map.addLayer({
+        id: 'places', type: 'raster', source: 'places',
+        paint: { 'raster-opacity': 0.9 },
+      }, 'p-dots');
+
+      // Property outlines were dropped 2026-07-29: every property already
+      // has its own pin, so per-parcel outlines are redundant clutter over
+      // satellite imagery. The lot fabric is still loaded (above) for
+      // click-anywhere-on-parcel resolution and the selected-parcel
+      // highlight — just not drawn as a persistent layer.
       map.addSource('sel-lot', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       map.addLayer({
         id: 'sel-lot', type: 'line', source: 'sel-lot',
-        paint: { 'line-color': GOLD, 'line-width': 2.8 },
+        paint: { 'line-color': GOLD, 'line-width': 3 },
       });
-      // Populate the outline layer once lot polygons have loaded.
-      earthRefreshRef.current = () => {
-        try {
-          const feats3 = [];
-          for (const l of lotIndexRef.current) {
-            feats3.push({ type: 'Feature', geometry: l.geom, properties: { pin: l.pin } });
-          }
-          map.getSource('lots')?.setData({ type: 'FeatureCollection', features: feats3 });
-        } catch (e) {}
-      };
-      // If lots already loaded before this ran, paint them now.
-      if (lotIndexRef.current.length) earthRefreshRef.current();
+      // Selection highlight populate (was the outline populate).
+      earthRefreshRef.current = () => {};
     });
 
     return () => {
