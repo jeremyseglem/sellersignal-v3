@@ -76,6 +76,18 @@ def process_unmatched(
         "errors":       [],
     }
 
+    # MEMORY FIX (2026-07-29): when scoped to a market (not a single ZIP),
+    # loading the whole market's parcels (~300k for AZ/KC) into one dict
+    # OOM-killed the single-worker instance — recurring background crashes.
+    # Stream per-ZIP instead: cap peak memory at one ZIP's owners. We fetch
+    # the unmatched batch ONCE, then check every signal against each ZIP's
+    # owners in turn, accumulating matches, and mark signals matched only
+    # after all ZIPs are seen. Falls back to the original single-load path
+    # for single-ZIP or unscoped calls.
+    if market_keys and not zip_filter:
+        return _process_unmatched_streamed(
+            supa, market_keys, batch_size, max_batches, source_types, stats)
+
     # Pre-load owners_db for the zip filter (or the whole KC coverage),
     # optionally scoped to specific markets (rematch_autofill fast path)
     owners_db, use_codes = _load_owners_db(supa, zip_filter, market_keys)
@@ -455,12 +467,80 @@ def _allowed_markets_for(source_type: str) -> "set | None":
     return SOURCE_MARKET_SCOPE.get((source_type or '').strip())
 
 
+def _process_unmatched_streamed(supa, market_keys, batch_size, max_batches,
+                                source_types, stats) -> dict:
+    """Memory-capped matcher: never holds more than one ZIP's owners in
+    memory. Fetches the unmatched batch once, then for each ZIP in the
+    market loads its owners, checks every signal against them (deferring
+    the matched_at flip), and frees the ZIP dict before the next. Marks
+    all processed signals once at the end. Peak memory = one ZIP."""
+    # Resolve the market's ZIPs.
+    cov = []
+    for mk in sorted(market_keys):
+        rows = (supa.table('zip_coverage_v3').select('zip_code')
+                .eq('market_key', mk).execute()).data or []
+        cov.extend(r['zip_code'] for r in rows)
+    zips = sorted(set(cov))
+    if not zips:
+        stats["errors"].append(f"No ZIPs for markets {market_keys}")
+        return stats
+
+    # Fetch the unmatched signals for this scope, once.
+    all_rows = []
+    for _ in range(max_batches):
+        rows = _fetch_unmatched_batch(supa, batch_size, source_types)
+        if not rows:
+            break
+        # exclude ones already collected (fetch re-reads NULL matched_at,
+        # which we haven't flipped yet — so guard against dupes by id)
+        have = {r["id"] for r in all_rows}
+        new = [r for r in rows if r["id"] not in have]
+        if not new:
+            break
+        all_rows.extend(new)
+    if not all_rows:
+        return stats
+
+    matched_totals = {r["id"]: 0 for r in all_rows}
+    for ZIP in zips:
+        try:
+            owners_db, use_codes = _load_owners_db(supa, ZIP, market_keys)
+        except Exception as e:
+            stats["errors"].append({"zip": ZIP, "error": f"load:{str(e)[:120]}"})
+            continue
+        if not owners_db:
+            continue
+        for row in all_rows:
+            try:
+                n = _process_one(supa, row, owners_db, use_codes, ZIP,
+                                 defer_mark=True)
+                matched_totals[row["id"]] += n
+            except Exception as e:
+                stats["errors"].append({"raw_signal_id": row["id"],
+                                        "zip": ZIP, "error": str(e)[:120]})
+        del owners_db, use_codes
+
+    # Mark all processed signals now that every ZIP has been checked.
+    for row in all_rows:
+        total = matched_totals[row["id"]]
+        _mark_matched(supa, row["id"], match_count=total)
+        stats["processed"] += 1
+        if total > 0:
+            stats["matched"] += 1
+            stats["by_type"][row["signal_type"]] = (
+                stats["by_type"].get(row["signal_type"], 0) + 1)
+        else:
+            stats["signals_none"] += 1
+    return stats
+
+
 def _process_one(
     supa,
     row: dict,
     owners_db: dict,
     use_codes: dict,
     zip_filter: Optional[str],
+    defer_mark: bool = False,
 ) -> int:
     """
     Match a single raw_signal to parcels. Write match rows to
@@ -554,7 +634,8 @@ def _process_one(
     candidates = filtered_candidates
 
     if not candidates:
-        _mark_matched(supa, row["id"], match_count=0)
+        if not defer_mark:
+            _mark_matched(supa, row["id"], match_count=0)
         return 0
 
     # Write raw_signal_matches_v3 rows. The effective strength is the
@@ -583,8 +664,10 @@ def _process_one(
 
     # Mark raw_signal processed. Note: this must happen AFTER the match
     # rows are written, so if match-write fails we don't falsely mark
-    # the signal as processed.
-    _mark_matched(supa, row["id"], match_count=len(match_rows))
+    # the signal as processed. In streamed (defer_mark) mode the caller
+    # marks once after all ZIPs are checked.
+    if not defer_mark:
+        _mark_matched(supa, row["id"], match_count=len(match_rows))
 
     return len(match_rows)
 

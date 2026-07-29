@@ -5478,21 +5478,7 @@ def admin_run_matcher_market(
         zips = [z for z in zips if z == zip_code]
     if not zips:
         raise HTTPException(400, f"No live ZIPs for market_key={market_key}")
-    # Per-ZIP mode (zip_code set): only load that ZIP's owners (fast — avoids
-    # the 25-ZIP full-market load that overruns the request window). Matches
-    # are upserted, but signals are NOT marked matched_at, so a later pass on
-    # another ZIP can still add its matches. Full-market mode (no zip_code)
-    # marks signals as before.
     mark_done = zip_code is None
-
-    merged_owners, merged_use_codes, pin_to_zip, parcels_per_zip = {}, {}, {}, {}
-    for ZIP in zips:
-        owners_db, use_codes = M._load_owners_db(supa, ZIP)
-        parcels_per_zip[ZIP] = len(owners_db)
-        for pin, info in owners_db.items():
-            merged_owners[pin] = info
-            merged_use_codes[pin] = use_codes[pin]
-            pin_to_zip[pin] = ZIP
 
     signals = (supa.table('raw_signals_v3')
                .select('id, document_ref, party_names, source_type, '
@@ -5509,53 +5495,64 @@ def admin_run_matcher_market(
     stats = {"market_key": market_key, "zips": len(zips),
              "signals_in_scope": len(signals), "signals_processed": 0,
              "signals_with_matches": 0, "match_rows_written": 0,
-             "zip_distribution": {z: 0 for z in zips}, "errors": []}
+             "zip_distribution": {z: 0 for z in zips}, "errors": [],
+             "parcels_per_zip": {}}
 
-    for sig in signals:
+    # MEMORY FIX (2026-07-29): stream one ZIP at a time. Loading all 25 AZ
+    # ZIPs' owners into one merged dict (~326k rows) OOM-killed the single
+    # uvicorn worker. Now peak memory = one ZIP's owners (~13k). Each ZIP is
+    # matched against ALL in-scope signals, matches upserted, then its dict
+    # is dropped before the next ZIP loads. Signals with any match are
+    # tracked; matched_at is flipped once at the end (mark_done) using the
+    # accumulated per-signal match count.
+    sig_match_count = {s['id']: 0 for s in signals}
+
+    for ZIP in zips:
         try:
-            parties = [p for p in (sig.get('party_names') or [])
-                       if not (isinstance(p, dict)
-                               and str(p.get('role', '')).startswith('predeceased_'))]
-            if not parties:
-                if mark_done:
-                    (supa.table('raw_signals_v3')
-                     .update({'matched_at': datetime.utcnow().isoformat(),
-                              'match_count': 0}).eq('id', sig['id']).execute())
-                stats["signals_processed"] += 1
-                continue
-            candidates = dispatcher(sig, merged_owners, merged_use_codes)
-            gate_strengths, filtered = {}, []
-            for c in candidates:
-                strength = M._surname_gate(c["parcel_id"], merged_owners, parties)
-                if strength is None:
-                    continue
-                gate_strengths[c["parcel_id"]] = strength
-                filtered.append(c)
-            match_rows = []
-            for c in filtered:
-                disp_str = c.get("trigger_hint", {}).get("match_strength", "strict")
-                gate_str = gate_strengths[c["parcel_id"]]
-                final_str = "weak" if (disp_str == "weak" or gate_str == "weak") else "strict"
-                match_rows.append({"raw_signal_id": sig['id'], "pin": c["parcel_id"],
-                                   "match_strength": final_str,
-                                   "match_method": f"legacy::{signal_type}"})
-            if match_rows:
-                (supa.table('raw_signal_matches_v3')
-                 .upsert(match_rows, on_conflict='raw_signal_id,pin').execute())
-                for mr in match_rows:
-                    stats["match_rows_written"] += 1
-                    z = pin_to_zip.get(mr["pin"], "?")
-                    stats["zip_distribution"][z] = stats["zip_distribution"].get(z, 0) + 1
-                stats["signals_with_matches"] += 1
-            if mark_done:
-                (supa.table('raw_signals_v3')
-                 .update({'matched_at': datetime.utcnow().isoformat(),
-                          'match_count': len(match_rows)}).eq('id', sig['id']).execute())
-            stats["signals_processed"] += 1
+            owners_db, use_codes = M._load_owners_db(supa, ZIP)
         except Exception as e:
-            stats["errors"].append({"signal_id": sig.get('id'), "error": str(e)[:200]})
+            stats["errors"].append({"zip": ZIP, "error": f"load: {str(e)[:150]}"})
+            continue
+        stats["parcels_per_zip"][ZIP] = len(owners_db)
+        for sig in signals:
+            try:
+                parties = [p for p in (sig.get('party_names') or [])
+                           if not (isinstance(p, dict)
+                                   and str(p.get('role', '')).startswith('predeceased_'))]
+                if not parties:
+                    continue
+                candidates = dispatcher(sig, owners_db, use_codes)
+                match_rows = []
+                for c in candidates:
+                    strength = M._surname_gate(c["parcel_id"], owners_db, parties)
+                    if strength is None:
+                        continue
+                    disp_str = c.get("trigger_hint", {}).get("match_strength", "strict")
+                    final_str = "weak" if (disp_str == "weak" or strength == "weak") else "strict"
+                    match_rows.append({"raw_signal_id": sig['id'], "pin": c["parcel_id"],
+                                       "match_strength": final_str,
+                                       "match_method": f"legacy::{signal_type}"})
+                if match_rows:
+                    (supa.table('raw_signal_matches_v3')
+                     .upsert(match_rows, on_conflict='raw_signal_id,pin').execute())
+                    stats["match_rows_written"] += len(match_rows)
+                    stats["zip_distribution"][ZIP] += len(match_rows)
+                    if sig_match_count[sig['id']] == 0:
+                        stats["signals_with_matches"] += 1
+                    sig_match_count[sig['id']] += len(match_rows)
+            except Exception as e:
+                stats["errors"].append({"signal_id": sig.get('id'), "zip": ZIP,
+                                        "error": str(e)[:150]})
+        # drop this ZIP's owners before the next loads
+        del owners_db, use_codes
 
-    stats["parcels_per_zip"] = parcels_per_zip
+    if mark_done:
+        from datetime import datetime as _dt
+        for sid, cnt in sig_match_count.items():
+            (supa.table('raw_signals_v3')
+             .update({'matched_at': _dt.utcnow().isoformat(),
+                      'match_count': cnt}).eq('id', sid).execute())
+    stats["signals_processed"] = len(signals)
     return stats
 
 
