@@ -360,34 +360,32 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           layers.push(new GeoJsonLayer({
             id: 'lots3d',
             data: { type: 'FeatureCollection', features: lotIndexRef.current.map((l) => ({ type: 'Feature', geometry: l.geom })) },
-            stroked: true, filled: false, getLineColor: [198, 161, 91, 70],
-            getLineWidth: 1, lineWidthUnits: 'pixels', beforeId: firstSymbol,
+            stroked: true, filled: false, getLineColor: [212, 175, 105, 200],
+            getLineWidth: 1.6, lineWidthUnits: 'pixels', lineWidthMinPixels: 1.2,
+            beforeId: firstSymbol,
             extensions: [new TerrainExtension()],
           }));
         }
-        // Pins must be draped onto the 3D terrain too, or they render on the
-        // flat z=0 plane and slide across the elevated mesh during pan/zoom
-        // (the "everything non-terrain drifts" bug). Render them as a deck
-        // ScatterplotLayer with TerrainExtension so they share the terrain's
-        // camera/depth — locked to their real positions, and pickable.
+        // Pins draped onto the 3D terrain (flat z=0 pins slid across the
+        // elevated mesh on pan/zoom). Terrain-locked, pickable, and always
+        // visible — every category gets a fill so no pin disappears.
         const ScatterplotLayer = deckMods.ScatterplotLayer;
         if (ScatterplotLayer && TerrainExtension && featsRef.current.length) {
           const CAT_RGB = {
-            call_now: [198, 161, 91], build_now: [138, 154, 91],
-            hold: [120, 110, 84], none: [90, 83, 70],
+            call_now: [212, 175, 105], build_now: [150, 168, 100],
+            hold: [150, 140, 112], none: [120, 112, 96],
           };
-          const CAT_ALPHA = { call_now: 255, build_now: 217, hold: 153, none: 0 };
           layers.push(new ScatterplotLayer({
             id: 'pins3d',
             data: featsRef.current,
             getPosition: (f) => [f.lng, f.lat],
             getFillColor: (f) => {
               const rgb = CAT_RGB[f.cat] || CAT_RGB.none;
-              return [rgb[0], rgb[1], rgb[2], CAT_ALPHA[f.cat] ?? 0];
+              return [rgb[0], rgb[1], rgb[2], 255];
             },
-            getRadius: (f) => (f.cat === 'call_now' ? 8 : f.cat === 'build_now' ? 6 : f.cat === 'hold' ? 4.5 : 3),
-            radiusUnits: 'pixels', radiusMinPixels: 2, radiusMaxPixels: 14,
-            stroked: true, getLineColor: [13, 11, 7, 230], lineWidthUnits: 'pixels', getLineWidth: 0.6,
+            getRadius: (f) => (f.cat === 'call_now' ? 9 : f.cat === 'build_now' ? 7 : f.cat === 'hold' ? 5.5 : 4),
+            radiusUnits: 'pixels', radiusMinPixels: 3, radiusMaxPixels: 16,
+            stroked: true, getLineColor: [13, 11, 7, 235], lineWidthUnits: 'pixels', getLineWidth: 1,
             pickable: true,
             onClick: (info) => {
               if (!info || !info.object) return;
@@ -451,14 +449,18 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           routeClick(e.lngLat.lng, e.lngLat.lat);
         });
         map.getCanvas().style.cursor = 'crosshair';
-        // In Earth mode the pins are now drawn by deck's terrain-draped
-        // 'pins3d' layer (locked to the mesh). Hide the flat MapLibre p-dots,
-        // badges, and symbol/label layers — those render on the z=0 plane and
-        // were the layers sliding across the terrain on pan/zoom.
+        // Keep the street basemap AND labels visible: the 3D tiles sit on
+        // top of the ground plane, and the flat basemap is the fallback when
+        // you zoom past 3D-tile coverage (hiding it left a black void).
+        // Re-light the labels for legibility over imagery. Only the flat
+        // pin/badge layers are hidden — deck's terrain-draped pins3d replaces
+        // them so pins stay locked to the mesh instead of sliding.
         for (const l of map.getStyle().layers) {
           try {
-            if (l.type === 'symbol' || ['fill', 'line', 'background'].includes(l.type)) {
-              map.setLayoutProperty(l.id, 'visibility', 'none');
+            if (l.type === 'symbol') {
+              map.setPaintProperty(l.id, 'text-color', '#FFFFFF');
+              map.setPaintProperty(l.id, 'text-halo-color', 'rgba(0,0,0,0.9)');
+              map.setPaintProperty(l.id, 'text-halo-width', 2.2);
             }
           } catch (e) {}
         }
