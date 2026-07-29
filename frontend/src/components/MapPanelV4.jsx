@@ -206,7 +206,7 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
       style: 'https://tiles.openfreemap.org/styles/positron',
       bounds: [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
       fitBoundsOptions: { padding: 40 },
-      pitch: 50, maxPitch: 72,
+      pitch: 0, maxPitch: 0, dragRotate: false, pitchWithRotate: false,
       attributionControl: { compact: true },
     });
     mapRef.current = map;
@@ -272,11 +272,13 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
         paint: {
           'circle-color': colorExpr,
           'circle-radius': ['interpolate', ['linear'], ['zoom'],
-            12, ['match', ['get', 'cat'], 'none', 1.4, 'hold', 2.2, 'build_now', 2.8, 3.6],
-            16, ['match', ['get', 'cat'], 'none', 3.5, 'hold', 5, 'build_now', 6, 8]],
-          'circle-opacity': ['match', ['get', 'cat'], 'none', 0.5, 'hold', 0.85, 1],
-          'circle-stroke-width': ['case', ['boolean', ['feature-state', 'sel'], false], 2.4, 0],
-          'circle-stroke-color': GOLD,
+            12, ['match', ['get', 'cat'], 'none', 2, 'hold', 3, 'build_now', 4, 5],
+            16, ['match', ['get', 'cat'], 'none', 4.5, 'hold', 6, 'build_now', 7.5, 9]],
+          'circle-opacity': ['match', ['get', 'cat'], 'none', 0.75, 1],
+          // Dark ring around every pin for contrast over bright imagery;
+          // gold ring when selected.
+          'circle-stroke-width': ['case', ['boolean', ['feature-state', 'sel'], false], 3, 1.4],
+          'circle-stroke-color': ['case', ['boolean', ['feature-state', 'sel'], false], GOLD, 'rgba(10,8,5,0.9)'],
         },
       });
       map.addLayer({
@@ -308,6 +310,25 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
       map.on('mouseenter', 'p-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', 'p-dots', () => { map.getCanvas().style.cursor = ''; });
 
+      // Click anywhere on a property (not just the small pin dot) opens it:
+      // resolve the click's lng/lat against the lot fabric (point-in-polygon),
+      // falling back to nearest pin. Pure lng/lat on a flat map — always
+      // accurate. The p-dots handler above still handles direct dot taps and
+      // fires first; this catches taps on the parcel body.
+      map.on('click', (e) => {
+        // If a pin dot was directly hit, its handler already ran.
+        const hits = map.queryRenderedFeatures(e.point, { layers: ['p-dots'] });
+        if (hits && hits.length) return;
+        const pin = resolveClick(e.lngLat.lng, e.lngLat.lat);
+        if (pin == null) return;
+        const feat = featsRef.current.find((x) => String(x.pin) === String(pin));
+        if (feat && feat.units && feat.units.length > 1) {
+          openUnitList(feat, e.lngLat);
+        } else if (onPickPin) {
+          onPickPin(pin);
+        }
+      });
+
       // lot fabric — Earth's click resolution + faint drape
       mapApi.lotPolygons(zip).then((d) => {
         const lots = d?.polygons || {};
@@ -321,178 +342,60 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
           if (!g) continue;
           lotIndexRef.current.push({ i: f.i, pin: f.pin, bbox: geomBounds(g), geom: g });
         }
-        if (earthOnRef.current) refreshEarthLayers(); // eslint-disable-line no-use-before-define
+        if (earthRefreshRef.current) earthRefreshRef.current();
       }).catch(() => {});
 
-      // ── EARTH: the map, not a mode ──
-      let deckMods = null;
-      let earthKey = null;
-      async function loadDeck() {
-        if (deckMods) return deckMods;
-        const [mb, geo, lyr, ext] = await Promise.all([
-          import('@deck.gl/mapbox'),
-          import('@deck.gl/geo-layers'),
-          import('@deck.gl/layers'),
-          import('@deck.gl/extensions').catch(() => null),
-        ]);
-        deckMods = {
-          MapboxOverlay: mb.MapboxOverlay,
-          Tile3DLayer: geo.Tile3DLayer,
-          GeoJsonLayer: lyr.GeoJsonLayer,
-          ScatterplotLayer: lyr.ScatterplotLayer,
-          TerrainExtension: ext ? (ext._TerrainExtension || ext.TerrainExtension) : null,
-        };
-        return deckMods;
-      }
-      function earthLayers(key) {
-        const { Tile3DLayer, GeoJsonLayer, TerrainExtension } = deckMods;
-        const firstSymbol = (map.getStyle().layers.find((l) => l.type === 'symbol') || {}).id;
-        const layers = [
-          new Tile3DLayer({
-            id: 'g3d',
-            data: `https://tile.googleapis.com/v1/3dtiles/root.json?key=${encodeURIComponent(key)}`,
-            operation: 'terrain+draw', beforeId: firstSymbol,
-            loadOptions: { '3d-tiles': { maximumScreenSpaceError: 24 } },
-            onTileError: () => {},
-          }),
-        ];
-        if (TerrainExtension && lotIndexRef.current.length) {
-          layers.push(new GeoJsonLayer({
-            id: 'lots3d',
-            data: { type: 'FeatureCollection', features: lotIndexRef.current.map((l) => ({ type: 'Feature', geometry: l.geom })) },
-            stroked: true, filled: false, getLineColor: [212, 175, 105, 200],
-            getLineWidth: 1.6, lineWidthUnits: 'pixels', lineWidthMinPixels: 1.2,
-            beforeId: firstSymbol,
-            extensions: [new TerrainExtension()],
-          }));
-        }
-        // Pins as a PICKABLE billboarded ScatterplotLayer. NOT terrain-
-        // draped: draped layers render to a texture and lose the pick buffer
-        // — that's why clicking was dead in 3D. billboard:true keeps pins
-        // screen-facing at their true lng/lat; deck's picking maps the 3D
-        // click straight to the feature (no flat-plane pip offset).
-        const ScatterplotLayer = deckMods.ScatterplotLayer;
-        if (ScatterplotLayer && featsRef.current.length) {
-          const CAT_RGB = {
-            call_now: [212, 175, 105], build_now: [150, 168, 100],
-            hold: [150, 140, 112], none: [120, 112, 96],
-          };
-          layers.push(new ScatterplotLayer({
-            id: 'pins3d',
-            data: featsRef.current,
-            billboard: true,
-            getPosition: (f) => [f.lng, f.lat],
-            getFillColor: (f) => {
-              const rgb = CAT_RGB[f.cat] || CAT_RGB.none;
-              return [rgb[0], rgb[1], rgb[2], 255];
-            },
-            getRadius: (f) => (f.cat === 'call_now' ? 9 : f.cat === 'build_now' ? 7 : f.cat === 'hold' ? 5.5 : 4),
-            radiusUnits: 'pixels', radiusMinPixels: 3, radiusMaxPixels: 16,
-            stroked: true, getLineColor: [13, 11, 7, 235], lineWidthUnits: 'pixels', getLineWidth: 1,
-            pickable: true, autoHighlight: true, highlightColor: [233, 205, 143, 90],
-            onClick: (info) => {
-              if (!info || !info.object) return true;
-              const f = info.object;
-              if (f.units && f.units.length > 1) {
-                openUnitList(f, { lng: f.lng, lat: f.lat });
-              } else if (onPickPin) {
-                onPickPin(f.pin);
-              }
-              return true;
-            },
-          }));
-        }
-        return layers;
-      }
-      function selLayer() {
-        const { GeoJsonLayer, TerrainExtension } = deckMods || {};
-        if (!GeoJsonLayer) return null;
-        const hit = lotIndexRef.current.find((l) => String(l.pin) === String(selPinRef.current));
-        if (!hit) return null;
-        return new GeoJsonLayer({
-          id: 'sel3d', data: { type: 'Feature', geometry: hit.geom },
-          stroked: true, filled: false, getLineColor: [233, 205, 143, 255],
-          getLineWidth: 3, lineWidthUnits: 'pixels',
-          extensions: TerrainExtension ? [new TerrainExtension()] : [],
-        });
-      }
-      function refreshEarthLayers() {
-        if (overlayRef.current && earthKey) {
-          const base = earthLayers(earthKey);
-          const sel = selLayer();
-          try { overlayRef.current.setProps({ layers: sel ? [...base, sel] : base }); } catch (e) {}
-        }
-      }
-      earthRefreshRef.current = refreshEarthLayers;
-      try {
-        // Kick the deck.gl chunk downloads off IN PARALLEL with the
-        // earth-config round trip instead of after it — these are ~600KB
-        // of dynamic imports and there's no reason they should wait on a
-        // config fetch that doesn't feed them.
-        const deckReady = loadDeck();
-        const cfg = await mapApi.earthConfig();      // 403/404 → catch → satellite
-        if (!cfg?.key) { deckReady.catch(() => {}); throw new Error('earth not configured'); }
-        await deckReady;
-        earthKey = cfg.key;
-        overlayRef.current = new deckMods.MapboxOverlay({
-          interleaved: true,
-          getCursor: () => 'crosshair',
-          onClick: (info) => {
-            // pins3d has its own onClick for pin picks. Here handle clicks
-            // that DIDN'T hit a pin (empty terrain / a property lot) via the
-            // lng/lat resolver so lot outlines are still clickable.
-            if (info && info.layer && info.layer.id === 'pins3d') return;
-            if (!info || !info.coordinate) return;
-            routeClick(info.coordinate[0], info.coordinate[1]);
-          },
-          layers: earthLayers(earthKey),
-        });
-        map.addControl(overlayRef.current);
-        earthOnRef.current = true;
-        // Click handling is entirely on the overlay onClick above: it routes
-        // pin picks (pins3d) to the dossier and empty/terrain clicks to the
-        // lng/lat lot resolver. A second map-level handler would double-fire.
-        map.getCanvas().style.cursor = 'crosshair';
-        // Keep the street basemap AND labels visible: the 3D tiles sit on
-        // top of the ground plane, and the flat basemap is the fallback when
-        // you zoom past 3D-tile coverage (hiding it left a black void).
-        // Re-light the labels for legibility over imagery. Only the flat
-        // pin/badge layers are hidden — deck's terrain-draped pins3d replaces
-        // them so pins stay locked to the mesh instead of sliding.
-        for (const l of map.getStyle().layers) {
-          try {
-            if (l.type === 'symbol') {
-              map.setPaintProperty(l.id, 'text-color', '#FFFFFF');
-              map.setPaintProperty(l.id, 'text-halo-color', 'rgba(0,0,0,0.9)');
-              map.setPaintProperty(l.id, 'text-halo-width', 2.2);
-            }
-          } catch (e) {}
-        }
-        try { map.setLayoutProperty('p-dots', 'visibility', 'none'); } catch (e) {}
-        try { map.setLayoutProperty('p-badges', 'visibility', 'none'); } catch (e) {}
-        if (creditRef.current) creditRef.current.style.display = 'block';
-        map.easeTo({ pitch: 58, duration: 1200 });
-      } catch (e) {
-        console.error('[MapPanelV4] Earth unavailable — satellite fallback:', e);
-        map.addSource('sat', {
-          type: 'raster',
-          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-          tileSize: 256, attribution: 'Imagery © Esri',
-        });
-        map.addLayer({
-          id: 'sat', type: 'raster', source: 'sat',
-          paint: { 'raster-opacity': 0.92, 'raster-saturation': -0.12, 'raster-contrast': 0.06 },
-        }, 'p-dots');
-        map.addSource('sel-lot', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-        map.addLayer({ id: 'sel-lot', type: 'line', source: 'sel-lot',
-          paint: { 'line-color': GOLD, 'line-width': 2.6 } });
-      }
+      // ── SATELLITE BASEMAP (flat) ──
+      // 3D Earth was removed 2026-07-29: mixing MapLibre's flat layers with
+      // a deck.gl 3D terrain mesh caused persistent per-frame projection
+      // drift (overlays sliding on pan/zoom) and broke picking (draped
+      // layers lose the pick buffer). Flat satellite = same rich imagery,
+      // one projection, everything clickable and locked.
+      map.addSource('sat', {
+        type: 'raster',
+        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+        tileSize: 256, maxzoom: 19, attribution: 'Imagery © Esri',
+      });
+      // Satellite sits under the pins/outlines but over the dark basemap.
+      map.addLayer({
+        id: 'sat', type: 'raster', source: 'sat',
+        paint: { 'raster-opacity': 1, 'raster-saturation': -0.06, 'raster-contrast': 0.04 },
+      }, 'p-dots');
+
+      // Visible property outlines (must-have): draw the lot fabric as a line
+      // layer beneath the pins. Loaded from lotPolygons; also feeds click
+      // resolution via lotIndexRef (set above).
+      map.addSource('lots', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'lots-outline', type: 'line', source: 'lots',
+        paint: {
+          'line-color': '#FFD98A',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 13, 0.8, 16, 2, 19, 3],
+          'line-opacity': 0.9,
+        },
+      }, 'p-dots');
+      // Selected-parcel highlight outline.
+      map.addSource('sel-lot', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'sel-lot', type: 'line', source: 'sel-lot',
+        paint: { 'line-color': GOLD, 'line-width': 2.8 },
+      });
+      // Populate the outline layer once lot polygons have loaded.
+      earthRefreshRef.current = () => {
+        try {
+          const feats3 = [];
+          for (const l of lotIndexRef.current) {
+            feats3.push({ type: 'Feature', geometry: l.geom, properties: { pin: l.pin } });
+          }
+          map.getSource('lots')?.setData({ type: 'FeatureCollection', features: feats3 });
+        } catch (e) {}
+      };
+      // If lots already loaded before this ran, paint them now.
+      if (lotIndexRef.current.length) earthRefreshRef.current();
     });
 
     return () => {
       ro.disconnect();
-      if (overlayRef.current) { try { map.removeControl(overlayRef.current); } catch (e) {} overlayRef.current = null; }
-      earthOnRef.current = false;
       map.remove(); mapRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -510,9 +413,8 @@ export default function MapPanelV4({ mapData, playbook, selectedPin, onPickPin }
     prevSel.current = f.i;
     try { map.setFeatureState({ source: 'pts', id: f.i }, { sel: true }); } catch (e) {}
     selPinRef.current = f.pin;
-    if (earthOnRef.current && earthRefreshRef.current) {
-      earthRefreshRef.current();
-    } else {
+    if (earthRefreshRef.current) earthRefreshRef.current();
+    {
       try {
         const hit = lotIndexRef.current.find((l) => String(l.pin) === String(f.pin));
         map.getSource('sel-lot')?.setData(hit
