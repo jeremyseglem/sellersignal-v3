@@ -507,6 +507,20 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-29 — V4 map: scuttled 3D Earth for flat satellite (SHIPPED, user-confirmed working)
+
+The Google photorealistic 3D ("Earth") map had an unfixable class of bug: MapLibre's flat layers (pins/streets/outlines at z=0) desynced per-frame from the deck.gl 3D terrain mesh, so overlays slid across the terrain on pan/zoom, AND terrain-draped layers lose the pick buffer so nothing was clickable. Three code-only fix attempts failed (invisible pins → black void → still-drifting). DECISION: scuttle 3D entirely — the requirement is "click any property, see details, pins visible," which a flat map delivers reliably and 3D fought at every turn.
+
+**Shipped (`720323c`, `6a2387a`) — flat Esri satellite map, user-confirmed "loads well and works well":**
+- Esri World_Imagery raster basemap (same rich imagery, flat — one projection, nothing drifts).
+- Street/place names: satellite raster is imagery-only, so transparent Esri reference overlays on top — World_Transportation (roads) + World_Boundaries_and_Places (place names), above imagery / below pins.
+- Native MapLibre circle pins, brightened with a dark contrast ring so they read over imagery; one pin per property.
+- Click ANY property — the pin dot OR anywhere on the parcel body (queryRenderedFeatures on p-dots, else lng/lat point-in-polygon over the lot fabric) — opens the dossier / condo unit-list. Pure lng/lat on a flat map = always accurate.
+- Per-parcel outlines DROPPED: every property has a pin, so outlines were redundant clutter. Lot fabric still loaded for click-anywhere resolution + the gold selected-parcel highlight.
+- pitch locked to 0, dragRotate off — can't be tilted back into the broken 3D-style state.
+
+**Rule:** do NOT reintroduce deck.gl 3D / Tile3DLayer / TerrainExtension into MapPanelV4. Flat satellite is the committed design.
+
 ### 2026-07-29 — Recurring OOM root-caused + fixed; fleet health baseline; AZ healed to 131
 
 **OOM fix (commit `6a9d4ec`) — the recurring "Deploy Ran Out of Memory" crashes.** Root cause was NOT just the manual matcher calls: the rematch_autofill BACKGROUND task loaded an entire market's parcels (~300k rows AZ/KC) into one dict every tick on the single-worker instance. `run-matcher-market` had the same flaw. Both now stream per-ZIP (`_process_unmatched_streamed` + `_process_one(defer_mark=True)`): peak memory = one ZIP (~13k rows), ~20x reduction. Correctness preserved — signals marked matched only after checked against every ZIP in their market. Rule reaffirmed: never load a whole market's owners into memory on this instance.
