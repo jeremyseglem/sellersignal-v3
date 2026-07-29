@@ -507,6 +507,16 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-29 — Recurring OOM root-caused + fixed; fleet health baseline; AZ healed to 131
+
+**OOM fix (commit `6a9d4ec`) — the recurring "Deploy Ran Out of Memory" crashes.** Root cause was NOT just the manual matcher calls: the rematch_autofill BACKGROUND task loaded an entire market's parcels (~300k rows AZ/KC) into one dict every tick on the single-worker instance. `run-matcher-market` had the same flaw. Both now stream per-ZIP (`_process_unmatched_streamed` + `_process_one(defer_mark=True)`): peak memory = one ZIP (~13k rows), ~20x reduction. Correctness preserved — signals marked matched only after checked against every ZIP in their market. Rule reaffirmed: never load a whole market's owners into memory on this instance.
+
+**Fleet health baseline (106 ZIPs, 9 markets).** Structural buckets (trust/LLC/absentee/tenure) populated on ALL ZIPs — 0 zeroed. Geometry 99.95-100% fleet-wide (75219 condo gap closed). Court-signal state by market: WA_KING probate=2071 (divorce stale, awaiting portal creds), WA_SNOHOMISH=236, MT=122, CT=89, AZ=131. Gaps are all TX court-signal coverage (account-gated): TX_TRAVIS=0 (all 9 dark), TX_DALLAS=8 (recorder trickle), TX_COLLIN=2. Divorce built only in KC — known gap, not a regression.
+
+**AZ healed:** all 25 Maricopa ZIPs refreshed post-drain — 131 probate across 24/25 (85054 genuinely has no resolved decedent). The 6 that read 0 were just un-refreshed after the match drain, not dark.
+
+**Onboarding-readiness verdict:** live fleet is clean (structural + geometry complete), so new-ZIP onboarding won't inherit fleet debt. Remaining lead-volume gaps are the account-gated TX court dockets (Dallas + Travis recon done — both need a free portal account, KC-login pattern ready to wire) and KC divorce backlog (awaiting KC_PORTAL creds in Railway).
+
 ### 2026-07-28 — Maricopa probate docket harvester + county resolution (AZ: 0 → 104 court-grade probate leads)
 
 Answered "why no probate in Arizona": the AZ market harvested county *recorders* (deeds) — probate *activity* lives in Superior Court *dockets* we'd never built. Built the docket harvester end to end, mirroring the MT enumeration pattern.
