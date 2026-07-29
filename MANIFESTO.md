@@ -507,6 +507,22 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-28 — Maricopa probate docket harvester + county resolution (AZ: 0 → 104 court-grade probate leads)
+
+Answered "why no probate in Arizona": the AZ market harvested county *recorders* (deeds) — probate *activity* lives in Superior Court *dockets* we'd never built. Built the docket harvester end to end, mirroring the MT enumeration pattern.
+
+**Harvester** (`backend/harvesters/maricopa_probate_court.py`, `scripts/run_maricopa_probate.py`, `.github/workflows/maricopa-probate.yml`): enumerates `PB{year}-{seq}` on the Maricopa Superior Court probate docket (superiorcourt.maricopa.gov/docket/ProbateCourtCases — plain HTTP GET, the site "recaptcha" is chrome, not gating the search). Parses the party table (Party Name / Relationship / Sex / Attorney). **Critical classifier:** the PB prefix mixes decedent estates (Decedent + PR/Petitioner — our lead) AND guardianship/conservatorship (Ward/Conservator — NOT a seller signal, the weak commoditized segment). Only decedent estates emit signals; guardianships classified out. Petitioner-as-contact fallback for fresh estates (no_pr_yet). Daily 13:00 UTC cron, county-scoped cursor/skip/fail-loud from MT.
+
+**County resolution — the accuracy fix (the important part).** AZ luxury real estate is overwhelmingly trust/LLC-titled ("NITCHMAN FAMILY TRUST"). The app matcher's 2-token name gate correctly rejects surname-only matches (no false positives — Jeremy's hard rule), so trust-owned estates matched ZERO despite 100 surname overlaps. Fix is NOT to loosen the gate — it's county resolution: `scripts/run_maricopa_probate.py` now resolves every decedent against the full **1,755,691-row** Maricopa Assessor owner roll (`build_maricopa_county_roll.py` → `lib_county_resolve.from_maricopa_roll`, requires surname + first given name — trust-only and wrong-first-name correctly rejected, verified). Attaches `resolved_parcels` + `county_resolution_ran` so the app matcher matches by PARCEL IDENTITY (dispatcher Layer 0), not fuzzy name. Roll cached weekly in the Action. `RERESOLVE=1` mode backfills resolution onto already-stored signals.
+
+**Result:** 215 estate signals harvested (123 guardianships filtered), 116 resolved to county parcels, **73 matched with hits**, **104 probate Contact-Now leads across 15 live AZ ZIPs** (85251=17, 85260=14, 85254=13, 85255=9, 85250=8, 85258=7, 85016=7; 4 ZIPs still settling). AZ went from 0 court-grade probate to live. Zero false positives by construction.
+
+**Reusable:** generic `POST /api/harvest/admin/run-matcher-market?market_key=X` endpoint (market-scoped owner load, avoids full-fleet load under contention). The whole pattern — docket harvest → decedent/guardianship classifier → county resolution → identity match — now transfers directly to Travis/Dallas/Collin (all same docket shape). This is the template that lifts the remaining Sun Belt territories.
+
+**Ops note:** running `run-matcher-market` (full 25-ZIP owner load) in a tight loop wedged the single uvicorn worker → brief prod outage, recovered on redeploy, no data lost. Lesson: bulk owner-load endpoints run one ZIP at a time with spacing, never batched against the single worker. refresh-counts on large AZ ZIPs (15-19k parcels) takes ~20-90s each (full briefing rebuild) — patient, one at a time.
+
+**Also this session:** KC Superior Court harvester restored (commit `c096254`) — login wall + form redesign since April fixed (login step via KC_PORTAL_USER/PASS env, form_token capture, filing-date range shape); verified 197 probate signals in a 10-day window vs 0 since April. **AWAITING: KC_PORTAL_USER/KC_PORTAL_PASS in Railway env to activate** — then drain 3-month backlog across 34 KC ZIPs. Canon poisoned-retry fix (`bbe3f8d`) — API-failure fallback rows no longer freeze pins. Fleet condo backfill + legacy re-seed + building-pin UX (earlier commits).
+
 ### 2026-07-24 — Full-fleet audit + fix pass: KC login wall, Snohomish source migration, 98036/98296 enrichment, topics dedupe, lot-polygon hardening
 
 Fleet-wide diagnostic across all 106 live ZIPs (quality validator, per-source signal freshness, task health, lot-polygon state), followed by a fix pass. Findings and outcomes:
