@@ -1,0 +1,51 @@
+name: KC Superior Court
+
+# Harvests King County Superior Court probate + divorce filings. Requires
+# a logged-in portal session (KC's search went behind a login wall in
+# April 2026); credentials come from the KC_PORTAL_USER / KC_PORTAL_PASS
+# GitHub secrets. Default is a DRY RUN; the daily cron writes.
+#
+# Backlog drain: dispatch manually with since_days=120 write=1 once to
+# recover the April→now gap, then the daily cron keeps it fresh with the
+# default 30-day window.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to write to DB, 0 for dry run"
+        required: false
+        default: "0"
+      since_days:
+        description: "lookback window in days"
+        required: false
+        default: "30"
+      case_types:
+        description: "probate,divorce"
+        required: false
+        default: "probate,divorce"
+  schedule:
+    # 12:00 UTC daily (early morning PT). New filings post overnight.
+    - cron: "0 12 * * *"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install requests beautifulsoup4
+      - name: Run KC Superior Court harvester
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KC_PORTAL_USER: ${{ secrets.KC_PORTAL_USER }}
+          KC_PORTAL_PASS: ${{ secrets.KC_PORTAL_PASS }}
+          # cron writes; manual dispatch uses the input (default 0)
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          SINCE_DAYS: ${{ github.event.inputs.since_days || '30' }}
+          CASE_TYPES: ${{ github.event.inputs.case_types || 'probate,divorce' }}
+        run: python scripts/run_kc_superior_court.py
