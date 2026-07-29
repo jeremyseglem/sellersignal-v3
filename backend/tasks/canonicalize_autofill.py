@@ -137,6 +137,45 @@ def _find_priority_1_zip() -> Optional[str]:
     return None
 
 
+def _find_priority_1p5_zip(supa, state_dict: dict) -> Optional[str]:
+    """
+    Priority 1.5 (2026-07-28): the live ZIP with the largest count of
+    retryable canon rows — i.e. the most poisoned. After the 07-27 deploy
+    storm left several re-seeded ZIPs 75-80% unknown, blind round-robin
+    (P2) drained them too slowly because it spends a full tick on healthy
+    ZIPs too. This scans owner_canonical_v3 for confidence<=0.2 rows per
+    live ZIP (cheap count query) and returns the worst, so poison clears
+    fastest-first. Cached for CANON_SCAN_TTL so the scan runs at most once
+    per few minutes.
+    """
+    import time as _t
+    now = _t.time()
+    ttl = 300
+    cached = state_dict.get("_p15_cache")
+    if cached and (now - cached["at"] < ttl) and cached.get("queue"):
+        return cached["queue"].pop(0)
+
+    zips_resp = (supa.table("zip_coverage_v3").select("zip_code")
+                 .eq("status", "live").execute())
+    live_zips = [r["zip_code"] for r in (zips_resp.data or [])]
+    scored = []
+    for z in live_zips:
+        try:
+            r = (supa.table("owner_canonical_v3")
+                 .select("pin", count="exact")
+                 .eq("zip_code", z).lte("confidence", 0.2)
+                 .limit(1).execute())
+            n = r.count or 0
+            if n >= 200:          # only worth jumping the queue if materially poisoned
+                scored.append((n, z))
+        except Exception:
+            continue
+    scored.sort(reverse=True)
+    queue = [z for _, z in scored]
+    state_dict["_p15_cache"] = {"at": now, "queue": queue}
+    return queue.pop(0) if queue else None
+
+
 def _find_priority_2_zip(supa, state_dict: dict) -> Optional[str]:
     """
     Priority 2: round-robin through all live ZIPs.
@@ -217,9 +256,14 @@ async def canonicalize_autofill_loop() -> None:
                 await asyncio.sleep(60)
                 continue
 
-            # Pick a ZIP: Priority 1 (orchestrator-flagged) > Priority 2 (round-robin)
+            # Pick a ZIP: P1 (orchestrator-flagged) > P1.5 (most-poisoned) >
+            # P2 (round-robin). P1.5 catches deploy-storm poisoning that P1
+            # misses after a redeploy wipes in-memory orchestrator state.
             zip_code = _find_priority_1_zip()
             priority = "1-orchestrator-flagged"
+            if not zip_code:
+                zip_code = _find_priority_1p5_zip(supa, state)
+                priority = "1.5-most-poisoned"
             if not zip_code:
                 zip_code = _find_priority_2_zip(supa, state)
                 priority = "2-round-robin"
