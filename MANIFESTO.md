@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
+**Last updated:** 2026-07-29 evening (FL_PALM_BEACH launched — 10th market, first Florida market: 8 ZIPs / ~90.6k parcels live, structural buckets at cap; recorder + docket harvesters pending — see build journal). Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -14,7 +14,7 @@ These apply to every Claude session. Non-negotiable.
 2. Never assume; never invent data. Reference this manifesto and the build journal before proposing anything.
 3. Direct answers, no hedging, no emojis. When wrong, own it without spiraling.
 4. "Building" is jargon — use plain English ("in pipeline", "on watch list").
-5. Don't drift from the working code path. The 85 live territories across 6 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN) are the standard; match against them.
+5. Don't drift from the working code path. The 114 live territories across 10 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH) are the standard; match against them.
 6. Skip-trace and Lob letter sending are NOT wired for beta (placeholder buttons).
 7. Brian is co-founder for product validation discussions.
 
@@ -28,7 +28,7 @@ An AI-powered intelligence platform for luxury real estate agents in defined ZIP
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
-**Geographic scope:** **85 live territories across 6 markets** as of 2026-06-12: King County WA (32), Snohomish County WA (6), Maricopa County AZ (24), Dallas County TX (9), Travis County TX (9), Collin County TX (5). Bozeman MT (Jeremy's actual market) is on the post-launch roadmap.
+**Geographic scope:** **114 live territories across 10 markets** as of 2026-07-29: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
 
 ### WA_KING live ZIPs (32; other markets listed in Live measurements below)
 
@@ -506,6 +506,41 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-07-29 — FL_PALM_BEACH launched: Palm Beach County wave 1 (8 ZIPs, ~90.6k parcels)
+
+Tenth market, first Florida market — the supply-side expansion Jeremy called before demand-side integration. Recon → build → live in one session.
+
+**Recon findings (drive the build):**
+- **Parcels: best single-source layer of any market to date.** PBC Property Appraiser hosted FeatureServer `services1.arcgis.com/ZWOoUZbtaYePLlPw/.../Parcels_and_Property_Details_WebMercator/FeatureServer/0` carries OWNER_NAME1/2, full mailing address+state, SALE_DATE (98%+ coverage), TOTAL_MARKET, PROPERTY_USE, CONDO flag, YRBLT, and polygon geometry (outSR=4326 + returnCentroid supported) in ONE layer. No KC-style owner stripping. CONFID_FLG=Y statutory redactions ~0.1%.
+- **No situs-ZIP column** (ZIP1/ZIP2 are MAILING zips) — per-ZIP filtering is envelope spatial query + exact ZCTA point-in-polygon (CT/MT pattern), polygons in `data/zip_polygons/fl.json` (TIGERweb ZCTA).
+- **Recorder open:** `erec.mypalmbeachclerk.com` = Landmark Web 1.5.103 (Cott/Pioneer), no captcha, no account wall. Adapter is standard follow-up work. FL instruments to target at build: deeds, lis pendens, recorded death certificates, Notice of Trust (F.S. 736.05055 — filed with clerk on settlor's death; verify PBC doc-type list at build).
+- **Court dockets soft-blocked from datacenter:** `applications.mypalmbeachclerk.com` (eCaseView probate/family) TLS-resets our egress — Travis shape. JEREMY BROWSER CHECK PENDING: does eCaseView guest search work in a browser, searchable by date range + case type? If yes, Montana pattern (GitHub Actions + headless browser) likely clears it and PBC goes full-stack.
+
+**Shipped (commits 3a139a7 + follow-up fix):**
+- `scripts/build_pbc_owners.py` — envelope query + ZCTA PIP; prop_type R (single family/townhouse/multifam<5/mobile) and K (condominium/co-op or CONDO=YES), else raw-use-truncated (matcher's eligibility filter rejects downstream, correctly); absentee via mailing state != FL or mailing city outside per-ZIP locality set; lat/lng centroids ride in at seed (no geometry backfill); 80% address gate.
+- `data/zip_polygons/fl.json` — 8 ZCTA features.
+- Wiring: PBC_ZIP_TO_CITY in admin.py; FL branches in seed-from-json dispatch, onboard-zip orchestrator (register-endpoint AND orchestrator-endpoint detect blocks — they are SEPARATE; first fire failed because only the register block was patched), both city fallback chains (+ MT added to the orchestrator chain, same Bellevue-default bug class), canon seed resolver; `FL_PALM_BEACH: FL` in _MARKET_STATE; TerritoryMap.jsx FL 'Palm Beach' metro + 'Florida' pill (also fixed the MT label gap: MT_GALLATIN→Bozeman, MT_FLATHEAD→Whitefish via MARKET_METRO_LABELS, TX far-flung pattern); dist rebuilt via build:safe.
+
+**Onboarded sequentially via orchestrator, all 8 live, structural buckets at cap (trust/llc/absentee/tenure = 100 each), tenure coverage 98%+:**
+```
+33480 Palm Beach          11,142 parcels  (25% trust, 11% LLC — the wheelhouse)
+33483 Delray Beach         9,078
+33487 Boca Raton          12,374
+33432 Boca Raton          11,626
+33405 West Palm Beach      7,390
+33408 North Palm Beach    12,408
+33477 Jupiter             11,097
+33410 Palm Beach Gardens  15,534
+Total                     90,649
+```
+Canonicalize: 33480 ran inline; remaining 7 deferred to canonicalize_autofill (~2h/ZIP, off critical path — Contact-now precision improves as it drains).
+
+**FL follow-ups (queued, in order):**
+1. Jeremy: eCaseView browser check (decides full-stack vs recorder-plus).
+2. Landmark recorder adapter (`fl_pbc_recorder`) + SOURCE_MARKET_SCOPE entry — deeds/lis pendens/death certs/notice of trust.
+3. eCaseView probate+family harvester via Actions if browser check passes.
+4. Wave 2 candidates: 33469 (Jupiter Island side), 33462 (Manalapan/Hypoluxo), 33435 (Ocean Ridge), 33486/33496 (Boca), 33418 (PGA National).
 
 ### 2026-07-29 — SESSION WRAP / next-chat handoff
 
