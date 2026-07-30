@@ -113,6 +113,7 @@ _MARKET_STATE = {
     'TN_DAVIDSON':  'TN',
     'CO_PITKIN':    'CO',
     'CO_DENVER':    'CO',
+    'CO_BOULDER':   'CO',
 }
 
 
