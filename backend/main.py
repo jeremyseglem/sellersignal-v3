@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from backend.api import (
     briefings,
+    marketplace,
     parcels,
     investigations,
     playbook,
@@ -229,6 +230,12 @@ app.include_router(billing.router,           prefix="/api/billing",          tag
 # Onboarding endpoint is logically an admin operation; mount under
 # /api/admin so all privileged endpoints share a path prefix.
 app.include_router(onboard.router,        prefix="/api/admin",       tags=["admin"])
+
+# Marketplace demand side — DARK LAUNCH. Gated inside the module
+# (admin key or MARKETPLACE_ALLOWLIST); hidden from /openapi.json;
+# every unauthorized request 404s. No UI links anywhere.
+app.include_router(marketplace.router,    prefix="/api/marketplace",
+                   include_in_schema=False)
 
 
 # ── FRONTEND ───────────────────────────────────────────────────────────
