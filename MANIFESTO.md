@@ -507,6 +507,28 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-30 (evening) — Marketplace demand side, DARK LAUNCH (commit `240c2d6`)
+
+First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buyer needs are declared specs — the buyer side never searches supply; the engine searches and returns reports.
+
+**Access lockdown (Jeremy's requirement: no one gets access until perfected):**
+- `/api/marketplace/*` gated per-route: valid `X-Admin-Key` OR authenticated user whose email is in `MARKETPLACE_ALLOWLIST` env (comma-separated; unset = admin-key only, which is the current state)
+- Unauthorized requests get plain **404**, never 401/403 — the feature is invisible, not forbidden
+- Router mounted `include_in_schema=False` — nothing in `/openapi.json`
+- `schema/034_buyer_needs.sql`: `buyer_needs_v3`, `need_match_runs_v3`, `need_matches_v3` — RLS enabled with ZERO policies (service-role only). **PENDING APPLICATION in Supabase dashboard** (033 parent_pin also still pending — apply both together)
+- No frontend surfaces, no nav links
+
+**Data audit that shaped the criteria model (live-sampled all 14 markets):**
+- Universal in parcels_v3: address, city, zip, lat/lng, total_value, tenure_years, last_transfer_date, owner_type, is_absentee → hard-matchable everywhere today
+- WA-only and partial: sqft, year_built, acres, land/building_value, prop_type → null across AZ/TX/FL/CT/MA/MT
+- beds/baths: no columns anywhere — captured on the need now, matched after a per-market enrichment pass (same operational shape as reingest-property-details; sources mostly carry the data)
+
+**Engine semantics:** criterion set + field populated + fails → reject; populated + passes → matched_on; field null → unknown_on (kept, ranked down — rank-don't-reject). Seller-likelihood tiers per match: A = court-signal match (raw_signal_matches_v3), B = structural archetype (trust 10y+, LLC 7y+, absentee, tenure 15y+), C = rest. Run report includes per-zip counts, tier counts, and field-coverage % (doubles as the enrichment-priority readout per market). Top 500 matches persisted per run. Cap 12 zips/need.
+
+**Endpoints:** `GET /status`, `POST/GET/PATCH /needs`, `POST /needs/{id}/match`, `GET /needs/{id}/report`. Verified live: unauth→404, wrong key→404, openapi clean, admin key→200.
+
+**Next slices (not started, need go):** truth-test engine on real needs after 034 applied; hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
+
 ### 2026-07-30 (new market) — Nashville TN_DAVIDSON + mountain-market recon board
 
 13th market, first Tennessee. Recon → build → live. 6 Davidson trophy/hot ZIPs, ~48.3k parcels. Fleet 160 across 15 markets.
