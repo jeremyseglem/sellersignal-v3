@@ -100,6 +100,15 @@ ZIP_CONFIG = {
     "02052": ("MEDFIELD",  "Medfield",          {"MEDFIELD"},                  "MA_NORFOLK"),
     "02025": ("COHASSET",  "Cohasset",          {"COHASSET"},                  "MA_NORFOLK"),
     "02067": ("SHARON",    "Sharon",            {"SHARON"},                    "MA_NORFOLK"),
+    # ---- wave 4 (2026-07-30) — coastal; NEW counties Essex + Plymouth ----
+    "01945": ("MARBLEHEAD", "Marblehead",           {"MARBLEHEAD"},            "MA_ESSEX"),
+    "01944": ("MANCHESTER", "Manchester-by-the-Sea", {"MANCHESTER", "MANCHESTER-BY-THE-SEA"}, "MA_ESSEX"),
+    "01907": ("SWAMPSCOTT", "Swampscott",           {"SWAMPSCOTT"},            "MA_ESSEX"),
+    "01908": ("NAHANT",     "Nahant",               {"NAHANT"},                "MA_ESSEX"),
+    "02043": ("HINGHAM",    "Hingham",              {"HINGHAM"},               "MA_PLYMOUTH"),
+    "02332": ("DUXBURY",    "Duxbury",              {"DUXBURY"},               "MA_PLYMOUTH"),
+    "02066": ("SCITUATE",   "Scituate",             {"SCITUATE"},              "MA_PLYMOUTH"),
+    "02061": ("NORWELL",    "Norwell",              {"NORWELL"},               "MA_PLYMOUTH"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"

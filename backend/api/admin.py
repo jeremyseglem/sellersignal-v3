@@ -1835,6 +1835,15 @@ MA_ZIP_TO_CITY = {
     "02052": "Medfield",
     "02025": "Cohasset",
     "02067": "Sharon",
+    # ---- wave 4 (2026-07-30) — coastal, Essex + Plymouth ----
+    "01945": "Marblehead",
+    "01944": "Manchester-by-the-Sea",
+    "01907": "Swampscott",
+    "01908": "Nahant",
+    "02043": "Hingham",
+    "02332": "Duxbury",
+    "02066": "Scituate",
+    "02061": "Norwell",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -1869,9 +1878,18 @@ MA_ZIP_MARKET = {
     "02052": "MA_NORFOLK",
     "02025": "MA_NORFOLK",
     "02067": "MA_NORFOLK",
+    "01945": "MA_ESSEX",
+    "01944": "MA_ESSEX",
+    "01907": "MA_ESSEX",
+    "01908": "MA_ESSEX",
+    "02043": "MA_PLYMOUTH",
+    "02332": "MA_PLYMOUTH",
+    "02066": "MA_PLYMOUTH",
+    "02061": "MA_PLYMOUTH",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
-MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk"}
+MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk",
+                  "MA_ESSEX": "essex", "MA_PLYMOUTH": "plymouth"}
 
 
 @router.post("/seed-from-json/{zip_code}",
@@ -3924,10 +3942,16 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
     if market_key == 'MA_NORFOLK':
         candidates.append(f"data/seeds/ma-norfolk-{zip_code}-owners.json")
+    if market_key == 'MA_ESSEX':
+        candidates.append(f"data/seeds/ma-essex-{zip_code}-owners.json")
+    if market_key == 'MA_PLYMOUTH':
+        candidates.append(f"data/seeds/ma-plymouth-{zip_code}-owners.json")
     if zip_code[:3] in ('024', '025', '017', '018', '019', '020', '021'):
-        # MA ZIP ranges — county unknown here, try both slugs
+        # MA ZIP ranges — county unknown here, try all four county slugs
         candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
         candidates.append(f"data/seeds/ma-norfolk-{zip_code}-owners.json")
+        candidates.append(f"data/seeds/ma-essex-{zip_code}-owners.json")
+        candidates.append(f"data/seeds/ma-plymouth-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-king-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     for rel in candidates:

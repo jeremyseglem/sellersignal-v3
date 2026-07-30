@@ -108,6 +108,8 @@ _MARKET_STATE = {
     'FL_PALM_BEACH': 'FL',
     'MA_MIDDLESEX': 'MA',
     'MA_NORFOLK':   'MA',
+    'MA_ESSEX':     'MA',
+    'MA_PLYMOUTH':  'MA',
 }
 
 
