@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-07-30 (Greater Boston wave 4 — 8 coastal ZIPs / ~47.3k parcels, NEW counties Essex + Plymouth; MA now 40 territories across 4 counties, fleet 154 across 14 markets. Prior same day: MA wave 3 (11 ZIPs). Prior same day: MA wave 2 (15 ZIPs). Court signals still pending accessibility check. Prior same day: MA wave 1 (6 towns), FL_PALM_BEACH (8 ZIPs). Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
+**Last updated:** 2026-07-30 (Nashville TN_DAVIDSON launched — 13th market, first Tennessee: 6 Davidson ZIPs / ~48.3k parcels; fleet 160 across 15 markets. Mountain-market recon board added (see journal). Prior same day: Greater Boston wave 4 — 8 coastal ZIPs / ~47.3k parcels, NEW counties Essex + Plymouth; MA now 40 territories across 4 counties, fleet 154 across 14 markets. Prior same day: MA wave 3 (11 ZIPs). Prior same day: MA wave 2 (15 ZIPs). Court signals still pending accessibility check. Prior same day: MA wave 1 (6 towns), FL_PALM_BEACH (8 ZIPs). Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -14,7 +14,7 @@ These apply to every Claude session. Non-negotiable.
 2. Never assume; never invent data. Reference this manifesto and the build journal before proposing anything.
 3. Direct answers, no hedging, no emojis. When wrong, own it without spiraling.
 4. "Building" is jargon — use plain English ("in pipeline", "on watch list").
-5. Don't drift from the working code path. The 154 live territories across 14 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH, MA_MIDDLESEX, MA_NORFOLK, MA_ESSEX, MA_PLYMOUTH) are the standard; match against them.
+5. Don't drift from the working code path. The 160 live territories across 15 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH, MA_MIDDLESEX, MA_NORFOLK, MA_ESSEX, MA_PLYMOUTH, TN_DAVIDSON) are the standard; match against them.
 6. Skip-trace and Lob letter sending are NOT wired for beta (placeholder buttons).
 7. Brian is co-founder for product validation discussions.
 
@@ -28,7 +28,7 @@ An AI-powered intelligence platform for luxury real estate agents in defined ZIP
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
-**Geographic scope:** **135 live territories across 12 markets** as of 2026-07-30: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8), Greater Boston MA (40 across 4 counties: Middlesex 20 + Norfolk 12 + Essex 4 + Plymouth 4 — adds Marblehead, Manchester-by-the-Sea, Swampscott, Nahant (Essex); Hingham, Duxbury, Scituate, Norwell (Plymouth) to the prior 32). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
+**Geographic scope:** **135 live territories across 12 markets** as of 2026-07-30: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8), Greater Boston MA (40 across 4 counties: Middlesex 20 + Norfolk 12 + Essex 4 + Plymouth 4), Nashville/Davidson TN (6: Belle Meade 37205, Green Hills 37215, Oak Hill 37220, 12South 37204, Hillsboro/Belmont 37212, Gulch 37203). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
 
 ### WA_KING live ZIPs (32; other markets listed in Live measurements below)
 
@@ -506,6 +506,36 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-07-30 (new market) — Nashville TN_DAVIDSON + mountain-market recon board
+
+13th market, first Tennessee. Recon → build → live. 6 Davidson trophy/hot ZIPs, ~48.3k parcels. Fleet 160 across 15 markets.
+
+**Nashville parcels — A-grade, situs-ZIP native (rare):** Metro Nashville `Parcels_view` FeatureServer (`services2.arcgis.com/HdTo6HJqh92wn4D8/.../Parcels_view/FeatureServer/0`). Owner (trust markers, ~20% density), OwnDate (tenure 100% fill), SalePrice, TotlAppr (band), LUDesc (prop_type), Lat/Lon, and a REAL PropZip situs column — so `build_tn_owners.py` filters by ZIP directly, no ZCTA point-in-polygon (tn.json is map-boundary only). Simplest builder since PBC.
+```
+37205 Belle Meade   10,616   37215 Green Hills   11,315
+37220 Oak Hill       3,037   37204 12South        6,802
+37212 Hillsboro      6,253   37203 Gulch         10,275
+Total 48,298 — all addr 100%, tenure 100%, R/K 73-92%
+```
+Single-market state (TN_DAVIDSON): TN_ZIP_TO_CITY + 7 admin.py wiring points, _MARKET_STATE, matcher default, frontend Nashville metro. Williamson County (Franklin 37064/37069, Brentwood 37027) is a SEPARATE source — Metro layer only covers Davidson; deferred to a later wave (needs Williamson GIS endpoint found). Court signals (TN circuit/probate/chancery) deferred, accessibility unchecked.
+
+**MOUNTAIN / HIGH-END WEST RECON BOARD (investigated 2026-07-30, per Jeremy):**
+
+| Market | County | Parcels-first feasibility | Notes |
+|--------|--------|---------------------------|-------|
+| **Nashville** | Davidson TN | ✅ BUILT | above |
+| **Salt Lake (higher-end)** | Salt Lake UT | ⚠️ owners STRIPPED | Utah SGID statewide layer (`services1.arcgis.com/99lidPhWCzftIe9K`, per-county `Parcels_SaltLake`/`_LIR`) confirmed queryable + rich (value/prop_type/built/acres) BUT NO owner-name column — Utah privacy standard strips it from BOTH LIR and base layers, KC-class problem. Owners need the county assessor's own system (harder). NOT clean parcels-first. |
+| **Park City** | Summit UT | ⚠️ owners STRIPPED | Same Utah SGID org has `Parcels_Summit` — same owner-strip problem. If a Utah county-assessor owner source is cracked once, both SLC + Park City unlock together (one adapter, MassGIS-shaped). Worth a deeper Utah assessor dig as its own task. |
+| **Aspen** | Pitkin CO | ❓ likely-good, endpoint unconfirmed | Colorado publishes owners (not a strip state); resort counties usually have good AGOL, but guessed org IDs didn't resolve — needs the real Pitkin hub URL (browser find). |
+| **Vail** | Eagle CO | ❓ likely-good, unconfirmed | same as Pitkin — CO owner-publishing, endpoint needs discovery. |
+| **Boulder** | Boulder CO | ❓ likely-good, unconfirmed | same. |
+| **Las Vegas (higher-end)** | Clark NV | ⚠️ weaker signals | Clark assessor publishes owners, BUT Nevada is a NON-DISCLOSURE state — sale PRICE not public, so value/banding + price-based tenure weaker (transfer DATE usually still available). Endpoint unconfirmed. Off the pure-luxury-seller thesis somewhat (volume market). |
+
+**Recon takeaways / next steps for these:**
+- **Colorado resort trio (Aspen/Vail/Boulder) is the most promising unconfirmed tier** — CO publishes owners, just needs the actual county ArcGIS hub endpoints found (each is its own org; not one statewide layer like UT/MA). A 1-hr browser-assisted discovery pass would likely confirm all three as clean parcels-first, each a small-but-ultra-premium territory set (Aspen 81611/81615, Snowmass 81654; Vail 81657/81658, Beaver Creek; Boulder 80302-80305).
+- **Utah (SLC + Park City) is a two-step:** state layer gives geometry+value but not owners; needs a county-assessor owner join. Higher effort, but cracking one Utah county's owner source generalizes statewide (SGID is MassGIS-shaped). Park City (84060/84098) is the trophy.
+- **Las Vegas is lowest-fit:** non-disclosure weakens the signal model and it's a volume market rather than the luxury-scarcity thesis — deprioritize unless a specific agent wants Summerlin/Southern Highlands.
 
 ### 2026-07-30 (wave 4) — Greater Boston coastal: 8 ZIPs, NEW counties Essex + Plymouth
 
