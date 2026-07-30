@@ -111,6 +111,7 @@ _MARKET_STATE = {
     'MA_ESSEX':     'MA',
     'MA_PLYMOUTH':  'MA',
     'TN_DAVIDSON':  'TN',
+    'CO_PITKIN':    'CO',
 }
 
 
