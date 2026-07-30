@@ -483,24 +483,39 @@ async def enrich_structure(
     zip_code: str = Path(..., pattern=r'^\d{5}$'),
 ):
     """
-    KC structure enrichment (2026-07-30, schema/035). Populates
-    bedrooms, bathrooms, sqft, year_built, year_renovated, stories,
-    waterfront, waterfront_footage, view_rating (and fills acres where
-    null) from the bulk assessor extracts (EXTR_ResBldg, EXTR_CondoUnit2,
-    EXTR_Parcel). Feeds the marketplace demand engine's Tier-2 criteria.
-    WA_KING only. Idempotent full recompute per ZIP; extracts are
-    disk-cached per process.
+    Structure enrichment (2026-07-30, schema/035). Populates bedrooms,
+    bathrooms, sqft, year_built, year_renovated, stories, waterfront,
+    waterfront_footage, view_rating on parcels_v3 — feeds the
+    marketplace demand engine's Tier-2 criteria.
+
+    Dispatch by market_key:
+      WA_KING            -> bulk assessor extracts (kc_structure_enrich)
+      CT_FAIRFIELD, CO_PITKIN, CO_DENVER, AZ_MARICOPA, MA_*
+                         -> the market's own ArcGIS layer
+                            (structure_enrich_arcgis; pin-chunk queries)
+      everything else    -> 400 (adapter not built yet)
+
+    Idempotent full recompute per ZIP.
     """
     import asyncio
     from backend.ingest.kc_structure_enrich import enrich_zip
+    from backend.ingest.structure_enrich_arcgis import (
+        STRUCT_CONFIGS, enrich_zip_arcgis)
     supa = get_supabase_client()
     cov = (supa.table('zip_coverage_v3').select('market_key')
            .eq('zip_code', zip_code).limit(1).execute()).data
-    if not cov or cov[0].get('market_key') != 'WA_KING':
-        raise HTTPException(400, f"{zip_code} is not a WA_KING zip — "
-                                 "this enricher is KC-only")
+    if not cov:
+        raise HTTPException(404, f"{zip_code} not in zip_coverage_v3")
+    market = cov[0].get('market_key')
     try:
-        return await asyncio.to_thread(enrich_zip, supa, zip_code)
+        if market == 'WA_KING':
+            return await asyncio.to_thread(enrich_zip, supa, zip_code)
+        if market in STRUCT_CONFIGS:
+            return await asyncio.to_thread(
+                enrich_zip_arcgis, supa, zip_code, market)
+        raise HTTPException(400, f"no structure adapter for {market} yet")
+    except HTTPException:
+        raise
     except Exception as exc:
         if 'bedrooms' in str(exc) and 'column' in str(exc).lower():
             raise HTTPException(503, "schema 035 not applied")
