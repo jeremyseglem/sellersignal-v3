@@ -527,7 +527,9 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Endpoints:** `GET /status`, `POST/GET/PATCH /needs`, `POST /needs/{id}/match`, `GET /needs/{id}/report`. Verified live: unauth→404, wrong key→404, openapi clean, admin key→200.
 
-**Next slices (not started, need go):** truth-test engine on real needs after 034 applied; hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
+**Truth-tested 2026-07-30 after 034 applied (fix commit for tier-A lookup: matches table has no zip_code — pin-chunk query, strict-only):** test need $2-4M / R / 4bd / 1990+ across 98004+98005+98040 → 35,460 candidates, 8,178 in-band, tiers A=122 / B=2,585 / C=5,471, 14s runtime. Top tier-A output is court-verified in-band sellers (e.g. probate parcel at $3.9M Bellevue). Field-coverage readout: sqft 3.6% / year_built 4.1% even in KC — structure enrichment is mandatory in every market, KC included.
+
+**Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
 ### 2026-07-30 (new market) — Nashville TN_DAVIDSON + mountain-market recon board
 
