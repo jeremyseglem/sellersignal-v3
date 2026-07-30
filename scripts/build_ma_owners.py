@@ -88,6 +88,18 @@ ZIP_CONFIG = {
     "02026": ("DEDHAM",    "Dedham",            {"DEDHAM"},                    "MA_NORFOLK"),
     "02492": ("NEEDHAM",   "Needham",           {"NEEDHAM", "NEEDHAM HEIGHTS"}, "MA_NORFOLK"),
     "02494": ("NEEDHAM",   "Needham Heights",   {"NEEDHAM", "NEEDHAM HEIGHTS"}, "MA_NORFOLK"),
+    # ---- wave 3 (2026-07-30) — Middlesex + Norfolk only, no new-county wiring ----
+    "02478": ("BELMONT",   "Belmont",           {"BELMONT"},                   "MA_MIDDLESEX"),
+    "02474": ("ARLINGTON", "Arlington",         {"ARLINGTON"},                 "MA_MIDDLESEX"),
+    "02476": ("ARLINGTON", "Arlington",         {"ARLINGTON"},                 "MA_MIDDLESEX"),
+    "01776": ("SUDBURY",   "Sudbury",           {"SUDBURY"},                   "MA_MIDDLESEX"),
+    "01778": ("WAYLAND",   "Wayland",           {"WAYLAND"},                   "MA_MIDDLESEX"),
+    "01770": ("SHERBORN",  "Sherborn",          {"SHERBORN"},                  "MA_MIDDLESEX"),
+    "01741": ("CARLISLE",  "Carlisle",          {"CARLISLE"},                  "MA_MIDDLESEX"),
+    "02186": ("MILTON",    "Milton",            {"MILTON"},                    "MA_NORFOLK"),
+    "02052": ("MEDFIELD",  "Medfield",          {"MEDFIELD"},                  "MA_NORFOLK"),
+    "02025": ("COHASSET",  "Cohasset",          {"COHASSET"},                  "MA_NORFOLK"),
+    "02067": ("SHARON",    "Sharon",            {"SHARON"},                    "MA_NORFOLK"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"

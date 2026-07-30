@@ -1823,6 +1823,18 @@ MA_ZIP_TO_CITY = {
     "02026": "Dedham",
     "02492": "Needham",
     "02494": "Needham Heights",
+    # ---- wave 3 (2026-07-30) ----
+    "02478": "Belmont",
+    "02474": "Arlington",
+    "02476": "Arlington",
+    "01776": "Sudbury",
+    "01778": "Wayland",
+    "01770": "Sherborn",
+    "01741": "Carlisle",
+    "02186": "Milton",
+    "02052": "Medfield",
+    "02025": "Cohasset",
+    "02067": "Sharon",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -1846,6 +1858,17 @@ MA_ZIP_MARKET = {
     "02026": "MA_NORFOLK",
     "02492": "MA_NORFOLK",
     "02494": "MA_NORFOLK",
+    "02478": "MA_MIDDLESEX",
+    "02474": "MA_MIDDLESEX",
+    "02476": "MA_MIDDLESEX",
+    "01776": "MA_MIDDLESEX",
+    "01778": "MA_MIDDLESEX",
+    "01770": "MA_MIDDLESEX",
+    "01741": "MA_MIDDLESEX",
+    "02186": "MA_NORFOLK",
+    "02052": "MA_NORFOLK",
+    "02025": "MA_NORFOLK",
+    "02067": "MA_NORFOLK",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk"}
