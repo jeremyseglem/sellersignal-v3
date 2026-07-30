@@ -110,6 +110,7 @@ _MARKET_STATE = {
     'MA_NORFOLK':   'MA',
     'MA_ESSEX':     'MA',
     'MA_PLYMOUTH':  'MA',
+    'TN_DAVIDSON':  'TN',
 }
 
 
