@@ -507,6 +507,21 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-30 (night) — KC structure enrichment fleet-wide + marketplace criteria live (commits `bf5a17a`..`7f774d5`)
+
+**Schema/035** added market-agnostic structure columns to parcels_v3: bedrooms, bathrooms, stories, year_renovated, waterfront, waterfront_footage, view_rating (NULL = unknown; engine rank-doesn't-reject). **Schema/036** added the matching criteria columns to buyer_needs_v3 (waterfront tri-state, view_min, stories_min, year_renovated_min).
+
+**`backend/ingest/kc_structure_enrich.py` + `POST /api/admin/enrich-structure/{zip}`** (WA_KING only): streams the three bulk assessor extracts (EXTR_ResBldg ~90MB, EXTR_CondoUnit2, EXTR_Parcel ~200MB) with disk caching in /tmp/kc_extracts, filters to the ZIP's pin set row-by-row (Railway OOM-safe), merges house + condo-unit + parcel-amenity data per pin, batch-upserts grouped by key-signature. Idempotent full recompute; fills acres only where null. Bathrooms use listing convention (full + 0.75*3qtr + 0.5*half); condo units get unit-level beds/baths/footage/views.
+
+**Two gotchas found and fixed:** (1) Postgres validates NOT NULL on the candidate insert tuple BEFORE conflict resolution — upsert payloads must carry market_key even though the update path always wins. (2) PostgREST bulk requests require uniform keys per request, and null-padding would clobber existing values (acres) — batches are grouped by identical key-signature instead.
+
+**Fleet result: all 34 WA_KING ZIPs enriched (~330k rows).** Typical per-zip coverage: beds/baths ~75-90% of pins (remainder commercial/vacant/common-area). Luxury filters land where expected: 98040 waterfront=813 + view-rated=3,334; 98039 waterfront=163; 98038 lakefront=674. 98005's first-pass 500 was a transient deploy race — clean on re-run.
+
+**Marketplace engine wired to the new columns:** real beds/baths/stories/reno/view range checks, waterfront tri-state (NULL parcel = not-waterfront, since the county flags affirmatively), enriched match detail, field-coverage report extended. Truth-test on the Bellevue need ($2-4M / R / 4bd / 2.5ba / 1990+ across 98004+98005+98040): field coverage sqft 4%→81%, year_built 4%→60.5%, beds 0%→79%; matches tightened 8,178 → 2,911 as criteria actually bite; top tier-A matches now score 1.0 with every criterion confirmed and zero unknowns (e.g. probate parcel, $3.07M Sunset Way, all five criteria matched). Marketplace remains fully dark (admin-key only).
+
+**Enrichment adapters still needed (per market, same shape):** AZ_MARICOPA, TX x3, FL_PALM_BEACH, CT_FAIRFIELD, MA x4, MT x2, TN_DAVIDSON, CO x2 — parcels_v3 structure columns are null outside WA_KING; sources mostly carry the data (county CADs / MassGIS / PAPA publish improvement attributes).
+
+
 ### 2026-07-30 (evening) — Marketplace demand side, DARK LAUNCH (commit `240c2d6`)
 
 First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buyer needs are declared specs — the buyer side never searches supply; the engine searches and returns reports.
