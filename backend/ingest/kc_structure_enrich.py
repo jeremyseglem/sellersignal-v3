@@ -206,7 +206,12 @@ def enrich_zip(supa, zip_code: str) -> dict:
     for u in updates.values():
         clean = {k: v for k, v in u.items() if v is not None}
         if len(clean) > 1:  # more than just the pin
-            clean["zip_code"] = zip_code  # belt-and-suspenders scope
+            # Postgres validates NOT NULL on the candidate insert tuple
+            # BEFORE resolving the conflict, so every NOT-NULL-no-default
+            # column must be present even though the update path always
+            # wins (all pins come from parcels_v3).
+            clean["zip_code"] = zip_code
+            clean["market_key"] = "WA_KING"
             payload.append(clean)
 
     by_sig: dict[tuple, list[dict]] = {}
