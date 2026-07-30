@@ -477,6 +477,36 @@ async def geocode_address_fallback(
         raise HTTPException(502, f"geocode fallback failed: {e}")
 
 
+@router.post("/enrich-structure/{zip_code}",
+             dependencies=[Depends(require_admin)])
+async def enrich_structure(
+    zip_code: str = Path(..., pattern=r'^\d{5}$'),
+):
+    """
+    KC structure enrichment (2026-07-30, schema/035). Populates
+    bedrooms, bathrooms, sqft, year_built, year_renovated, stories,
+    waterfront, waterfront_footage, view_rating (and fills acres where
+    null) from the bulk assessor extracts (EXTR_ResBldg, EXTR_CondoUnit2,
+    EXTR_Parcel). Feeds the marketplace demand engine's Tier-2 criteria.
+    WA_KING only. Idempotent full recompute per ZIP; extracts are
+    disk-cached per process.
+    """
+    import asyncio
+    from backend.ingest.kc_structure_enrich import enrich_zip
+    supa = get_supabase_client()
+    cov = (supa.table('zip_coverage_v3').select('market_key')
+           .eq('zip_code', zip_code).limit(1).execute()).data
+    if not cov or cov[0].get('market_key') != 'WA_KING':
+        raise HTTPException(400, f"{zip_code} is not a WA_KING zip — "
+                                 "this enricher is KC-only")
+    try:
+        return await asyncio.to_thread(enrich_zip, supa, zip_code)
+    except Exception as exc:
+        if 'bedrooms' in str(exc) and 'column' in str(exc).lower():
+            raise HTTPException(503, "schema 035 not applied")
+        raise
+
+
 @router.post("/backfill-condos/{zip_code}",
              dependencies=[Depends(require_admin)])
 async def backfill_condos(
