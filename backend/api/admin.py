@@ -1807,6 +1807,22 @@ MA_ZIP_TO_CITY = {
     "02030": "Dover",            # low-density estate town
     "01773": "Lincoln",          # conservation-land estate town
     "01742": "Concord",          # historic + high-value
+    # ---- wave 2 (2026-07-30) ----
+    "02468": "Chestnut Hill",    # Newton — most prestigious village
+    "02459": "Newton Center",
+    "02465": "West Newton",
+    "02461": "Newton Highlands",
+    "02458": "Newton",
+    "02460": "Newtonville",
+    "02445": "Brookline",        # Brookline Village
+    "02446": "Brookline",        # Coolidge Corner
+    "02420": "Lexington",
+    "02421": "Lexington",
+    "01890": "Winchester",
+    "02090": "Westwood",
+    "02026": "Dedham",
+    "02492": "Needham",
+    "02494": "Needham Heights",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -1815,6 +1831,21 @@ MA_ZIP_MARKET = {
     "02030": "MA_NORFOLK",
     "01773": "MA_MIDDLESEX",
     "01742": "MA_MIDDLESEX",
+    "02468": "MA_MIDDLESEX",
+    "02459": "MA_MIDDLESEX",
+    "02465": "MA_MIDDLESEX",
+    "02461": "MA_MIDDLESEX",
+    "02458": "MA_MIDDLESEX",
+    "02460": "MA_MIDDLESEX",
+    "02445": "MA_NORFOLK",
+    "02446": "MA_NORFOLK",
+    "02420": "MA_MIDDLESEX",
+    "02421": "MA_MIDDLESEX",
+    "01890": "MA_MIDDLESEX",
+    "02090": "MA_NORFOLK",
+    "02026": "MA_NORFOLK",
+    "02492": "MA_NORFOLK",
+    "02494": "MA_NORFOLK",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk"}

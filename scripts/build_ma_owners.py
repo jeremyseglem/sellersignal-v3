@@ -67,6 +67,27 @@ ZIP_CONFIG = {
     "02030": ("DOVER",     "Dover",           {"DOVER"},                        "MA_NORFOLK"),
     "01773": ("LINCOLN",   "Lincoln",         {"LINCOLN", "LINCOLN CENTER"},    "MA_MIDDLESEX"),
     "01742": ("CONCORD",   "Concord",         {"CONCORD", "WEST CONCORD"},      "MA_MIDDLESEX"),
+    # ---- wave 2 (2026-07-30) ----
+    # Newton is one town (CITY='NEWTON') spanning many village ZIPs; the ZCTA
+    # split assigns each. All Middlesex.
+    "02468": ("NEWTON",    "Chestnut Hill",     {"NEWTON", "CHESTNUT HILL"},   "MA_MIDDLESEX"),
+    "02459": ("NEWTON",    "Newton Center",     {"NEWTON", "NEWTON CENTER", "NEWTON CENTRE"}, "MA_MIDDLESEX"),
+    "02465": ("NEWTON",    "West Newton",       {"NEWTON", "WEST NEWTON"},     "MA_MIDDLESEX"),
+    "02461": ("NEWTON",    "Newton Highlands",  {"NEWTON", "NEWTON HIGHLANDS"}, "MA_MIDDLESEX"),
+    "02458": ("NEWTON",    "Newton",            {"NEWTON", "NEWTON CORNER"},   "MA_MIDDLESEX"),
+    "02460": ("NEWTON",    "Newtonville",       {"NEWTON", "NEWTONVILLE"},     "MA_MIDDLESEX"),
+    # Brookline is one town spanning 02445/02446. Norfolk County.
+    "02445": ("BROOKLINE", "Brookline",         {"BROOKLINE"},                 "MA_NORFOLK"),
+    "02446": ("BROOKLINE", "Brookline",         {"BROOKLINE"},                 "MA_NORFOLK"),
+    # Lexington (Middlesex), Winchester (Middlesex)
+    "02420": ("LEXINGTON", "Lexington",         {"LEXINGTON"},                 "MA_MIDDLESEX"),
+    "02421": ("LEXINGTON", "Lexington",         {"LEXINGTON"},                 "MA_MIDDLESEX"),
+    "01890": ("WINCHESTER","Winchester",        {"WINCHESTER"},                "MA_MIDDLESEX"),
+    # Westwood, Dedham, Needham (Norfolk)
+    "02090": ("WESTWOOD",  "Westwood",          {"WESTWOOD"},                  "MA_NORFOLK"),
+    "02026": ("DEDHAM",    "Dedham",            {"DEDHAM"},                    "MA_NORFOLK"),
+    "02492": ("NEEDHAM",   "Needham",           {"NEEDHAM", "NEEDHAM HEIGHTS"}, "MA_NORFOLK"),
+    "02494": ("NEEDHAM",   "Needham Heights",   {"NEEDHAM", "NEEDHAM HEIGHTS"}, "MA_NORFOLK"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"
