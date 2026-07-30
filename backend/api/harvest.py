@@ -6314,3 +6314,131 @@ def clear_cross_market_matches(
                  "&zip_code={zip} for each affected ZIP, then re-run the "
                  "diag to confirm zero."),
     }
+
+
+# ── Denver transfers harvester (open-data ArcGIS REST; probate/TOD signals) ──
+# Denver's publicsearch.us recorder is websocket-gated to datacenter IPs and
+# unharvestable from Railway; instead we read Denver's own authoritative
+# ODC_real_property_sales_and_transfers layer, which exposes the death->title
+# instruments (PR = Personal Representative's Deed -> probate; BF = Beneficiary
+# Deed -> transfer_on_death) as plain REST. Same signal shape as the recorder
+# harvesters (reuses dallas_recorder.to_signal_row). Runs server-side so it can
+# use Railway's Supabase service client. Verified dry-run: 613 distinct signals
+# 2023-25. Trigger: POST /api/harvest/run-denver-transfers?confirm=true&since_year=2024
+_DENVER_TRANSFERS_URL = (
+    "https://services1.arcgis.com/zdB7qR0BtYrg0Xpl/arcgis/rest/services/"
+    "ODC_real_property_sales_and_transfers/FeatureServer/60"
+)
+_DENVER_INSTRUMENT_DOCTYPE = {
+    "PR": "PERSONAL REPRESENTATIVE DEED",
+    "BF": "BENEFICIARY DEED",
+}
+
+
+def _denver_event_date(a: dict):
+    yr = a.get("SALE_YEAR")
+    if not yr:
+        return None
+    md = str(a.get("SALE_MONTHDAY") or "").zfill(4)
+    try:
+        mm = int(md[:2]) if 1 <= int(md[:2]) <= 12 else 1
+        dd = int(md[2:]) if 1 <= int(md[2:]) <= 31 else 1
+        return date(int(yr), mm, dd).isoformat()
+    except (ValueError, TypeError):
+        try:
+            return date(int(yr), 1, 1).isoformat()
+        except Exception:
+            return None
+
+
+@router.post("/run-denver-transfers")
+def harvest_run_denver_transfers(
+    confirm: bool = False,
+    since_year: int = 2024,
+    write: bool = True,
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Harvest Denver probate (PR) + transfer-on-death (BF) signals from the
+    open-data transfers layer into raw_signals_v3. Idempotent (upsert on
+    source_type,document_ref). Set confirm=true to run."""
+    _require_admin(x_admin_key)
+    if not confirm:
+        raise HTTPException(400, "pass confirm=true to run")
+    import json as _json
+    import urllib.request as _u
+    import urllib.parse as _up
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "harvesters"))
+    import dallas_recorder as _dr
+    _dr.SOURCE_TYPE = "co_denver_transfers"
+    if not any(n[0] == "BENEFICIARY DEED" for n in _dr.DEATH_DOCTYPE_SIGNALS):
+        _dr.DEATH_DOCTYPE_SIGNALS.append(("BENEFICIARY DEED", "transfer_on_death"))
+
+    codes = "','".join(_DENVER_INSTRUMENT_DOCTYPE)
+    where = f"INSTRUMENT IN ('{codes}') AND SALE_YEAR >= {int(since_year)}"
+    feats, offset = [], 0
+    while True:
+        qs = _up.urlencode({
+            "where": where,
+            "outFields": "INSTRUMENT,GRANTOR,GRANTEE,RECEPTION_NUM,SALE_YEAR,"
+                         "SALE_MONTHDAY,PARID,D_CLASS_N",
+            "returnGeometry": "false", "orderByFields": "OBJECTID",
+            "resultOffset": str(offset), "resultRecordCount": "2000", "f": "json"})
+        req = _u.Request(f"{_DENVER_TRANSFERS_URL}/query?{qs}",
+                         headers={"User-Agent": "Mozilla/5.0 SellerSignal/1.0"})
+        d = _json.load(_u.urlopen(req, timeout=120))
+        batch = d.get("features", [])
+        if not batch:
+            break
+        feats.extend(batch)
+        offset += len(batch)
+        if len(batch) < 2000:
+            break
+
+    sigs, by_type, seen_ref = [], {}, set()
+    for f in feats:
+        a = f["attributes"]
+        row = {
+            "grantor": (a.get("GRANTOR") or "").strip(),
+            "grantee": (a.get("GRANTEE") or "").strip(),
+            "doc_type": _DENVER_INSTRUMENT_DOCTYPE.get(
+                (a.get("INSTRUMENT") or "").strip(), ""),
+            "recorded_date": _denver_event_date(a),
+            "doc_number": str(a.get("RECEPTION_NUM") or "").strip() or None,
+            "legal_description": (a.get("D_CLASS_N") or "").strip(),
+            "town": "Denver",
+            "book_vol_page": str(a.get("PARID") or ""),
+        }
+        sig = _dr.to_signal_row(row)
+        if not sig or not sig.get("document_ref"):
+            continue
+        if sig["document_ref"] in seen_ref:
+            continue
+        seen_ref.add(sig["document_ref"])
+        sig["jurisdiction"] = "CO_DENVER"
+        sig["raw_data"]["harvester"] = "denver_transfers"
+        sigs.append(sig)
+        by_type[sig["signal_type"]] = by_type.get(sig["signal_type"], 0) + 1
+
+    result = {"fetched": len(feats), "signals": len(sigs), "by_type": by_type,
+              "since_year": since_year, "wrote": 0}
+    if not write:
+        result["sample"] = [
+            {k: s.get(k) for k in ("signal_type", "document_ref", "event_date",
+                                   "party_names", "property_hint")}
+            for s in sigs[:5]]
+        return result
+
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    wrote = 0
+    for i in range(0, len(sigs), 500):
+        chunk = sigs[i:i + 500]
+        (supa.table("raw_signals_v3")
+         .upsert(chunk, on_conflict="source_type,document_ref")
+         .execute())
+        wrote += len(chunk)
+    result["wrote"] = wrote
+    return result
