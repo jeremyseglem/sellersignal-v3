@@ -546,6 +546,17 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (open-data-transfers test on FL + TN) — Denver-specific, does NOT generalize
+
+Tested the Denver open-data-transfers approach on the other two new full markets. Result: it's a Colorado-assessor peculiarity, not a general unlock. Honest negative result, logged so nobody re-runs this hunt.
+
+- **FL Palm Beach — NO.** No open-data conveyances layer with grantor+instrument (the ArcGIS "Conveyances" hit is a water-district drainage-easement layer). The PBC Property Appraiser parcel layer DOES have an INSTRUMENT code on the last sale, but it's sparse and lacks a personal-representative/probate code: top codes WD/QC/PL/DT/RD/LE, with only ~8 TD (trustee) + ~2 DC (death cert) per municipality — far too thin, and it's last-instrument-only, not a recorded-doc stream. FL probate signals genuinely live in the recorder (erec Landmark — per-search reCAPTCHA) and eCaseView dockets (503 to datacenter). FL still needs either captcha-solve or Jeremy's eCaseView browser check. No shortcut.
+- **TN Davidson — NO.** Assessor doesn't publish a transfers/deed-type layer at all (ArcGIS search returns only surplus-auction "eBid" sales + a historical race-covenant layer). The Nashville Parcels_view OwnInstr field is just a deed BOOK-PAGE reference (DB-xxxxxxx), not a deed TYPE. TN probate needs the Register of Deeds search or CaseLink probate (Jeremy's browser check) — no open-data path.
+
+**Refined lesson:** the open-data-transfers unlock works where the COUNTY ASSESSOR republishes the recorder's full transfer history WITH instrument-type codes (Denver/Colorado does; the CO assessor model is unusually rich). Most counties' assessor layers carry only the last sale's book/page or a coarse code. So: still worth a 2-min check per new county (it's free and Denver-huge when it hits), but do NOT expect it to hit — it's the exception. FL/TN remain recorder/court-portal markets (captcha or browser-gated).
+
+**Net court-signal position after today:** Denver LIVE (77 probate leads). Everyone else (FL, MA, TN) is captcha- or browser-gated — the honeststatus is unchanged for them. Boulder (CO) is the next likely open-data-transfers hit (same CO assessor model) when it's built.
+
 ### 2026-07-30 (Denver court signals — LIVE) — probate leads flowing, publicsearch abandoned
 
 Denver is the first newly-expanded market with REAL court-driven Contact-Now leads (not just structural buckets). 77 probate leads live across the 5 Denver ZIPs (80206=23, 80220=18, 80211=13, 80210=12, 80209=11).
