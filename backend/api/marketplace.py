@@ -272,15 +272,34 @@ def _run_match(supa, need: dict) -> dict:
         parcels = _fetch_all(supa, 'parcels_v3', _PARCEL_COLS, z)
         candidates += len(parcels)
 
-        # Court-signal pins for tier A.
+        # Court-signal pins for tier A. raw_signal_matches_v3 has no
+        # zip_code column — query by pin chunks (same pattern as
+        # harvest_matches). Strict-strength only: weak matches are
+        # overwhelmingly false positives and tier A must stay accurate.
         signal_pins: dict[str, list[str]] = {}
         try:
-            sig_rows = _fetch_all(
-                supa, 'raw_signal_matches_v3',
-                'pin, signal_type, match_strength', z)
-            for r in sig_rows:
+            pins = [str(p.get('pin')) for p in parcels]
+            match_rows: list[dict] = []
+            for i in range(0, len(pins), 200):
+                chunk = pins[i:i + 200]
+                match_rows.extend(
+                    (supa.table('raw_signal_matches_v3')
+                     .select('pin, raw_signal_id, match_strength')
+                     .in_('pin', chunk)
+                     .eq('match_strength', 'strict')
+                     .execute()).data or [])
+            sig_ids = list({r['raw_signal_id'] for r in match_rows
+                            if r.get('raw_signal_id') is not None})
+            sig_types: dict = {}
+            for i in range(0, len(sig_ids), 200):
+                chunk = sig_ids[i:i + 200]
+                for s in ((supa.table('raw_signals_v3')
+                           .select('id, signal_type')
+                           .in_('id', chunk).execute()).data or []):
+                    sig_types[s['id']] = s.get('signal_type') or 'signal'
+            for r in match_rows:
                 signal_pins.setdefault(str(r.get('pin')), []).append(
-                    r.get('signal_type') or 'signal')
+                    sig_types.get(r.get('raw_signal_id'), 'signal'))
         except Exception:
             log.exception('marketplace: signal fetch failed for %s', z)
 
