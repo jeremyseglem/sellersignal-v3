@@ -537,10 +537,13 @@ Total                     90,649
 Canonicalize: 33480 ran inline; remaining 7 deferred to canonicalize_autofill (~2h/ZIP, off critical path — Contact-now precision improves as it drains).
 
 **FL follow-ups (queued, in order):**
-1. Jeremy: eCaseView browser check (decides full-stack vs recorder-plus).
-2. Landmark recorder adapter (`fl_pbc_recorder`) + SOURCE_MARKET_SCOPE entry — deeds/lis pendens/death certs/notice of trust.
-3. eCaseView probate+family harvester via Actions if browser check passes.
-4. Wave 2 candidates: 33469 (Jupiter Island side), 33462 (Manalapan/Hypoluxo), 33435 (Ocean Ridge), 33486/33496 (Boca), 33418 (PGA National).
+**RECORDER GATE UPDATE (2026-07-29 eve, corrects the recon):** The Landmark recorder at erec.mypalmbeachclerk.com is NOT the free open door the first recon pass reported. The disclaimer POST (`/Search/SetDisclaimer`, no auth) does clear, and the doc-type catalog is confirmed (Death Certificate=type 22, Lis Pendens=20, Probate=1,8, Deed=4/5/12/21/25/26/62) — but EVERY search POST (`/Search/DocumentTypeSearch` etc.) is reCAPTCHA-v2 gated: `/Search/ShowCaptcha` returns `True` and a tokenless search returns literal "Invalid Captcha". Sitekey 6LdBHOorAAAAALwRLkAZpnNsfcp7qfFS4YIGIRTU. `/Account/Logon` exists but shows no free self-registration (no Create/Register/Username fields) — likely a paid subscriber tier, unconfirmed. So FL recorder harvesting needs either (a) a captcha-solve integration (2captcha-style, the same option flagged for the WA JIS statewide path), or (b) a subscriber account if one exists and bypasses the per-search captcha. This is the SAME gate class as the non-KC WA counties — NOT the clean Landmark-open story. Parcels-first launch stands regardless; structural buckets (trust/LLC/absentee/tenure) don't depend on court signals.
+
+**FL follow-ups (queued, in order — revised):**
+1. Jeremy: eCaseView browser check at applications.mypalmbeachclerk.com (probate/family DOCKETS — separate system from the recorder). Decides whether court signals come via dockets or are blocked like the recorder. This is the higher-value source anyway (divorce + probate case filings, not just recorded instruments).
+2. Decision on recorder captcha: confirm whether a subscriber account bypasses per-search reCAPTCHA, or wire a captcha-solve path. Until then, no `fl_pbc_recorder` adapter — it would just hit the gate.
+3. If eCaseView docket search works in-browser: build the docket harvester via GitHub Actions (Montana headless-browser pattern), which sidesteps the recorder captcha entirely and yields richer signals.
+4. Wave 2 parcels (no court dependency, can proceed anytime): 33469 (Jupiter Island), 33462 (Manalapan/Hypoluxo), 33435 (Ocean Ridge), 33486/33496 (Boca), 33418 (PGA National).
 
 ### 2026-07-29 — SESSION WRAP / next-chat handoff
 
