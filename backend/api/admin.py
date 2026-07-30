@@ -1945,13 +1945,24 @@ CO_ZIP_TO_CITY = {
     "81611": "Aspen",             # flagship
     "81615": "Snowmass Village",
     "81654": "Snowmass",          # Old Snowmass ranches
+    # Denver wave 1 (2026-07-30) — authoritative ODC parcels, daily refresh
+    "80206": "Denver",            # Cherry Creek / Country Club
+    "80209": "Denver",            # Wash Park / Belcaro
+    "80210": "Denver",            # Observatory Park / DU
+    "80220": "Denver",            # Hilltop / Montclair
+    "80211": "Denver",            # Highlands / LoHi
 }
 CO_ZIP_MARKET = {
     "81611": "CO_PITKIN",
     "81615": "CO_PITKIN",
     "81654": "CO_PITKIN",
+    "80206": "CO_DENVER",
+    "80209": "CO_DENVER",
+    "80210": "CO_DENVER",
+    "80220": "CO_DENVER",
+    "80211": "CO_DENVER",
 }
-CO_MARKET_SLUG = {"CO_PITKIN": "pitkin"}
+CO_MARKET_SLUG = {"CO_PITKIN": "pitkin", "CO_DENVER": "denver"}
 
 
 @router.post("/seed-from-json/{zip_code}",
@@ -4021,6 +4032,8 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/tn-davidson-{zip_code}-owners.json")
     if market_key == 'CO_PITKIN' or zip_code.startswith('816'):
         candidates.append(f"data/seeds/co-pitkin-{zip_code}-owners.json")
+    if market_key == 'CO_DENVER' or zip_code.startswith('802'):
+        candidates.append(f"data/seeds/co-denver-{zip_code}-owners.json")
     if zip_code[:3] in ('024', '025', '017', '018', '019', '020', '021'):
         # MA ZIP ranges — county unknown here, try all four county slugs
         candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")

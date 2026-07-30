@@ -112,6 +112,7 @@ _MARKET_STATE = {
     'MA_PLYMOUTH':  'MA',
     'TN_DAVIDSON':  'TN',
     'CO_PITKIN':    'CO',
+    'CO_DENVER':    'CO',
 }
 
 
