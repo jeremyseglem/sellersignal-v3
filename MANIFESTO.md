@@ -546,6 +546,26 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (Boulder) — CO_BOULDER territories LIVE; court signals NOT delivered (deed codes mismap)
+
+Boulder built as a territory market (the queued multi-source join). Fleet 173, CO now 13 territories (Pitkin 3 + Denver 5 + Boulder 5).
+
+**Territory build (REST + bulk CSV join — Boulder splits its data):** `build_boulder_owners.py` joins ParcelPropertyView (REST CamaView: owner, situs, prop_type, lat/lon geometry) with three bulk CSVs from `assessor.boco.solutions/ASR_PublicDataFiles/` — Sales.csv (tenure via latest Tdate), Values.csv (value), Owner_Address.csv (absentee) — on strap == REST AccountNo, ZCTA-PIP for ZIP. 5 ZIPs, ~39.5k parcels, addr 100%, all buckets at/near cap:
+```
+80302 Chautauqua/Mapleton 7,789   80304 N Boulder 11,226   80305 Table Mesa 6,357
+80303 Gunbarrel 7,206             80301 NE Boulder 6,979
+```
+(80301/80302 tenure 76/82% at all-parcel level — foothills open-space + Gunbarrel commercial with no sale record; residential segment fine, buckets landed at cap.)
+
+**COURT SIGNALS — NOT delivered, and WHY (truth-test caught it):** attempted the Denver open-data-transfers trick on Boulder's Sales.csv deed_type codes, carrying over Denver's PR/BF mapping. WRONG — Boulder's codes are different and my guesses misfired:
+- **PD ≠ Personal Rep Deed. PD = Public Trustee's Deed (FORECLOSURE).** Caught by eyeballing the 8 candidate "probate" grantees: LEAD FUNDING LLC, BANK OF NY MELLON TRUSTEE, SECRETARY OF VETERANS AFFAIRS, BMO BANK NA, H2 PROPERTIES INC — all banks/foreclosure buyers, zero heirs. Writing these as probate would have created false leads pointing at the VA.
+- **BD = Beneficiary Deed = LIVING owner's TOD estate-planning recording, NOT a death.** 228 of them, mostly to family trusts — noise, not motivated-seller signals.
+- Wrote ZERO Boulder signals. Correct call: no signal beats false signals (accuracy-over-volume moat).
+
+**Lesson:** deed_type code MAPPINGS ARE PER-COUNTY — do NOT carry Denver's (PR/BF) to another county. Boulder needs the assessor's actual deed_type legend to identify true personal-rep/probate conveyances (if distinctly coded at all) before any court-signal build. Denver's transfers layer used explicit instrument NAMES resolved to real PR deeds; Boulder's are 2-letter codes that require a legend. Denver remains the only CO market with live court signals.
+
+**Reusable infra note:** Boulder proved the REST+bulk-CSV join pattern for counties that split owner/value/sales across sources (many CO/UT counties do). build_boulder_owners.py is the template.
+
 ### 2026-07-30 (open-data-transfers test on FL + TN) — Denver-specific, does NOT generalize
 
 Tested the Denver open-data-transfers approach on the other two new full markets. Result: it's a Colorado-assessor peculiarity, not a general unlock. Honest negative result, logged so nobody re-runs this hunt.
