@@ -531,6 +531,25 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (court-signal access sweep) — all live markets, read-only
+
+Ran the runnable court/recorder checks myself (Jeremy: "why do I need a court signal check — can't you just run that"). Result: most are resolvable from here; only ONE genuinely needs a browser. Board:
+
+| Market | Source | Status | Notes |
+|--------|--------|--------|-------|
+| **Denver CO** | `denver.co.publicsearch.us` | ✅ **OPEN — reusable adapter** | publicsearch.us — the SAME platform `dallas_recorder.py` already targets. Document-type search present, guest access. Highest-leverage court build available right now: adapt the existing Dallas recorder, minimal new code. Deeds/lis pendens/death certs. |
+| **MA (statewide)** | MassCourts eservices `search.page.3.1` | ⚠️ reCAPTCHA-v2 | Portal is UP (earlier 503 was a transient outage, not a wall — confirmed 200 today). Real case search form exists (probate/divorce/equity) but every search is reCAPTCHA-gated (sitekey present). Needs captcha-solve integration OR the daily-docket-PDF pattern per county (like Snohomish). Not browser-blocked — just captcha-walled. |
+| **Nashville TN — probate** | Davidson Circuit `caselink.nashville.gov` | 🔎 needs 1 browser look | CaseLink Public Inquiry (title confirmed), 200, only 1 "login" ref — likely a guest/public-inquiry path that doesn't require an account, but I couldn't confirm the search entry is captcha-free from here. THIS is the one genuine browser check. (`sci.ccc.nashville.gov` is CRIMINAL court — not our signal; probate/estate + divorce live in Circuit/Chancery = caselink.) |
+| **FL Palm Beach — dockets** | eCaseView | ❌ still 503 to datacenter | Consistently 503s automated traffic (multiple checks over 2 days). Either hard bot-block or persistent outage — the one case where "loads for you in a browser?" is the deciding question. Recorder (erec) is up but per-search reCAPTCHA (logged earlier). |
+| **FL Palm Beach — recorder** | erec Landmark | ⚠️ reCAPTCHA-v2 | up, per-search captcha (logged 2026-07-29). |
+| **CO Pitkin/Aspen** | CO 9th Judicial | ⚠️ state portal | coloradojudicial.gov has case search + docket + "Data" but CO statewide is typically name-search + fees; no confirmed bulk date+type discovery. Recorder side: Pitkin likely on publicsearch.us or similar — unchecked. Denver recorder is the priority CO court build. |
+
+**Bottom line for Jeremy — his open item shrank from "check 6 things" to at most TWO browser clicks:**
+1. **Nashville Davidson CaseLink** (caselink.nashville.gov) — does Public Inquiry search work without login/captcha? If yes → TN probate+divorce harvester is buildable.
+2. **FL eCaseView** (applications.mypalmbeachclerk.com/eCaseView) — does it load at all in a normal browser? Resolves the 503-vs-block question.
+
+Everything else I can act on without him: **Denver recorder is a near-free build** (reuse dallas_recorder.py against publicsearch.us); MA + FL-recorder need a captcha-solve decision; CO state courts need deeper recon.
+
 ### 2026-07-30 (Denver) — CO_DENVER launched: 5 luxury ZIPs, ~58.8k parcels
 
 17th market. Denver's authoritative open-data parcel layer (`services1.arcgis.com/zdB7qR0BtYrg0Xpl/.../ODC_PROP_PARCELS_A/FeatureServer/245`) — found via the hub DCAT catalog (`opendata-geospatialdenver.hub.arcgis.com/api/feed/dcat-us/1.1`), NOT the stale `CCD_Parcels` spatial-join snapshot (last edited Jan 2024, broken SITUS_ZIP — first candidate found via arcgis.com search, rejected on freshness check). Verified dataLastEditDate = same-day. OWNER_NAME + mailing + SITUS_ZIP native (ZIP+4, `LIKE 'zip%'`) + SALE_DATE/PRICE + APPRAISED_TOTAL_VALUE + D_CLASS_CN.
