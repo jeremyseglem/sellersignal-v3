@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-07-30 (MA_MIDDLESEX + MA_NORFOLK launched — Greater Boston, 11th/12th markets: 6 luxury towns / ~25.8k parcels live, structural buckets populated; court signals pending accessibility check. Prior: FL_PALM_BEACH 8 ZIPs. Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
+**Last updated:** 2026-07-30 (Greater Boston wave 2 — 15 more trophy ZIPs / ~85.5k parcels live across 7 towns; MA now 21 territories, fleet 135 across 12 markets. Court signals still pending accessibility check. Prior same day: MA wave 1 (6 towns), FL_PALM_BEACH (8 ZIPs). Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -14,7 +14,7 @@ These apply to every Claude session. Non-negotiable.
 2. Never assume; never invent data. Reference this manifesto and the build journal before proposing anything.
 3. Direct answers, no hedging, no emojis. When wrong, own it without spiraling.
 4. "Building" is jargon — use plain English ("in pipeline", "on watch list").
-5. Don't drift from the working code path. The 120 live territories across 12 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH, MA_MIDDLESEX, MA_NORFOLK) are the standard; match against them.
+5. Don't drift from the working code path. The 135 live territories across 12 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH, MA_MIDDLESEX, MA_NORFOLK) are the standard; match against them.
 6. Skip-trace and Lob letter sending are NOT wired for beta (placeholder buttons).
 7. Brian is co-founder for product validation discussions.
 
@@ -28,7 +28,7 @@ An AI-powered intelligence platform for luxury real estate agents in defined ZIP
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
-**Geographic scope:** **120 live territories across 12 markets** as of 2026-07-30: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8), Greater Boston MA — Middlesex (4: Weston/Lincoln/Concord) + Norfolk (2: Wellesley×2/Dover). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
+**Geographic scope:** **135 live territories across 12 markets** as of 2026-07-30: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8), Greater Boston MA (21: Middlesex 13 + Norfolk 8 — Wellesley×2, Dover, Weston, Lincoln, Concord, Newton×6 villages, Brookline×2, Lexington×2, Winchester, Westwood, Dedham, Needham×2). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
 
 ### WA_KING live ZIPs (32; other markets listed in Live measurements below)
 
@@ -506,6 +506,33 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-07-30 (later) — Greater Boston wave 2: 15 trophy ZIPs, ~85.5k parcels
+
+No new adapter — rides the wave-1 MassGIS builder + all existing MA wiring. Pure inventory expansion: added ZIP_CONFIG / MA_ZIP_TO_CITY / MA_ZIP_MARKET entries + 15 ZCTA features to ma.json, built seeds, onboarded sequentially. MA now 21 territories (13 Middlesex + 8 Norfolk); fleet 135.
+
+Towns (all structural buckets populated, trust + tenure at cap everywhere):
+```
+Newton (Middlesex, 6 villages — one town, ZCTA-split like Wellesley):
+  02468 Chestnut Hill 2,119   02459 Newton Center 6,654
+  02465 West Newton   4,332   02461 Newton Highlands 2,734
+  02458 Newton        4,548   02460 Newtonville 3,183
+Brookline (Norfolk, one town split): 02445 6,943 / 02446 8,521
+Lexington (Middlesex): 02420 5,892 / 02421 6,834
+Winchester (Middlesex): 01890 8,138
+Westwood (Norfolk): 02090 5,358
+Dedham (Norfolk): 02026 9,327
+Needham (Norfolk): 02492 7,278 / 02494 3,604
+Total 85,465
+```
+
+**Deploy gotcha logged:** first wave-2 onboarding fire failed with "wa-king-02468 seed not found" — the running Railway build was still on the pre-wave-2 commit despite a health-endpoint timestamp AFTER the push. Railway had coalesced/lagged the rapid successive pushes and deployed an earlier commit. Wave-1 ZIPs resolved fine (proving the MA orchestrator block worked); only the new map members failed. Fix: an empty `--allow-empty` commit forced a clean redeploy, after which all 15 resolved. Lesson: after pushing a commit whose ONLY effect is new dict entries (no new endpoint/behavior), verify the maps are actually live (test-fire one new ZIP) before batch-onboarding — a lagged deploy looks identical to a wiring bug.
+
+Also: batch-onboard loops that poll inline hit the bash execution-time limit around ~6-8 ZIPs. Fire in sub-batches of 4 with a bounded per-ZIP poll, or fire-and-tally-via-coverage. Both wave-2 batches past the first needed splitting.
+
+**Boston court-signal follow-up unchanged** (see wave-1 entry): MassCourts Odyssey browser check pending; deeds side is per-county AcclaimWeb, not one statewide build.
+
+**Boston wave 3 candidates (parcels-first, no new adapter):** 02467 (Chestnut Hill/Brookline side), 02481-adjacent Natick/Sherborn/Medfield, 01720 Acton, 02420-adjacent Bedford 01730, 02043 Hingham, 02025 Cohasset, 01945 Marblehead, 02140-02138 Cambridge (dense/high-value), Belmont 02478, Arlington 02476, Milton 02186.
 
 ### 2026-07-30 — MA_MIDDLESEX + MA_NORFOLK launched: Greater Boston wave 1 (6 towns, ~25.8k parcels)
 
