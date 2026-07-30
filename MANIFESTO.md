@@ -531,6 +531,16 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (Denver recorder) — first CO court-signal source, scaffolded (dry-run only)
+
+Built the Denver recorder harvester by REUSING the shared publicsearch.us/neumo driver (`backend/harvesters/dallas_recorder.py`) — the payoff from the access sweep finding that `denver.co.publicsearch.us` is the same platform as Dallas/Collin/Travis. `scripts/run_denver_recorder.py` (clone of run_collin_recorder.py, repointed) + `.github/workflows/denver-recorder.yml`. source_type=co_denver_recorder.
+
+Denver-specific handling: (1) `_ui_drive` override — Denver's Starting Recorded Date input ships a garbage default (10/15/0991) that a single fill() leaves in React state; cleared via empty-fill-then-fill + Search-button submit. (2) Added `BENEFICIARY DEED` doc-type needle (Colorado's transfer-on-death instrument). (3) DENVER_ROLL optional — no county-wide roll wired yet; the rematch matcher resolves decedent rows against the loaded Denver parcels_v3 (5 live ZIPs).
+
+**⚠️ VALIDATION HONESTY:** confirmed the tenant + search form (title, aria date inputs), but the results grid would NOT render rows from the build sandbox's datacenter IP — persistent "Attempting to reconnect / Loading Results", 341-char chrome-only body on every attempt regardless of date method (tried fill, empty-fill+fill, native-setter+input-event injection). This matches dallas_recorder.py's documented edge gate ("datacenter gets a challenge; a real GitHub Actions runner clears it on navigation"). So the harvester is SCAFFOLDED, not validated. Workflow is manual-dispatch, DRY-RUN default, **cron DISABLED**. First run must be a dry run in Actions (where the gate clears) to confirm real parsed rows BEFORE enabling write/schedule. No production writes possible until someone dispatches write=1.
+
+**Next step (needs Actions, ~2 min):** dispatch denver-recorder.yml with write=0, read the log for "DRY RUN — sample signals". If rows appear → flip cron on + one write=1 run. If 0 rows → the grid driver needs a Denver-specific re-probe from a real browser session. This is the one thing I could not close from the sandbox.
+
 ### 2026-07-30 (court-signal access sweep) — all live markets, read-only
 
 Ran the runnable court/recorder checks myself (Jeremy: "why do I need a court signal check — can't you just run that"). Result: most are resolvable from here; only ONE genuinely needs a browser. Board:
