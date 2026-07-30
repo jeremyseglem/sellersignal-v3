@@ -1,6 +1,6 @@
 # SellerSignal V3 — Manifesto
 
-**Last updated:** 2026-07-29 evening (FL_PALM_BEACH launched — 10th market, first Florida market: 8 ZIPs / ~90.6k parcels live, structural buckets at cap; recorder + docket harvesters pending — see build journal). Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
+**Last updated:** 2026-07-30 (MA_MIDDLESEX + MA_NORFOLK launched — Greater Boston, 11th/12th markets: 6 luxury towns / ~25.8k parcels live, structural buckets populated; court signals pending accessibility check. Prior: FL_PALM_BEACH 8 ZIPs. Prior: 2026-07-22 (map: all parcels visible + Earth lot-polygon persistence — schema/032 PENDING APPLICATION; earlier: production outage fixed: PostgREST h2 pool + CT slash-PIN dossier 404). Prior: 2026-07-21 (Sun Belt signal diagnosis — Travis recorder soft-blocked, Maricopa name fix, recorder-vs-docket ceiling). Prior: 2026-07-18 (CT statewide probate harvester live — probate leads across all 9 CT territories; earlier same day: CT Gold Coast: 06840, 06880, 06897, 06883 live; Darien deferred — see build journal). Prior: 2026-07-17 (6-ZIP expansion: 98116, 98144, 98036, 98296, 85258, 75219 — see build journal). Prior: 2026-06-16 (LAUNCH DAY. Went live: Stripe live key/price/webhook, Stannp `STANNP_MODE=live`, user purge; fixed dead Resend key in Supabase Auth SMTP; converted to password auth. First paying customer onboarded — live Stripe checkout→webhook→territory path proven end-to-end. CRITICAL fix `6ea8fe2`: the map + parcel-dossier read endpoints were publicly accessible with no auth — owner_name/address/signals for all parcels across all 90 ZIPs were scrapable unauthenticated. Added a `require_zip_access` gate to `map_data.py`/`parcels.py` (X-Admin-Key server exception preserved), switched the frontend map/parcel calls to authed, flipped AuthGate to secure-by-default, and made logout hard-redirect. Verified: no-auth → 401, authorized → 200. `/api/zip-polygons` left public (boundaries only, no PII) so ZIP browsing still works. Carry-forward: add FK on `agent_territories_v3.agent_id` (ghost claims); rotate exposed PAT/admin-key/service-role key.)
 **Status:** Living document. Update on every session that changes architecture, ZIPs, or canonical paths.
 **Source of truth:** This file. Anything in `docs/STATUS.md`, `docs/ZIP_BUILD_GUIDE.md`, or `docs/SESSION_END_*.md` may be stale — defer to this document when they disagree.
 
@@ -14,7 +14,7 @@ These apply to every Claude session. Non-negotiable.
 2. Never assume; never invent data. Reference this manifesto and the build journal before proposing anything.
 3. Direct answers, no hedging, no emojis. When wrong, own it without spiraling.
 4. "Building" is jargon — use plain English ("in pipeline", "on watch list").
-5. Don't drift from the working code path. The 114 live territories across 10 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH) are the standard; match against them.
+5. Don't drift from the working code path. The 120 live territories across 12 markets (WA_KING, WA_SNOHOMISH, AZ_MARICOPA, TX_DALLAS, TX_TRAVIS, TX_COLLIN, CT_FAIRFIELD, MT_GALLATIN, MT_FLATHEAD, FL_PALM_BEACH, MA_MIDDLESEX, MA_NORFOLK) are the standard; match against them.
 6. Skip-trace and Lob letter sending are NOT wired for beta (placeholder buttons).
 7. Brian is co-founder for product validation discussions.
 
@@ -28,7 +28,7 @@ An AI-powered intelligence platform for luxury real estate agents in defined ZIP
 
 **Beta model:** $299/month per ZIP territory, exclusive (one agent per ZIP), invite-only first-to-claim.
 
-**Geographic scope:** **114 live territories across 10 markets** as of 2026-07-29: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
+**Geographic scope:** **120 live territories across 12 markets** as of 2026-07-30: King County WA (34), Snohomish County WA (8), Maricopa County AZ (25), Dallas County TX (9), Travis County TX (9), Collin County TX (5), Fairfield County CT (9), Montana Gallatin+Flathead (6), Palm Beach County FL (8), Greater Boston MA — Middlesex (4: Weston/Lincoln/Concord) + Norfolk (2: Wellesley×2/Dover). (Counts per live zip_coverage_v3; treat coverage endpoint as source of truth if this drifts.)
 
 ### WA_KING live ZIPs (32; other markets listed in Live measurements below)
 
@@ -506,6 +506,39 @@ Documented above under "The canonical onboarding pipeline." Summary:
 ---
 
 ## Build journal (most recent at top)
+
+### 2026-07-30 — MA_MIDDLESEX + MA_NORFOLK launched: Greater Boston wave 1 (6 towns, ~25.8k parcels)
+
+11th/12th markets, first Massachusetts. The CT-grade "one statewide adapter, every town rides free" win Jeremy picked Boston for. Recon → build → live same session (recorder/docket check deferred, same as FL).
+
+**Recon findings:**
+- **Parcels: A-grade, statewide, single source.** MassGIS Level-3 standardized parcel layer with assessor data already joined: `arcgisserver.digital.mass.gov/.../AGOL/L3_Parcels_FeatureService_4326/FeatureServer/1` (WGS84, 2000/page). Inline: OWNER1 (+ trustee markers), OWN_STATE/CITY (absentee), LS_DATE/LS_PRICE (tenure, 93-100% fill), TOTAL_VAL (band), USE_CODE, LS_BOOK/PAGE (deed ref), polygon geometry + centroids. No owner stripping. Trust density ~10-25% (MA nominee/realty-trust country — the wheelhouse).
+- **Town-keyed, situs ZIP null statewide** → ZCTA point-in-polygon (CT/MT/FL pattern), data/zip_polygons/ma.json. CITY is the query key.
+- **prop_type gotcha:** towns use EITHER 3-digit (Dover 101/102) OR 4-digit local variants (Weston/Concord 1010/1020/1021) MA DOR codes. Builder prefix-matches: 102*→K, 101*/103*/104*/105*/109*/111*/112*/1013→R. Caught during build (Weston/Concord came out 0% R/K on exact-match first pass).
+- **PIN collision risk:** PROP_ID is only town-unique (two towns both have '37-32'). Builder prefixes TOWN_ID → cross-town-unique in parcels_v3.
+- **Court side — NOT cleared, deferred (Jeremy browser check):** MassCourts Odyssey portal (masscourts.org/eservices — statewide probate + divorce dockets) 503s from datacenter across all paths (down or blocked — can't tell). Registries of deeds are FRAGMENTED, not one platform: masslandrecords.com behind Incapsula bot-wall; individual counties run own AcclaimWeb/Kofile instances (Norfolk ALIS loads clean, no captcha, but each county = separate adapter — less "whole state" than CT deeds). MA is unusual: parcels are gloriously centralized, court/deeds are not.
+
+**Shipped (commit this session):**
+- `scripts/build_ma_owners.py` — town fetch + ZCTA PIP, TOWN_ID-prefixed PINs, prefix-matched prop_type, LS_DATE (YYYYMMDD string) tenure, 80% addr gate.
+- `data/zip_polygons/ma.json` — 6 ZCTA features.
+- Wiring: MA_ZIP_TO_CITY + MA_ZIP_MARKET (per-ZIP county, like MT) + MA_MARKET_SLUG (seed filename county slug) in admin.py; both detect blocks, both seed dispatchers, both city fallback chains, orchestrator seed-prefix, canon seed-resolver (MA ZIP-range fallback tries both county slugs); MA_MIDDLESEX/MA_NORFOLK→MA in _MARKET_STATE; matcher market-aware prop_type default (MA like WA_SNOHOMISH); TerritoryMap.jsx MA 'Boston' metro + 'Massachusetts' pill; dist via build:safe.
+
+**Live, structural buckets populated (trust + tenure at cap everywhere — MA trust country):**
+```
+02481 Wellesley        5,122 parcels  (Norfolk)   trust100 llc53 abs59 ten100
+02482 Wellesley Hills  3,931          (Norfolk)   trust100 llc57 abs65 ten100
+02493 Weston           4,326          (Middlesex) trust100 llc50 abs76 ten100
+02030 Dover            2,593          (Norfolk)   trust100 llc12 abs37 ten100
+01773 Lincoln          2,686          (Middlesex) trust100 llc20 abs35 ten100
+01742 Concord          7,105          (Middlesex) trust100 llc100 abs100 ten100
+Total                 25,763
+```
+Canonicalize draining via canon_autofill (off critical path).
+
+**MA follow-ups (queued):**
+1. Jeremy: MassCourts Odyssey browser check (masscourts.org/eservices) — probate + divorce dockets — when it's responding. Decides court-signal path.
+2. If dockets blocked: per-county registry-of-deeds adapters (Norfolk ALIS is the clean starting point; Middlesex South next). Note this is per-county, NOT one statewide build — deeds side of MA is fragmented unlike CT.
+3. Wave 2 towns (parcels-first, no court dependency): 02468 (Chestnut Hill/Newton), 02458-02467 (Newton villages), 02445/02446 (Brookline), 02420/02421 (Lexington), 01890 (Winchester), 02090 (Westwood), 02026 (Dedham), 02420 area.
 
 ### 2026-07-29 — FL_PALM_BEACH launched: Palm Beach County wave 1 (8 ZIPs, ~90.6k parcels)
 
