@@ -106,6 +106,8 @@ _MARKET_STATE = {
     'MT_GALLATIN':  'MT',
     'MT_FLATHEAD':  'MT',
     'FL_PALM_BEACH': 'FL',
+    'MA_MIDDLESEX': 'MA',
+    'MA_NORFOLK':   'MA',
 }
 
 

@@ -962,6 +962,10 @@ async def register_zip(
         market_key = "FL_PALM_BEACH"
         if city is None:
             city = PBC_ZIP_TO_CITY[zip_code]
+    if zip_code in MA_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = MA_ZIP_MARKET[zip_code]
+        if city is None:
+            city = MA_ZIP_TO_CITY[zip_code]
     if zip_code in MT_ZIP_TO_CITY and market_key == "WA_KING":
         market_key = MT_ZIP_MARKET[zip_code]
         if city is None:
@@ -972,6 +976,7 @@ async def register_zip(
         city = (KC_ZIP_TO_CITY.get(zip_code)
                 or CT_ZIP_TO_CITY.get(zip_code)
                 or PBC_ZIP_TO_CITY.get(zip_code)
+                or MA_ZIP_TO_CITY.get(zip_code)
                 or COLLIN_ZIP_TO_CITY.get(zip_code)
                 or MARICOPA_ZIP_TO_CITY.get(zip_code)
                 or DALLAS_ZIP_TO_CITY.get(zip_code)
@@ -1212,6 +1217,7 @@ async def onboard_zip(
             or COLLIN_ZIP_TO_CITY.get(zip_code)
             or CT_ZIP_TO_CITY.get(zip_code)
             or PBC_ZIP_TO_CITY.get(zip_code)
+            or MA_ZIP_TO_CITY.get(zip_code)
             or MT_ZIP_TO_CITY.get(zip_code)
             or "Bellevue"
         )
@@ -1276,6 +1282,13 @@ async def onboard_zip(
         if state in (None, "WA"):
             state = "FL"
 
+    # Greater Boston MA — market_key varies by county (Middlesex/Norfolk).
+    is_ma = zip_code in MA_ZIP_TO_CITY
+    if is_ma and market_key == "WA_KING":
+        market_key = MA_ZIP_MARKET[zip_code]
+        if state in (None, "WA"):
+            state = "MA"
+
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
     #   KC:        wa-king-{zip}-owners.json
@@ -1288,6 +1301,8 @@ async def onboard_zip(
         seed_prefix = "ct-fairfield"
     elif is_pbc:
         seed_prefix = "fl-palmbeach"
+    elif is_ma:
+        seed_prefix = f"ma-{MA_MARKET_SLUG[market_key]}"
     elif is_mt:
         seed_prefix = "mt"
     elif is_collin:
@@ -1775,6 +1790,35 @@ PBC_ZIP_TO_CITY = {
     "33410": "Palm Beach Gardens",  # Frenchman's / PGA corridor
 }
 
+# Greater Boston MA wave 1 (2026-07-29) — market_key varies by COUNTY
+# (MA_MIDDLESEX / MA_NORFOLK), state MA. Seed files embed the county:
+# data/seeds/ma-{county}-{zip}-owners.json (built by scripts/build_ma_owners.py
+# against the MassGIS statewide L3 parcel layer with ZCTA spatial join from
+# data/zip_polygons/ma.json — the layer is town-keyed with a null situs-ZIP
+# column). Seeds carry lat/lng at build time — no geometry backfill. USPS
+# localities matter for letter copy. Court signals (probate/divorce via the
+# MassCourts Odyssey portal + registry-of-deeds instruments) are a follow-up
+# pending an accessibility check — parcels-first launch, structural buckets
+# only, same posture as the FL wave-1 launch.
+MA_ZIP_TO_CITY = {
+    "02481": "Wellesley",        # flagship — Wellesley proper
+    "02482": "Wellesley Hills",  # same town, north ZIP
+    "02493": "Weston",           # highest median-value town in MA
+    "02030": "Dover",            # low-density estate town
+    "01773": "Lincoln",          # conservation-land estate town
+    "01742": "Concord",          # historic + high-value
+}
+MA_ZIP_MARKET = {
+    "02481": "MA_NORFOLK",
+    "02482": "MA_NORFOLK",
+    "02493": "MA_MIDDLESEX",
+    "02030": "MA_NORFOLK",
+    "01773": "MA_MIDDLESEX",
+    "01742": "MA_MIDDLESEX",
+}
+# seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
+MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk"}
+
 
 @router.post("/seed-from-json/{zip_code}",
              dependencies=[Depends(require_admin)])
@@ -1841,6 +1885,11 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "FL_PALM_BEACH"
         city = PBC_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"fl-palmbeach-{zip_code}-owners.json"
+    elif zip_code in MA_ZIP_TO_CITY:
+        market_key = MA_ZIP_MARKET[zip_code]
+        city = MA_ZIP_TO_CITY[zip_code]
+        _slug = MA_MARKET_SLUG[market_key]
+        seed_path = repo_root / "data" / "seeds" / f"ma-{_slug}-{zip_code}-owners.json"
     elif zip_code in SNO_ZIP_TO_CITY:
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
@@ -3817,6 +3866,14 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     if market_key == 'FL_PALM_BEACH' or zip_code.startswith('334'):
         candidates.append(f"data/seeds/fl-palmbeach-{zip_code}-owners.json")
+    if market_key == 'MA_MIDDLESEX':
+        candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
+    if market_key == 'MA_NORFOLK':
+        candidates.append(f"data/seeds/ma-norfolk-{zip_code}-owners.json")
+    if zip_code[:3] in ('024', '025', '017', '018', '019', '020', '021'):
+        # MA ZIP ranges — county unknown here, try both slugs
+        candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
+        candidates.append(f"data/seeds/ma-norfolk-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-king-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     for rel in candidates:
