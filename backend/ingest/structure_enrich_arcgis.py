@@ -154,6 +154,23 @@ STRUCT_CONFIGS: dict[str, dict] = {
 }
 
 
+_CLAMPS = {  # implausible-for-a-residence values -> None (whole-building
+             # records, data glitches); also protects NUMERIC(4,2)/(4,1)
+    "bedrooms": 50, "bathrooms": 99, "stories": 99,
+    "year_built": 2100, "year_renovated": 2100, "sqft": 2_000_000,
+}
+
+
+def _clamp(mapped: dict) -> dict:
+    out = {}
+    for k, v in mapped.items():
+        cap = _CLAMPS.get(k)
+        if cap is not None and v is not None and v > cap:
+            continue
+        out[k] = v
+    return out
+
+
 def _query_chunk(client: httpx.Client, cfg: dict, values: list[str]) -> list[dict]:
     if cfg.get("numeric_pin"):
         vals = [v for v in values if v.replace(".", "", 1).isdigit()]
@@ -222,8 +239,8 @@ def enrich_zip_arcgis(supa, zip_code: str, market_key: str) -> dict:
                 pin = response_pin(a)
                 if pin not in pin_set:
                     continue
-                mapped = {k: v for k, v in cfg["map"](a).items()
-                          if v is not None}
+                mapped = _clamp({k: v for k, v in cfg["map"](a).items()
+                                 if v is not None})
                 if not mapped:
                     continue
                 source_hits += 1
