@@ -52,6 +52,8 @@ _PAGE = 1000
 _PARCEL_COLS = (
     'pin, zip_code, market_key, address, city, owner_name, owner_type, '
     'prop_type, total_value, sqft, year_built, acres, tenure_years, '
+    'bedrooms, bathrooms, stories, year_renovated, waterfront, '
+    'waterfront_footage, view_rating, '
     'is_absentee, is_vacant_land, band, signal_family, lat, lng'
 )
 
@@ -108,6 +110,10 @@ class NeedIn(BaseModel):
     sqft_min: Optional[int] = None
     acres_min: Optional[float] = None
     acres_max: Optional[float] = None
+    waterfront: Optional[bool] = None
+    view_min: Optional[int] = None
+    stories_min: Optional[float] = None
+    year_renovated_min: Optional[int] = None
     soft_notes: Optional[str] = None
     attestation: bool = False
     expires_at: Optional[str] = None
@@ -128,6 +134,10 @@ class NeedPatch(BaseModel):
     sqft_min: Optional[int] = None
     acres_min: Optional[float] = None
     acres_max: Optional[float] = None
+    waterfront: Optional[bool] = None
+    view_min: Optional[int] = None
+    stories_min: Optional[float] = None
+    year_renovated_min: Optional[int] = None
     soft_notes: Optional[str] = None
     attestation: Optional[bool] = None
     expires_at: Optional[str] = None
@@ -237,6 +247,12 @@ def _evaluate(parcel: dict, need: dict, signal_types: Optional[list[str]]):
         ('acres', parcel.get('acres'),
          need.get('acres_min'), need.get('acres_max')),
         ('sqft', parcel.get('sqft'), need.get('sqft_min'), None),
+        ('beds', parcel.get('bedrooms'), need.get('beds_min'), None),
+        ('baths', parcel.get('bathrooms'), need.get('baths_min'), None),
+        ('stories', parcel.get('stories'), need.get('stories_min'), None),
+        ('year_renovated', parcel.get('year_renovated'),
+         need.get('year_renovated_min'), None),
+        ('view', parcel.get('view_rating'), need.get('view_min'), None),
     ]
     for name, val, lo, hi in ranges:
         if lo is None and hi is None:
@@ -247,12 +263,19 @@ def _evaluate(parcel: dict, need: dict, signal_types: Optional[list[str]]):
                      (lo is None or v >= lo) and (hi is None or v <= hi)):
             return False, 0, [], [], 'C'
 
-    # Beds / baths — captured on the need, no columns yet anywhere.
-    for name, crit in (('beds', need.get('beds_min')),
-                       ('baths', need.get('baths_min'))):
-        if crit is not None:
-            specified += 1
-            unknown.append(name)
+    # Waterfront — tri-state: criterion True/False, field bool-or-null.
+    if need.get('waterfront') is not None:
+        wf = parcel.get('waterfront')
+        want = bool(need.get('waterfront'))
+        # NULL means "no waterfront record" — for want=False that's a
+        # pass (county flags waterfront affirmatively); for want=True
+        # it's a reject, not an unknown, for the same reason.
+        actual = bool(wf) if wf is not None else False
+        specified += 1
+        if actual == want:
+            matched.append('waterfront')
+        else:
+            return False, 0, [], [], 'C'
 
     score = round(len(matched) / specified, 3) if specified else 1.0
     tier = _seller_tier(parcel, signal_types)
@@ -266,7 +289,8 @@ def _run_match(supa, need: dict) -> dict:
     per_zip: dict = {}
     candidates = 0
     field_cov = {'sqft': [0, 0], 'year_built': [0, 0], 'acres': [0, 0],
-                 'prop_type': [0, 0]}  # populated, total
+                 'prop_type': [0, 0], 'bedrooms': [0, 0], 'bathrooms': [0, 0],
+                 'waterfront': [0, 0], 'view_rating': [0, 0]}  # populated, total
 
     for z in zips:
         parcels = _fetch_all(supa, 'parcels_v3', _PARCEL_COLS, z)
@@ -330,6 +354,13 @@ def _run_match(supa, need: dict) -> dict:
                     'total_value': p.get('total_value'),
                     'sqft': p.get('sqft'),
                     'year_built': p.get('year_built'),
+                    'bedrooms': p.get('bedrooms'),
+                    'bathrooms': p.get('bathrooms'),
+                    'stories': p.get('stories'),
+                    'year_renovated': p.get('year_renovated'),
+                    'waterfront': p.get('waterfront'),
+                    'waterfront_footage': p.get('waterfront_footage'),
+                    'view_rating': p.get('view_rating'),
                     'acres': p.get('acres'),
                     'tenure_years': p.get('tenure_years'),
                     'is_absentee': p.get('is_absentee'),
@@ -371,7 +402,8 @@ def _run_match(supa, need: dict) -> dict:
         'criteria': {k: need.get(k) for k in (
             'zips', 'streets', 'price_min', 'price_max', 'prop_types',
             'beds_min', 'baths_min', 'year_built_min', 'year_built_max',
-            'sqft_min', 'acres_min', 'acres_max') if need.get(k) is not None},
+            'sqft_min', 'acres_min', 'acres_max', 'waterfront', 'view_min',
+            'stories_min', 'year_renovated_min') if need.get(k) is not None},
     }
     return {'candidates': candidates, 'matches': all_matches, 'report': report}
 
