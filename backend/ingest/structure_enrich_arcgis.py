@@ -94,6 +94,8 @@ def _map_maricopa(a: dict) -> dict:
 
 
 def _map_boulder(a: dict) -> dict:
+    style = str(a.get("DesignDscr") or "").strip().lower()
+    extra = {"features": {"style": style}} if style else {}
     baths = (_num(a.get("FullBaths"), float) or 0) \
         + 0.75 * (_num(a.get("ThreeQtrBaths"), float) or 0) \
         + 0.5 * (_num(a.get("HalfBaths"), float) or 0)
@@ -102,6 +104,7 @@ def _map_boulder(a: dict) -> dict:
         "bathrooms": round(baths, 2) if baths > 0 else None,
         "sqft": _num(a.get("FinishedSqft")),
         "year_built": _num(a.get("YearBuilt")),
+        **extra,
     }
 
 
@@ -113,26 +116,33 @@ def _map_tn(a: dict) -> dict:
 
 
 def _map_collin(a: dict) -> dict:
-    return {
+    out = {
         "sqft": _num(a.get("imprvMainArea")),
         "year_built": _num(a.get("imprvYearBuilt")),
         "acres": _num(a.get("landSizeAcres"), float),
     }
+    if str(a.get("imprvPoolFlag") or "").strip().upper() in ("Y", "T", "1", "TRUE"):
+        out["features"] = {"pool": True}
+    return out
 
 
 def _map_ma(a: dict) -> dict:
-    return {
+    out = {
         "sqft": _num(a.get("RES_AREA")) or _num(a.get("BLD_AREA")),
         "year_built": _num(a.get("YEAR_BUILT")),
         "stories": _num(a.get("STORIES"), float),
     }
+    style = str(a.get("STYLE") or "").strip().lower()
+    if style:
+        out["features"] = {"style": style}
+    return out
 
 
 _MA_CONFIG = {
     "url": ("https://arcgisserver.digital.mass.gov/arcgisserver/rest/"
             "services/AGOL/L3_Parcels_FeatureService_4326/FeatureServer/1"),
     "pin_field": "PROP_ID",
-    "out_fields": "PROP_ID,TOWN_ID,YEAR_BUILT,BLD_AREA,RES_AREA,STORIES",
+    "out_fields": "PROP_ID,TOWN_ID,YEAR_BUILT,BLD_AREA,RES_AREA,STORIES,STYLE",
     "map": _map_ma,
     # parcels_v3 pin = f"{TOWN_ID}-{PROP_ID}"; query on the PROP_ID part
     # and rebuild the composite from the response to map back exactly.
@@ -183,7 +193,7 @@ STRUCT_CONFIGS: dict[str, dict] = {
                 "rest/services/CCAD_Parcel_Feature_Set/FeatureServer/4"),
         "pin_field": "propID",
         "numeric_pin": True,
-        "out_fields": "propID,imprvYearBuilt,imprvMainArea,landSizeAcres",
+        "out_fields": "propID,imprvYearBuilt,imprvMainArea,landSizeAcres,imprvPoolFlag",
         "map": _map_collin,
         "prefer_max": "sqft",
     },
@@ -195,7 +205,7 @@ STRUCT_CONFIGS: dict[str, dict] = {
                 "CamaView/PropSearch_BLDG_ATTRIBUTES/MapServer/1"),
         "pin_field": "AccountNo",
         "out_fields": ("AccountNo,Bedrooms,FullBaths,HalfBaths,"
-                       "ThreeQtrBaths,YearBuilt,FinishedSqft"),
+                       "ThreeQtrBaths,YearBuilt,FinishedSqft,DesignDscr"),
         "map": _map_boulder,
         "prefer_max": "sqft",
     },
@@ -228,7 +238,8 @@ def _clamp(mapped: dict) -> dict:
     out = {}
     for k, v in mapped.items():
         cap = _CLAMPS.get(k)
-        if cap is not None and v is not None and v > cap:
+        if cap is not None and not isinstance(v, dict) and v is not None \
+                and v > cap:
             continue
         out[k] = v
     return out
