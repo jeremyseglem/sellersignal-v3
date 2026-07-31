@@ -43,7 +43,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 _UA = {"User-Agent": "Mozilla/5.0 (SellerSignal structure enrichment)"}
-_CHUNK = 200          # pins per source query
+_CHUNK = 400          # pins per source query (POST — no URL-length limit)
 _SLEEP = 0.2          # politeness between source queries
 
 
@@ -90,6 +90,33 @@ def _map_maricopa(a: dict) -> dict:
     return {
         "sqft": _num(a.get("LIVING_SPACE")),
         "year_built": _num(a.get("CONST_YEAR")),
+    }
+
+
+def _map_boulder(a: dict) -> dict:
+    baths = (_num(a.get("FullBaths"), float) or 0) \
+        + 0.75 * (_num(a.get("ThreeQtrBaths"), float) or 0) \
+        + 0.5 * (_num(a.get("HalfBaths"), float) or 0)
+    return {
+        "bedrooms": _num(a.get("Bedrooms")),
+        "bathrooms": round(baths, 2) if baths > 0 else None,
+        "sqft": _num(a.get("FinishedSqft")),
+        "year_built": _num(a.get("YearBuilt")),
+    }
+
+
+def _map_tn(a: dict) -> dict:
+    return {
+        "sqft": _num(a.get("FinishedArea")),
+        "year_built": _num(a.get("YearBuilt")),
+    }
+
+
+def _map_collin(a: dict) -> dict:
+    return {
+        "sqft": _num(a.get("imprvMainArea")),
+        "year_built": _num(a.get("imprvYearBuilt")),
+        "acres": _num(a.get("landSizeAcres"), float),
     }
 
 
@@ -147,11 +174,63 @@ STRUCT_CONFIGS: dict[str, dict] = {
         "out_fields": "APN_DASH,CONST_YEAR,LIVING_SPACE",
         "map": _map_maricopa,
     },
+    "TX_COLLIN": {
+        # CCAD parcels layer carries improvement attrs directly.
+        # acres only written where currently null (engine-side no-op is
+        # handled by the write path sending values as-is — Collin acres
+        # coverage in parcels_v3 is 0%, so overwrite risk is nil).
+        "url": ("https://services2.arcgis.com/uXyoacYrZTPTKD3R/arcgis/"
+                "rest/services/CCAD_Parcel_Feature_Set/FeatureServer/4"),
+        "pin_field": "propID",
+        "numeric_pin": True,
+        "out_fields": "propID,imprvYearBuilt,imprvMainArea,landSizeAcres",
+        "map": _map_collin,
+        "prefer_max": "sqft",
+    },
+    "CO_BOULDER": {
+        # CAMA building-attributes TABLE (MapServer layer 1); one row per
+        # building — the enricher keeps the largest FinishedSqft per pin.
+        # parcels_v3 pin = strap/AccountNo (e.g. 'R0008431').
+        "url": ("https://maps.bouldercounty.org/arcgis/rest/services/"
+                "CamaView/PropSearch_BLDG_ATTRIBUTES/MapServer/1"),
+        "pin_field": "AccountNo",
+        "out_fields": ("AccountNo,Bedrooms,FullBaths,HalfBaths,"
+                       "ThreeQtrBaths,YearBuilt,FinishedSqft"),
+        "map": _map_boulder,
+        "prefer_max": "sqft",
+    },
+    "TN_DAVIDSON": {
+        "url": ("https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/"
+                "rest/services/Parcels_with_Building_Characteristics_view/"
+                "FeatureServer/0"),
+        "pin_field": "ParcelID",   # numeric; equals our ParID-derived pin
+        "numeric_pin": True,
+        "out_fields": "ParcelID,FinishedArea,YearBuilt",
+        "map": _map_tn,
+        "prefer_max": "sqft",
+    },
     "MA_MIDDLESEX": _MA_CONFIG,
     "MA_NORFOLK": _MA_CONFIG,
     "MA_ESSEX": _MA_CONFIG,
     "MA_PLYMOUTH": _MA_CONFIG,
 }
+
+
+_CLAMPS = {  # implausible-for-a-residence values -> None (whole-building
+             # records, data glitches); also protects NUMERIC(4,2)/(4,1)
+    "bedrooms": 50, "bathrooms": 99, "stories": 99,
+    "year_built": 2100, "year_renovated": 2100, "sqft": 2_000_000,
+}
+
+
+def _clamp(mapped: dict) -> dict:
+    out = {}
+    for k, v in mapped.items():
+        cap = _CLAMPS.get(k)
+        if cap is not None and v is not None and v > cap:
+            continue
+        out[k] = v
+    return out
 
 
 def _query_chunk(client: httpx.Client, cfg: dict, values: list[str]) -> list[dict]:
@@ -222,12 +301,18 @@ def enrich_zip_arcgis(supa, zip_code: str, market_key: str) -> dict:
                 pin = response_pin(a)
                 if pin not in pin_set:
                     continue
-                mapped = {k: v for k, v in cfg["map"](a).items()
-                          if v is not None}
+                mapped = _clamp({k: v for k, v in cfg["map"](a).items()
+                                 if v is not None})
                 if not mapped:
                     continue
                 source_hits += 1
                 mapped["pin"] = pin
+                pref = cfg.get("prefer_max")
+                prev = updates.get(pin)
+                if prev is not None and pref:
+                    # multiple buildings per parcel — keep the largest
+                    if (prev.get(pref) or 0) >= (mapped.get(pref) or 0):
+                        continue
                 updates[pin] = mapped
             if i + _CHUNK < len(pins):
                 time.sleep(_SLEEP)

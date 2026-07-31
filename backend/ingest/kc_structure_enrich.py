@@ -112,7 +112,9 @@ def _baths(row: dict, full: str, three: str, half: str) -> Optional[float]:
     t = _num(row.get(three)) or 0
     h = _num(row.get(half)) or 0
     total = f + 0.75 * t + 0.5 * h
-    return round(total, 2) if total > 0 else None
+    if total <= 0 or total > 99:   # NUMERIC(4,2) + whole-building glitches
+        return None
+    return round(total, 2)
 
 
 def enrich_zip(supa, zip_code: str) -> dict:

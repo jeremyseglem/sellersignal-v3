@@ -507,6 +507,25 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-31 (early) — Structure enrichment waves 2-3: 10 more markets get adapters
+
+**Generic ArcGIS enricher** `backend/ingest/structure_enrich_arcgis.py`: per-market configs (url, pin_field, out_fields, mapper), pin-chunk POST queries (`IN (...)`) rather than zip queries — pin fields are universal while zip fields vary (CT has none). Handles numeric pin fields (unquoted IN lists + float normalization — Pitkin/TN/Collin), comma-formatted numbers (Maricopa returns `'   3,223'`), multi-building parcels (`prefer_max: sqft` — Boulder/TN/Collin), and sanity clamps (Aspen whole-building record with 100+ baths overflowed NUMERIC(4,2)).
+
+**Adapters + what each source carries:**
+- CT_FAIRFIELD — statewide 2023 layer: beds/baths(full+half)/Living_Area/AYB. All 8 zips enriched (~85-95% coverage). 06820 404s = Darien never onboarded, correct.
+- CO_PITKIN — full set incl. stories + last_remodel→year_renovated. All 3 zips enriched.
+- CO_DENVER — RES_ORIG_YEAR_BUILT + RES_ABOVE_GRADE_AREA (no beds/baths on their layer). All 5 zips enriched.
+- AZ_MARICOPA — CONST_YEAR + LIVING_SPACE (no beds/baths). Sweep in flight.
+- MA x4 — YEAR_BUILT + RES_AREA|BLD_AREA + STORIES via composite TOWN_ID-PROP_ID pins. Sweep in flight.
+- CO_BOULDER — CamaView BLDG_ATTRIBUTES table: FULL set (Bedrooms, Full/Half/3qtr baths, YearBuilt, FinishedSqft). Best non-WA source found. Sweep in flight.
+- TN_DAVIDSON — Parcels_with_Building_Characteristics: FinishedArea + YearBuilt via numeric ParcelID. Sweep in flight.
+- TX_COLLIN — CCAD parcels layer carries imprvYearBuilt/imprvMainArea/imprvPoolFlag/landSizeAcres directly (validated, deploy pending).
+
+**`POST /api/admin/enrich-structure-fleet?market_key=A,B,...`** + status endpoint: server-side background sweep (single task, idempotent, re-fire after redeploys — deploys kill it). Built because Maricopa's MapServer is slow (~2-5+ min/zip) and appears to throttle Railway's IP harder than sandbox IPs; chunk size raised 200→400 to halve request counts.
+
+**Wave-4 gaps (secondary sources needed):** TX_DALLAS (DCAD bulk zip blocks datacenter downloads — needs browser-fetch or Jeremy-side download), TX_TRAVIS (TCAD fixed-width roll improvement segments), FL_PALM_BEACH (PAPA downloads; their ArcGIS Property_Information_Table is a dud), WA_SNOHOMISH (nothing in county ArcGIS; SCOPI or county files), MT x2 (cadastral dwelling tables not in the DNRC layer).
+
+
 ### 2026-07-30 (night) — KC structure enrichment fleet-wide + marketplace criteria live (commits `bf5a17a`..`7f774d5`)
 
 **Schema/035** added market-agnostic structure columns to parcels_v3: bedrooms, bathrooms, stories, year_renovated, waterfront, waterfront_footage, view_rating (NULL = unknown; engine rank-doesn't-reject). **Schema/036** added the matching criteria columns to buyer_needs_v3 (waterfront tri-state, view_min, stories_min, year_renovated_min).
