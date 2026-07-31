@@ -507,6 +507,14 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-31 — Structure enrichment SWEEP COMPLETE: 12 markets / 118 territories enriched
+
+Fleet sweep finished with ZERO failures: MA_MIDDLESEX 19, MA_NORFOLK 13, MA_ESSEX 4, MA_PLYMOUTH 4, MA_DUKES 5, CO_BOULDER 5, TN_DAVIDSON 6, TX_COLLIN 5 (61 zips server-side) + AZ_MARICOPA 25 via the local-compute/bulk-write path (Maricopa throttles Railway's IP to ~25 min/zip; sandbox computes the same zip in seconds — all 22 remaining zips precomputed in ~5 min and written via /admin/enrich-structure-bulk in ~2 min). With WA_KING 34, CT 8, Pitkin 3, Denver 5 from earlier waves: **structure data now live in 12 of 19 markets (~118 of 183 territories)**.
+
+Truth-tests on enriched non-WA supply: Scottsdale need ($1.5-3.5M / 1995+ / 3000sqft+ across 85258+85253+85255) → 48,236 candidates, 5,250 matched, sqft coverage 88% / year_built 91.4%; top tier-A = $2.75M probate parcel, yb 1995, 5,133 sqft, score 1.0, zero unknowns. MetroWest MA need → 3,814 matched, ~68% structure coverage. Criteria bite everywhere adapters ran. (MA tier-A=0 reflects pending MA court-signal harvesting, not enrichment.)
+
+Remaining wave-4 markets (bulk-file sources): TX_DALLAS (DCAD zip blocks datacenter IPs — needs Jeremy-side download or browser fetch), TX_TRAVIS (TCAD fixed-width improvement segments), FL_PALM_BEACH (PAPA files; ArcGIS 503ing), WA_SNOHOMISH, MT x2, CO_ARAPAHOE (open-data layer has no structure fields; assessor files needed).
+
 ### 2026-07-31 (early) — Structure enrichment waves 2-3: 10 more markets get adapters
 
 **Generic ArcGIS enricher** `backend/ingest/structure_enrich_arcgis.py`: per-market configs (url, pin_field, out_fields, mapper), pin-chunk POST queries (`IN (...)`) rather than zip queries — pin fields are universal while zip fields vary (CT has none). Handles numeric pin fields (unquoted IN lists + float normalization — Pitkin/TN/Collin), comma-formatted numbers (Maricopa returns `'   3,223'`), multi-building parcels (`prefer_max: sqft` — Boulder/TN/Collin), and sanity clamps (Aspen whole-building record with 100+ baths overflowed NUMERIC(4,2)).
