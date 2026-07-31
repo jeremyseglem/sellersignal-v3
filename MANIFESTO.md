@@ -573,6 +573,22 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (Wake NC + build-readiness refinement)
+
+**NC_WAKE (Raleigh) — first North Carolina, LIVE.** Cleanest complete VERIFIED-OPEN build: owner + DEED_DATE (tenure) + ZIPNUM (situs-zip native) + TOTAL_VALUE_ASSD + TYPE_USE_DECODE all inline. maps.wakegov.com Property/Parcels MapServer. 27608 Five Points/Hayes Barton 4730 / 27609 North Hills 10260 / 27612 11831 / 27613 15043 / 27607 6281. Addr 100%, tenure 100%. Centroid computed from polygon rings (no returnCentroid on this MapServer). build_wake_owners.py. New-state NC wired end-to-end.
+- **Known gap (minor):** absentee bucket = 0 for Wake — owner mailing is free-text ADDR1/2/3 and I didn't parse city/state cleanly, so is_absentee never fires. Trust/LLC/tenure all at cap; territory is functional/sellable. Fix = parse ADDR3 for state≠NC / city≠situs. Queued, non-blocking.
+
+**BUILD-READINESS REFINEMENT (important — corrects the target-sheet tiering):** the recon that produced the VERIFIED-OPEN tier only confirmed an OWNER field exists. Actually building revealed that true readiness needs FOUR things inline: owner + situs-ZIP-path + sale-DATE (for tenure ≥90% parity) + value. Precise re-check of the confirmed-owner counties:
+- **Arapahoe CO** — Sale_Date + Zip ✓ (built clean)
+- **Wake NC** — DEED_DATE + ZIPNUM ✓ (built clean)
+- **Tarrant TX** — DEED_DATE ✓ but situs ZIPCODE null → needs geometry-PIP for ZIP (buildable, heavier)
+- **Broward FL, Cobb GA, Mecklenburg NC** — owner ✓ but NO sale date in the REST layer → tenure gap (needs a bulk sales file, Boulder-style)
+- **Denton TX** — situs_zip sparse + no clean sale date
+- My recon's "sale=True" over-counted: it matched deed BOOK/PAGE reference fields as 'sale', not actual sale DATE fields. Real gate = an esriFieldTypeDate sale/deed field.
+**Takeaway:** treat VERIFIED-OPEN as 'owner confirmed, build-readiness TBD.' Before building any recon'd market, run the 4-field check (owner + situs-zip + sale-DATE-typed + value). Clean-inline ones (Arapahoe/Wake/Martin?) build same-day; split ones (Broward/Cobb/Meck/Denton/Tarrant) need a tenure/situs source first.
+
+Fleet 188. This session's VERIFIED-OPEN banks: Arapahoe (5), Martha's Vineyard (5), Wake NC (5) = 15 territories.
+
 ### 2026-07-30 (VERIFIED-OPEN queue) — Arapahoe + Martha's Vineyard
 
 Started building down the ranked target sheet (VERIFIED-OPEN tier). Two banked:
