@@ -25,40 +25,99 @@ from datetime import date
 
 csv.field_size_limit(10 * 1024 * 1024)
 
+# Florida statewide parcel-centroid layer (FDOR Cadastral Centroids) — ONE geometry
+# source for all 67 counties, keyed by CO_NO (DOR county number) + PARCEL_ID, both
+# matching the NAL exactly. Filterable by PHY_ZIPCD (situs ZIP). Replaces per-county
+# geometry hunting. Verified join on Collier 2026-07-30.
+FL_STATEWIDE_CENTROIDS = ("https://services9.arcgis.com/Gh9awoU677aKree0/arcgis/rest/"
+                          "services/Florida_Statewide_Parcel_Centroid_Version/FeatureServer/0")
+
+# co_no = DOR county number (also the NAL filename number). Trophy ZIPs per county.
 COUNTY_CONFIG = {
-    "collier": {  # Naples
-        "slug": "collier", "market": "FL_COLLIER",
-        # geometry source: county ArcGIS parcel layer keyed by Folio (== NAL PARCEL_ID).
-        # Verified 100% join on Naples ZIPs. Provides the lat/lng the NAL lacks.
+    "collier": {"slug": "collier", "market": "FL_COLLIER", "co_no": 21,
         "geom_url": "https://services2.arcgis.com/SlIq32SqARUHIhSx/arcgis/rest/services/Parcel/FeatureServer/2",
-        "geom_id_field": "Folio", "geom_zip_field": "SiteZipCode",
-        "zips": {
-            "34102": ("Naples",        {"NAPLES"}),   # Old Naples / Port Royal
-            "34103": ("Naples",        {"NAPLES"}),   # Moorings / Coquina Sands
-            "34108": ("Naples",        {"NAPLES"}),   # Pelican Bay
-            "34105": ("Naples",        {"NAPLES"}),
-            "34110": ("Naples",        {"NAPLES"}),   # North Naples
-        },
-    },
+        "geom_id_field": "Folio", "geom_zip_field": "SiteZipCode", "zips": {
+        "34102": ("Naples", {"NAPLES"}), "34103": ("Naples", {"NAPLES"}),
+        "34108": ("Naples", {"NAPLES"}), "34105": ("Naples", {"NAPLES"}),
+        "34110": ("Naples", {"NAPLES"})}},
+    "miamidade": {"slug": "miamidade", "market": "FL_MIAMIDADE", "co_no": 23, "zips": {
+        "33109": ("Miami Beach", {"MIAMI BEACH"}),      # Fisher Island
+        "33139": ("Miami Beach", {"MIAMI BEACH"}),      # South Beach
+        "33149": ("Key Biscayne", {"KEY BISCAYNE"}),    # Key Biscayne
+        "33156": ("Pinecrest", {"PINECREST", "MIAMI"}), # Pinecrest
+        "33154": ("Bal Harbour", {"BAL HARBOUR", "MIAMI BEACH", "SURFSIDE"})}},
+    "broward": {"slug": "broward", "market": "FL_BROWARD", "co_no": 16,
+        "geom_url": "https://services.arcgis.com/JMAJrTsHNLrSsWf5/arcgis/rest/services/PARCEL_POLY_BCPA_TAXROLL/FeatureServer/0",
+        "geom_id_field": "FOLIO", "geom_zip_field": "ZIP", "zips": {
+        "33301": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Las Olas
+        "33308": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Lauderdale beach
+        "33316": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Harbor Beach
+        "33062": ("Pompano Beach", {"POMPANO BEACH"}),
+        "33004": ("Hollywood", {"HOLLYWOOD", "DANIA BEACH"})}},  # Harbor Islands
+    "sarasota": {"slug": "sarasota", "market": "FL_SARASOTA", "co_no": 68, "zips": {
+        "34236": ("Sarasota", {"SARASOTA"}),        # downtown / Bird Key
+        "34228": ("Longboat Key", {"LONGBOAT KEY"}),
+        "34242": ("Siesta Key", {"SARASOTA", "SIESTA KEY"}),
+        "34239": ("Sarasota", {"SARASOTA"}),
+        "34231": ("Sarasota", {"SARASOTA"})}},
+    "martin": {"slug": "martin", "market": "FL_MARTIN", "co_no": 53, "zips": {
+        "33455": ("Hobe Sound", {"HOBE SOUND"}),           # Jupiter Island
+        "34996": ("Stuart", {"STUART", "SEWALLS POINT"}),  # Sewall's Point
+        "34994": ("Stuart", {"STUART"}),
+        "34997": ("Stuart", {"STUART"}),
+        "33469": ("Jupiter", {"JUPITER", "TEQUESTA"})}},   # Jupiter Island north
+    "monroe": {"slug": "monroe", "market": "FL_MONROE", "co_no": 54, "zips": {
+        "33040": ("Key West", {"KEY WEST"}),
+        "33037": ("Key Largo", {"KEY LARGO"}),
+        "33036": ("Islamorada", {"ISLAMORADA"}),
+        "33050": ("Marathon", {"MARATHON"}),
+        "33070": ("Tavernier", {"TAVERNIER"})}},
+    "lee": {"slug": "lee", "market": "FL_LEE", "co_no": 46, "zips": {
+        "33957": ("Sanibel", {"SANIBEL"}),
+        "34134": ("Bonita Springs", {"BONITA SPRINGS", "ESTERO"}),
+        "33908": ("Fort Myers", {"FORT MYERS", "FORT MYERS BEACH"}),
+        "34135": ("Bonita Springs", {"BONITA SPRINGS"}),
+        "33931": ("Fort Myers Beach", {"FORT MYERS BEACH"})}},
 }
 
 
-def fetch_geom(cfg, z):
-    """Return {parcel_id: (lat, lng)} from the county ArcGIS layer for one situs ZIP."""
+def _bbox_for_zip(z):
+    """Bounding box (xmin,ymin,xmax,ymax) from the ZCTA polygon in fl.json."""
+    import glob
+    for path in ("data/zip_polygons/fl.json",):
+        try:
+            fc = json.load(open(path))
+        except Exception:
+            continue
+        for f in fc["features"]:
+            if (f.get("properties") or {}).get("zip") == z:
+                xs, ys = [], []
+                g = f["geometry"]
+                polys = g["coordinates"] if g["type"] == "Polygon" else [r for mp in g["coordinates"] for r in mp]
+                for ring in polys:
+                    for pt in ring:
+                        xs.append(pt[0]); ys.append(pt[1])
+                if xs:
+                    return (min(xs), min(ys), max(xs), max(ys))
+    return None
+
+
+def fetch_geom_county(cfg, z):
+    """Fast path: query the county's own parcel layer (filter by situs ZIP,
+    returnCentroid). Requires geom_url/geom_id_field/geom_zip_field in cfg.
+    Returns {parcel_id: (lat,lng)}. Much faster than the 12M-row statewide layer."""
     import urllib.parse, urllib.request, time
-    url = cfg.get("geom_url")
-    if not url:
-        return {}
-    idf = cfg["geom_id_field"]; zf = cfg["geom_zip_field"]
+    url = cfg["geom_url"]; idf = cfg["geom_id_field"]; zf = cfg["geom_zip_field"]
     ua = {"User-Agent": "Mozilla/5.0 SellerSignal-Seed/1.0"}
     geom, off = {}, 0
     while True:
-        p = {"where": f"{zf}='{z}'", "outFields": idf, "returnCentroid": "true",
-             "returnGeometry": "false", "resultOffset": off, "resultRecordCount": 2000, "f": "json"}
+        p = {"where": f"{zf}='{z}' OR {zf} LIKE '{z}%'", "outFields": idf,
+             "returnCentroid": "true", "returnGeometry": "false",
+             "resultOffset": off, "resultRecordCount": 2000, "f": "json"}
         for a in range(4):
             try:
-                d = json.load(urllib.request.urlopen(
-                    urllib.request.Request(url + "/query?" + urllib.parse.urlencode(p), headers=ua), timeout=90)); break
+                d = json.load(urllib.request.urlopen(urllib.request.Request(
+                    url + "/query?" + urllib.parse.urlencode(p), headers=ua), timeout=90)); break
             except Exception:
                 if a == 3: raise
                 time.sleep(3 * (a + 1))
@@ -68,7 +127,51 @@ def fetch_geom(cfg, z):
             c = f.get("centroid") or {}
             fo = f["attributes"].get(idf)
             if fo and c.get("x") is not None:
-                geom[str(fo)] = (c["y"], c["x"])
+                geom[str(fo).strip()] = (c["y"], c["x"])
+        off += len(fs)
+        if len(fs) < 2000: break
+    return geom
+
+
+def fetch_geom(cfg, z):
+    """County layer if configured (fast), else statewide bbox (slow, universal)."""
+    if cfg.get("geom_url"):
+        return fetch_geom_county(cfg, z)
+    return fetch_geom_by_bbox(cfg["co_no"], z)
+
+
+def fetch_geom_by_bbox(co_no, z):
+    """Return {parcel_id: (lat,lng)} via a fast spatial envelope query on the FL
+    statewide centroid layer, bounded by the ZIP's ZCTA bbox + CO_NO. Uses the
+    spatial index (fast) instead of an IN-clause. One source, all 67 counties."""
+    import urllib.parse, urllib.request, time
+    bb = _bbox_for_zip(z)
+    if not bb:
+        return {}
+    ua = {"User-Agent": "Mozilla/5.0 SellerSignal-Seed/1.0"}
+    env = {"xmin": bb[0], "ymin": bb[1], "xmax": bb[2], "ymax": bb[3],
+           "spatialReference": {"wkid": 4326}}
+    geom, off = {}, 0
+    while True:
+        p = {"where": f"CO_NO={co_no}", "geometry": json.dumps(env),
+             "geometryType": "esriGeometryEnvelope", "inSR": "4326",
+             "spatialRel": "esriSpatialRelIntersects", "outFields": "PARCEL_ID",
+             "returnGeometry": "true", "outSR": "4326",
+             "resultOffset": off, "resultRecordCount": 2000, "f": "json"}
+        for a in range(4):
+            try:
+                d = json.load(urllib.request.urlopen(urllib.request.Request(
+                    FL_STATEWIDE_CENTROIDS + "/query?" + urllib.parse.urlencode(p), headers=ua), timeout=90)); break
+            except Exception:
+                if a == 3: raise
+                time.sleep(3 * (a + 1))
+        fs = d.get("features", [])
+        if not fs: break
+        for f in fs:
+            g = f.get("geometry") or {}
+            pid = f["attributes"].get("PARCEL_ID")
+            if pid and g.get("x") is not None:
+                geom[str(pid).strip()] = (g["y"], g["x"])
         off += len(fs)
         if len(fs) < 2000: break
     return geom
@@ -102,12 +205,6 @@ def main():
     csv_path = os.environ.get("FL_NAL_CSV") or f"/tmp/fldor/{county}_NAL.csv"
     zips = cfg["zips"]
     target = [z.strip() for z in os.environ.get("ZIPS", "").split(",") if z.strip()] or list(zips)
-    # pull geometry per target ZIP from the county layer (Folio -> lat/lng)
-    geom_by_zip = {}
-    for z in target:
-        g = fetch_geom(cfg, z)
-        geom_by_zip[z] = g
-        print(f"[seed] {z} geometry: {len(g):,} parcel centroids from county layer", flush=True)
     buckets = {z: {} for z in target}
     seen = 0
     with open(csv_path, newline="") as fh:
@@ -127,15 +224,23 @@ def main():
             addr = (row.get("PHY_ADDR1") or "").strip()
             try: val = int(float(row.get("JV") or 0))
             except (ValueError, TypeError): val = 0
-            lat, lng = geom_by_zip.get(pz, {}).get(pid, (None, None))
             buckets[pz][pid] = {
                 "apn": pid, "owner_name": owner, "owner_type": cls(owner),
                 "address": addr, "value": val, "tenure_years": ten, "last_transfer_date": iso,
                 "prop_type": pt, "owner_state": ms or None, "owner_city": mc or None,
                 "is_out_of_state": bool(ms and ms != "FL"),
                 "is_absentee": bool(ms and ms != "FL") or bool(mc and mc not in local),
-                "legal_description": "", "lat": lat, "lng": lng,
+                "legal_description": "", "lat": None, "lng": None,
             }
+    # geometry: county layer if configured (fast), else statewide bbox
+    for z in target:
+        geo = fetch_geom(cfg, z)
+        hit = 0
+        for pid, rec in buckets[z].items():
+            ll = geo.get(pid)
+            if ll:
+                rec["lat"], rec["lng"] = ll[0], ll[1]; hit += 1
+        print(f"[seed] {z} geometry: {hit:,}/{len(buckets[z]):,} matched", flush=True)
     for z in target:
         items = buckets[z]; city = zips[z][0]
         cov = sum(1 for i in items.values() if i["address"]) / max(len(items), 1) * 100

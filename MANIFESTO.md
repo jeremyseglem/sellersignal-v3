@@ -573,6 +573,22 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (FL geometry — per-county reality + condo blocker)
+
+Solved FL geometry for counties that publish a per-folio parcel layer; found a hard blocker for condo-heavy beach counties. No half-geometry ZIPs launched (per standing rule).
+
+**What works:** build_fl_nal_owners.py now supports two geometry paths — (1) county parcel layer, fast, filter by situs ZIP + returnCentroid (geom_url/geom_id_field/geom_zip_field in COUNTY_CONFIG); (2) FL statewide centroid layer fallback by CO_NO/bbox. Collier launched clean this way (its Simplified Parcels layer includes per-folio centroids INCLUDING condo units → 100%).
+
+**The condo blocker (real, structural):** condo-heavy FL beach ZIPs (Broward 33308 Ft Lauderdale beach, 33062 Pompano, etc.) have ~20k parcels/ZIP that are mostly individual condo UNITS. Per-unit geometry is missing from every accessible Broward source:
+- County parcel POLYGON layer (PARCEL_POLY_BCPA_TAXROLL): one shape per building/lot, not per unit → 18-41% folio match.
+- FL statewide centroid layer: has per-folio points BUT the service 504s / times out at scale — unusable for bulk.
+- Broward address-point layer (GISAddressPoints, FOLIO): fast but only ~7k of 22k folios → 25% match. County doesn't publish comprehensive per-condo-unit points.
+So condo units exist in the NAL (owner/value/absentee all present) but have NO individual map coordinate available.
+
+**Implication:** FL geometry completeness is PER-COUNTY. Counties whose GIS includes per-folio centroids (Collier ✓) build clean. Condo-heavy counties without one need BUILDING-PIN logic (map all units in a tower to the building location — which the roadmap already wants: "building-pin UX, unit-count badge"). That's a feature build, not a quick fetch.
+
+**Status:** Collier (Naples) LIVE + complete. Broward/Miami-Dade/Sarasota/Martin/Monroe NAL rolls downloaded, seeds NOT built/launched (would be sub-parity on geometry). DECISION for Jeremy: (a) build the building-pin condo-geometry logic once (unlocks all condo-heavy FL properly, aligns with roadmap), or (b) launch only FL counties that have a per-folio layer + defer beach/condo counties, or (c) launch condo counties with building-level pins now (units cluster at building — arguably the desired UX anyway). Fleet still 193 (no new FL launched this pass — held on the geometry bar).
+
 ### 2026-07-30 (FLORIDA STATEWIDE UNLOCK — DOR NAL adapter)
 
 Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/build_fl_nal_owners.py is ONE adapter for all 67 FL counties.**
