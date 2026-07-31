@@ -507,6 +507,15 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-31 (later) — TX_DALLAS enriched from Jeremy-supplied DCAD bulk (13 markets / 128 territories now enriched)
+
+DCAD blocks datacenter downloads, so Jeremy uploaded DCAD2026/2027_CURRENT zips directly. Used 2027 (current appraisal year). Flow entirely local + bulk endpoint: ACCOUNT_INFO streamed for account->zip on **PROPERTY_ZIPCODE** (first pass wrongly keyed OWNER_ZIPCODE — mailing address; would have mis-bucketed absentee owners; caught and redone), then RES_DETAIL streamed for target accounts (94.5k), largest-living-area record per account. Mapped: NUM_BEDROOMS, NUM_FULL+0.5*HALF baths, TOT_LIVING_AREA_SF, YR_BUILT, NUM_STORIES_DESC-parsed stories, and features {pool, spa, sauna, sprinkler_system, deck, fireplaces, brick_stone (EXT_WALL contains BRICK/STONE)}. All 10 Dallas zips pushed via enrich-structure-bulk in ~45s total (~75k rows written).
+
+Verification: 75225 University Park = 98% structure coverage (7,632/7,796 sqft; beds 7,581; baths 7,603), pool on 2,627 parcels, brick_stone 6,619, sprinklers 4,205. Truth-test ($1.5-4M / 4bd+ / pool / 1980+ across 75225+75205+75209): 20,798 -> 4,482 matched, tier B leaders at score 1.0 incl. 34.9y-tenure pool homes. Tier A=0 on this sample — court-signal depth in these zips is supply-side work, not enrichment.
+
+DCAD zips archived nowhere (chat-session only) — re-runs need a fresh Jeremy download. Remaining wave-4: TX_TRAVIS, FL_PBC, WA_SNOHOMISH, MT x2, CO_ARAPAHOE.
+
+
 ### 2026-07-31 — Feature vocabulary v1 (schema/037): zip-native filters live; flagship query beats MLS-class search
 
 **Design:** universal core criteria everywhere + per-market vocabulary discovered from data presence, stored in `parcels_v3.features JSONB` (GIN-indexed) — no migration per attribute. `GET /api/marketplace/filters?zips=` returns per-zip filter availability (which keys, how many parcels) — the need form's facet source AND the enrichment-gap scoreboard. A zip only offers filters its county actually grades.
