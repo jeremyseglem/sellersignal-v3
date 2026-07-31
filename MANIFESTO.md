@@ -507,6 +507,21 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-31 — Feature vocabulary v1 (schema/037): zip-native filters live; flagship query beats MLS-class search
+
+**Design:** universal core criteria everywhere + per-market vocabulary discovered from data presence, stored in `parcels_v3.features JSONB` (GIN-indexed) — no migration per attribute. `GET /api/marketplace/filters?zips=` returns per-zip filter availability (which keys, how many parcels) — the need form's facet source AND the enrichment-gap scoreboard. A zip only offers filters its county actually grades.
+
+**Vocabulary v1 (KC extracts, all in hand):** golf_adjacent, greenbelt_adjacent, traffic_noise 1-3, power_lines, historic_site, flood_plain, sewer public|septic, water public|well, wfnt_bank 1-4, wfnt_access_rights, per-category views (lake_wa/lake_samm/rainier/olympics/cascades/skyline/sound/territorial/... each 1-4), garage_sqft, deck_sqft, fireplaces, brick_stone, daylight_basement, bldg_grade (KC 1-13 construction quality — the luxury-tier filter), condition, condo-unit attrs (top_floor, end_unit, floor, parking_garage). Plus style (MA x5 + Boulder DesignDscr) and pool (Collin imprvPoolFlag). KC pools deferred — accessory-extract URL 404s.
+
+**Engine:** `feature_filters` on needs with generic key conventions (bool true=require/unknown-ranks, false=require-absent-with-absent-passes since counties flag affirmatively, _min/_max, equality, style_any substring, view_any + view_cat_min). New vocabulary keys need zero engine changes. Bulk endpoint whitelists `features`.
+
+**Mercer Island availability after re-sweep:** lake_wa views on 2,504 parcels, wfnt_bank on 764, bldg_grade on 9,024, golf 8, historic 6.
+
+**Flagship truth-test** ($2-4.5M / 4bd+ / lake_wa view >=3 / no power lines / garage 600+ / grade 9+ on 98040): 11,681 -> 1,378 matched, tier A=17. Top hit score 1.0: $2.85M, 4bd, grade 11, rated-3 lake view, 810sqft garage, 19.1y tenure, ACTIVE PROBATE. Off-market, court-verified, fully criteria-confirmed — a query no MLS/Zillow can run because they search listings, we search the parcel fabric.
+
+**Sweep status:** WA_KING re-swept with features (34/34). MA/Boulder/Collin re-sweep interrupted by a parallel-session redeploy (fleet state is in-process memory) — re-fired; idempotent. Wave-4 (bulk-file sources) unchanged: TX_DALLAS (DCAD zip blocks datacenter IPs), TX_TRAVIS, FL_PBC, WA_SNOHOMISH, MT x2, CO_ARAPAHOE.
+
+
 ### 2026-07-31 — Structure enrichment SWEEP COMPLETE: 12 markets / 118 territories enriched
 
 Fleet sweep finished with ZERO failures: MA_MIDDLESEX 19, MA_NORFOLK 13, MA_ESSEX 4, MA_PLYMOUTH 4, MA_DUKES 5, CO_BOULDER 5, TN_DAVIDSON 6, TX_COLLIN 5 (61 zips server-side) + AZ_MARICOPA 25 via the local-compute/bulk-write path (Maricopa throttles Railway's IP to ~25 min/zip; sandbox computes the same zip in seconds — all 22 remaining zips precomputed in ~5 min and written via /admin/enrich-structure-bulk in ~2 min). With WA_KING 34, CT 8, Pitkin 3, Denver 5 from earlier waves: **structure data now live in 12 of 19 markets (~118 of 183 territories)**.
