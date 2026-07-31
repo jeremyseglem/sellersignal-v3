@@ -543,11 +543,24 @@ async def enrich_structure_bulk(body: _EnrichBulkBody):
     supa = get_supabase_client()
 
     def _write():
+        # Safety: only touch pins that already exist in this ZIP.
+        # Precomputed source rows can include county parcels we don't
+        # carry — upserting those would insert skeleton parcels_v3 rows.
+        existing: set = set()
+        off = 0
+        while True:
+            page = (supa.table("parcels_v3").select("pin")
+                    .eq("zip_code", body.zip_code)
+                    .range(off, off + 999).execute()).data or []
+            existing.update(str(r["pin"]) for r in page)
+            if len(page) < 1000:
+                break
+            off += 1000
         payload = []
         for r in body.rows:
             clean = {k: v for k, v in r.items()
                      if k in ALLOWED and v is not None}
-            if len(clean) > 1 and clean.get("pin"):
+            if len(clean) > 1 and str(clean.get("pin")) in existing:
                 clean["zip_code"] = body.zip_code
                 clean["market_key"] = body.market_key
                 payload.append(clean)
