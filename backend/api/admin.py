@@ -2038,6 +2038,11 @@ MA_ZIP_TO_CITY = {
     "02332": "Duxbury",
     "02066": "Scituate",
     "02061": "Norwell",
+    "02539": "Edgartown",
+    "02557": "Oak Bluffs",
+    "02568": "Vineyard Haven",
+    "02575": "West Tisbury",
+    "02535": "Chilmark",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -2080,10 +2085,15 @@ MA_ZIP_MARKET = {
     "02332": "MA_PLYMOUTH",
     "02066": "MA_PLYMOUTH",
     "02061": "MA_PLYMOUTH",
+    "02539": "MA_DUKES",
+    "02557": "MA_DUKES",
+    "02568": "MA_DUKES",
+    "02575": "MA_DUKES",
+    "02535": "MA_DUKES",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk",
-                  "MA_ESSEX": "essex", "MA_PLYMOUTH": "plymouth"}
+                  "MA_ESSEX": "essex", "MA_PLYMOUTH": "plymouth", "MA_DUKES": "dukes"}
 
 # Nashville / Davidson County TN wave 1 (2026-07-30) — market_key TN_DAVIDSON,
 # state TN. Seeds: data/seeds/tn-davidson-{zip}-owners.json (built by
@@ -4230,6 +4240,7 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/ma-norfolk-{zip_code}-owners.json")
         candidates.append(f"data/seeds/ma-essex-{zip_code}-owners.json")
         candidates.append(f"data/seeds/ma-plymouth-{zip_code}-owners.json")
+        candidates.append(f"data/seeds/ma-dukes-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-king-{zip_code}-owners.json")
     candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     for rel in candidates:

@@ -109,6 +109,12 @@ ZIP_CONFIG = {
     "02332": ("DUXBURY",    "Duxbury",              {"DUXBURY"},               "MA_PLYMOUTH"),
     "02066": ("SCITUATE",   "Scituate",             {"SCITUATE"},              "MA_PLYMOUTH"),
     "02061": ("NORWELL",    "Norwell",              {"NORWELL"},               "MA_PLYMOUTH"),
+    # ---- wave 5 (2026-07-30) — Martha's Vineyard, NEW county Dukes ----
+    "02539": ("EDGARTOWN",    "Edgartown",     {"EDGARTOWN"},                  "MA_DUKES"),
+    "02557": ("OAK BLUFFS",   "Oak Bluffs",    {"OAK BLUFFS"},                 "MA_DUKES"),
+    "02568": ("TISBURY",      "Vineyard Haven", {"TISBURY", "VINEYARD HAVEN"}, "MA_DUKES"),
+    "02575": ("WEST TISBURY", "West Tisbury",  {"WEST TISBURY"},               "MA_DUKES"),
+    "02535": ("CHILMARK",     "Chilmark",      {"CHILMARK", "AQUINNAH", "MENEMSHA"}, "MA_DUKES"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"
