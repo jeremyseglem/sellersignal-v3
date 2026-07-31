@@ -573,6 +573,26 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (FLORIDA STATEWIDE UNLOCK — DOR NAL adapter)
+
+Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/build_fl_nal_owners.py is ONE adapter for all 67 FL counties.**
+
+**The source:** Florida DOR data portal (floridarevenue.com) publishes the NAL (Name-Address-Legal) tax roll per county. Portal is a SharePoint app — navigate via its REST API: `{portal}/_api/web/GetFolderByServerRelativeUrl('{path}')/Folders|Files`. Tree: `.../PTO Data Portal/Tax Roll Data Files/NAL/{year}P/{County ## Preliminary NAL {year}.zip}`. Download via direct server-relative URL with redirect-follow (`-L`). Each NAL is a ~150MB CSV.
+
+**NAL columns used:** PARCEL_ID, DOR_UC (use→prop_type; 001 SF→R, 004 condo→K), JV (just/market value), SALE_YR1/SALE_MO1 (tenure — but sparse), OWN_NAME, OWN_CITY, OWN_STATE (absentee), PHY_ADDR1 (situs), PHY_ZIPCD (situs ZIP — NATIVE, no ZCTA needed for filtering).
+
+**Proof launch — FL_COLLIER (Naples):** 34102 Old Naples/Port Royal, 34103 Moorings, 34108 Pelican Bay, 34105, 34110. ~64k parcels. Absentee bucket at CAP (100) immediately — Naples snowbird ownership, FL's killer signal. Owner/value/prop_type all clean.
+
+**KNOWN LIMITATIONS (honest, backfill-pending):**
+- **Tenure sparse (~14%)** — FL DOR publishes only RECENT sales (both NAL SALE_YR1 and the SDF cover ~14% of parcels). Full tenure needs county appraiser sales history. Fails the ≥90% tenure parity bar from DOR alone.
+- **No geometry** — NAL is tabular (no lat/lng). Map pins backfill from the county ArcGIS parcel layer by PARCEL_ID (fiddly per-county; Collier's Simplified Parcels layer is a candidate).
+- **Trust/LLC buckets pending canonicalize** — seed classifies trust (2789) + llc (2324) correctly in 34102, but the trust/LLC contact-now buckets populate only after the deferred canonicalize step runs (~2hr background). Absentee (no canon needed) is at cap now.
+- Minor classifier gaps: "CNTY", "U S POSTAL" tagged individual — tighten cls() (non-blocking).
+
+**DECISION PENDING (Jeremy):** roll the NAL adapter out to the other 66 counties (Broward/Miami-Dade/Sarasota/Martin/Monroe-Keys/Lee all confirmed present in the portal), and how to handle tenure+geometry backfill vs launching FL at 3-strong-buckets (absentee+trust+llc — arguably FL's best signals anyway). The adapter + county-number map make each county a ~5-min build once decided.
+
+Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
+
 ### 2026-07-30 (Wake NC + build-readiness refinement)
 
 **NC_WAKE (Raleigh) — first North Carolina, LIVE.** Cleanest complete VERIFIED-OPEN build: owner + DEED_DATE (tenure) + ZIPNUM (situs-zip native) + TOTAL_VALUE_ASSD + TYPE_USE_DECODE all inline. maps.wakegov.com Property/Parcels MapServer. 27608 Five Points/Hayes Barton 4730 / 27609 North Hills 10260 / 27612 11831 / 27613 15043 / 27607 6281. Addr 100%, tenure 100%. Centroid computed from polygon rings (no returnCentroid on this MapServer). build_wake_owners.py. New-state NC wired end-to-end.
