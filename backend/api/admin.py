@@ -1139,6 +1139,10 @@ async def register_zip(
         market_key = "FL_PALM_BEACH"
         if city is None:
             city = PBC_ZIP_TO_CITY[zip_code]
+    if zip_code in COLLIER_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "FL_COLLIER"
+        if city is None:
+            city = COLLIER_ZIP_TO_CITY[zip_code]
     if zip_code in MA_ZIP_TO_CITY and market_key == "WA_KING":
         market_key = MA_ZIP_MARKET[zip_code]
         if city is None:
@@ -1477,6 +1481,12 @@ async def onboard_zip(
         if state in (None, "WA"):
             state = "FL"
 
+    is_collier = zip_code in COLLIER_ZIP_TO_CITY
+    if is_collier and market_key == "WA_KING":
+        market_key = "FL_COLLIER"
+        if state in (None, "WA"):
+            state = "FL"
+
     # Greater Boston MA — market_key varies by county (Middlesex/Norfolk).
     is_ma = zip_code in MA_ZIP_TO_CITY
     if is_ma and market_key == "WA_KING":
@@ -1515,6 +1525,8 @@ async def onboard_zip(
         seed_prefix = "ct-fairfield"
     elif is_pbc:
         seed_prefix = "fl-palmbeach"
+    elif is_collier:
+        seed_prefix = "fl-collier"
     elif is_ma:
         seed_prefix = f"ma-{MA_MARKET_SLUG[market_key]}"
     elif is_tn:
@@ -2010,6 +2022,21 @@ PBC_ZIP_TO_CITY = {
     "33410": "Palm Beach Gardens",  # Frenchman's / PGA corridor
 }
 
+# Collier County FL (Naples) wave 1 (2026-07-30) — market_key FL_COLLIER, state FL.
+# Built from the Florida DOR statewide NAL tax roll (scripts/build_fl_nal_owners.py)
+# — the ONE-adapter FL unlock. NAL gives owner/value/absentee/trust-LLC/situs-ZIP
+# for all 67 FL counties. Seeds: data/seeds/fl-collier-{zip}-owners.json.
+# KNOWN LIMITATIONS (backfill-pending): tenure sparse (~14% — DOR publishes only
+# recent sales; full history needs county appraiser sales) and NO geometry (NAL is
+# tabular; map pins backfill from the county ArcGIS parcel layer by PARCEL_ID).
+COLLIER_ZIP_TO_CITY = {
+    "34102": "Naples",   # Old Naples / Port Royal
+    "34103": "Naples",   # Moorings / Coquina Sands
+    "34108": "Naples",   # Pelican Bay
+    "34105": "Naples",
+    "34110": "Naples",   # North Naples
+}
+
 # Greater Boston MA wave 1 (2026-07-29) — market_key varies by COUNTY
 # (MA_MIDDLESEX / MA_NORFOLK), state MA. Seed files embed the county:
 # data/seeds/ma-{county}-{zip}-owners.json (built by scripts/build_ma_owners.py
@@ -2259,6 +2286,10 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "FL_PALM_BEACH"
         city = PBC_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"fl-palmbeach-{zip_code}-owners.json"
+    elif zip_code in COLLIER_ZIP_TO_CITY:
+        market_key = "FL_COLLIER"
+        city = COLLIER_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"fl-collier-{zip_code}-owners.json"
     elif zip_code in MA_ZIP_TO_CITY:
         market_key = MA_ZIP_MARKET[zip_code]
         city = MA_ZIP_TO_CITY[zip_code]
@@ -4253,6 +4284,8 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/wa-snohomish-{zip_code}-owners.json")
     if market_key == 'FL_PALM_BEACH' or zip_code.startswith('334'):
         candidates.append(f"data/seeds/fl-palmbeach-{zip_code}-owners.json")
+    if market_key == 'FL_COLLIER' or zip_code.startswith('341'):
+        candidates.append(f"data/seeds/fl-collier-{zip_code}-owners.json")
     if market_key == 'MA_MIDDLESEX':
         candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
     if market_key == 'MA_NORFOLK':

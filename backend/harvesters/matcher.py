@@ -252,7 +252,7 @@ def _load_owners_db(
                         'MA_MIDDLESEX', 'MA_NORFOLK',
                         'MA_ESSEX', 'MA_PLYMOUTH', 'MA_DUKES', 'TN_DAVIDSON',
                         'CO_PITKIN', 'CO_DENVER', 'CO_BOULDER',
-                        'CO_ARAPAHOE', 'NC_WAKE'}:
+                        'CO_ARAPAHOE', 'NC_WAKE', 'FL_COLLIER'}:
             final_pt = 'R'
         elif not raw_pt:
             final_pt = 'R'
