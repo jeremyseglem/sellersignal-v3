@@ -114,6 +114,7 @@ _MARKET_STATE = {
     'CO_PITKIN':    'CO',
     'CO_DENVER':    'CO',
     'CO_BOULDER':   'CO',
+    'CO_ARAPAHOE':  'CO',
 }
 
 
