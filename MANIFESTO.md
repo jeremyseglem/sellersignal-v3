@@ -507,6 +507,13 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-31 (night) — Buyer Network hidden UI live at /network (commit `63d90e2`)
+
+Dark UI for the demand tool: direct URL only, zero nav links, AuthGate + server-allowlist gate (the page probes /api/marketplace/status on mount; 404 -> silent redirect home, indistinguishable from a dead URL). Three views in one self-contained page (`frontend/src/pages/NetworkPage.jsx`, Estate tokens, inline-styled like the rest of the app): **Client registry** (needs list + run), **Client brief** (the need form — data-driven from /marketplace/filters, renders only filters populated for the chosen ZIPs with live parcel counts on every toggle: view categories with 1-4 minimum, must-have amenities, must-not-have excludes, soft notes), **Match report** (signature element: the seller-tier bar — Likely sellers / Structural archetypes / Fabric as one proportional band in call-now/gold/sage, with the line "N of these homes are held by likely sellers — court-verified"). New `network.*` section in api/client.js (authedRequest). Built with build:safe.
+
+**To actually use it: set `MARKETPLACE_ALLOWLIST` in Railway env** (comma-separated emails — Jeremy + Brian). Until set, every signed-in user 404s at the gate and bounces home; that's the intended locked state.
+
+
 ### 2026-07-31 (later) — TX_DALLAS enriched from Jeremy-supplied DCAD bulk (13 markets / 128 territories now enriched)
 
 DCAD blocks datacenter downloads, so Jeremy uploaded DCAD2026/2027_CURRENT zips directly. Used 2027 (current appraisal year). Flow entirely local + bulk endpoint: ACCOUNT_INFO streamed for account->zip on **PROPERTY_ZIPCODE** (first pass wrongly keyed OWNER_ZIPCODE — mailing address; would have mis-bucketed absentee owners; caught and redone), then RES_DETAIL streamed for target accounts (94.5k), largest-living-area record per account. Mapped: NUM_BEDROOMS, NUM_FULL+0.5*HALF baths, TOT_LIVING_AREA_SF, YR_BUILT, NUM_STORIES_DESC-parsed stories, and features {pool, spa, sauna, sprinkler_system, deck, fireplaces, brick_stone (EXT_WALL contains BRICK/STONE)}. All 10 Dallas zips pushed via enrich-structure-bulk in ~45s total (~75k rows written).
