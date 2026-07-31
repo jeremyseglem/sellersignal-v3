@@ -48,7 +48,11 @@ COUNTY_CONFIG = {
         "33154": ("Bal Harbour", {"BAL HARBOUR", "MIAMI BEACH", "SURFSIDE"})}},
     "broward": {"slug": "broward", "market": "FL_BROWARD", "co_no": 16,
         "geom_url": "https://services.arcgis.com/JMAJrTsHNLrSsWf5/arcgis/rest/services/PARCEL_POLY_BCPA_TAXROLL/FeatureServer/0",
-        "geom_id_field": "FOLIO", "geom_zip_field": "ZIP", "zips": {
+        "geom_id_field": "FOLIO", "geom_zip_field": "ZIP",
+        "geom_addr_num": "SITUS_STREET_NUMBER", "geom_addr_name": "SITUS_STREET_NAME",
+        "point_url": "https://services.arcgis.com/JMAJrTsHNLrSsWf5/arcgis/rest/services/GISAddressPoints_FloodZone/FeatureServer/0",
+        "point_id_field": "FOLIO", "point_zip_field": "ZIP",
+        "zips": {
         "33301": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Las Olas
         "33308": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Lauderdale beach
         "33316": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Harbor Beach
@@ -100,6 +104,74 @@ def _bbox_for_zip(z):
                 if xs:
                     return (min(xs), min(ys), max(xs), max(ys))
     return None
+
+
+import re as _re
+
+
+def _base_addr(a):
+    """Normalize a situs address to its building (strip unit/apt/#/PH suffix)."""
+    s = (a or "").upper().strip()
+    s = _re.sub(r"\s+(APT|UNIT|STE|SUITE|#|PH|LOT|BLDG)\s*[A-Z0-9\-]*$", "", s)
+    s = _re.sub(r"\s+#.*$", "", s)
+    s = _re.sub(r"\s{2,}", " ", s)
+    return s.strip()
+
+
+def _bldg_key(folio):
+    """Building key from a condo folio: drop the last 4 (unit) chars."""
+    f = str(folio or "").strip()
+    return f[:-4] if len(f) > 4 else f
+
+
+def fetch_geom_fl_building(cfg, z):
+    """Condo-aware FL geometry. Returns (folio2ll, addr2ll) from the county's
+    per-folio point layer AND building-polygon layer (both filtered by ZIP,
+    outSR 4326). Condo units missing a per-unit point inherit their building's
+    location via base situs address or folio prefix (see main)."""
+    import urllib.parse, urllib.request, time
+    ua = {"User-Agent": "Mozilla/5.0 SellerSignal-Seed/1.0"}
+    folio2ll, addr2ll = {}, {}
+
+    def pull(url, idf, zipf, addr_num=None, addr_name=None, use_centroid=True):
+        off = 0
+        while True:
+            outf = idf + ((",".join(["", addr_num, addr_name])) if addr_num else "")
+            p = {"where": f"{zipf}='{z}' OR {zipf} LIKE '{z}%'", "outFields": outf,
+                 "returnGeometry": "true" if not use_centroid else "false",
+                 "returnCentroid": "true" if use_centroid else "false",
+                 "outSR": "4326", "resultOffset": off, "resultRecordCount": 2000, "f": "json"}
+            for a in range(4):
+                try:
+                    d = json.load(urllib.request.urlopen(urllib.request.Request(
+                        url + "/query?" + urllib.parse.urlencode(p), headers=ua), timeout=90)); break
+                except Exception:
+                    if a == 3: return
+                    time.sleep(3 * (a + 1))
+            fs = d.get("features", [])
+            if not fs: break
+            for f in fs:
+                at = f["attributes"]
+                g = f.get("centroid") if use_centroid else f.get("geometry")
+                g = g or {}
+                if g.get("x") is None: continue
+                ll = (g["y"], g["x"])
+                fo = str(at.get(idf) or "").strip()
+                if fo: folio2ll[fo] = ll
+                if addr_num:
+                    num = str(at.get(addr_num) or "").strip(); nm = str(at.get(addr_name) or "").strip()
+                    if num and nm:
+                        addr2ll.setdefault(_base_addr(f"{num} {nm}"), ll)
+            off += len(fs)
+            if len(fs) < 2000: break
+
+    ap = cfg.get("point_url")
+    if ap:
+        pull(ap, cfg.get("point_id_field", "FOLIO"), cfg.get("point_zip_field", "ZIP"), use_centroid=False)
+    if cfg.get("geom_url"):
+        pull(cfg["geom_url"], cfg["geom_id_field"], cfg["geom_zip_field"],
+             cfg.get("geom_addr_num"), cfg.get("geom_addr_name"), use_centroid=True)
+    return folio2ll, addr2ll
 
 
 def fetch_geom_county(cfg, z):
@@ -232,14 +304,36 @@ def main():
                 "is_absentee": bool(ms and ms != "FL") or bool(mc and mc not in local),
                 "legal_description": "", "lat": None, "lng": None,
             }
-    # geometry: county layer if configured (fast), else statewide bbox
+    # geometry: condo-aware. per-folio point where published; else the unit
+    # inherits its building's location (base situs address, then folio prefix).
+    # building_id groups co-located units for the map's building-pin UX.
     for z in target:
-        geo = fetch_geom(cfg, z)
-        hit = 0
-        for pid, rec in buckets[z].items():
-            ll = geo.get(pid)
-            if ll:
-                rec["lat"], rec["lng"] = ll[0], ll[1]; hit += 1
+        if cfg.get("point_url") or cfg.get("geom_addr_num"):
+            folio2ll, addr2ll = fetch_geom_fl_building(cfg, z)
+            recs = buckets[z]
+            # pass 1: exact folio, then base-address
+            bldg_ll = {}  # building_key -> ll (seed for propagation)
+            for pid, rec in recs.items():
+                bid = _bldg_key(pid)
+                rec["building_id"] = bid
+                ll = folio2ll.get(pid) or addr2ll.get(_base_addr(rec["address"]))
+                if ll:
+                    rec["lat"], rec["lng"] = ll[0], ll[1]
+                    bldg_ll.setdefault(bid, ll)
+            # pass 2: propagate a known building location to its other units
+            for pid, rec in recs.items():
+                if rec["lat"] is None:
+                    ll = bldg_ll.get(rec["building_id"])
+                    if ll:
+                        rec["lat"], rec["lng"] = ll[0], ll[1]
+            hit = sum(1 for r in recs.values() if r["lat"] is not None)
+        else:
+            geo = fetch_geom(cfg, z)
+            hit = 0
+            for pid, rec in buckets[z].items():
+                ll = geo.get(pid)
+                if ll:
+                    rec["lat"], rec["lng"] = ll[0], ll[1]; hit += 1
         print(f"[seed] {z} geometry: {hit:,}/{len(buckets[z]):,} matched", flush=True)
     for z in target:
         items = buckets[z]; city = zips[z][0]

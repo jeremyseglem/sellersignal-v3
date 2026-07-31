@@ -573,6 +573,22 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (FL condo geometry — root cause found; Census-geocoder is the fix)
+
+Building-pin data work revealed the true blocker and the true solution.
+
+**Root cause (Broward, and likely other big FL counties):** the DOR NAL tax roll and the county GIS use DIFFERENT parcel-id schemes for condos. Broward NAL condo folios are alphanumeric (494212AA0010); Broward's GIS layers (parcel polygon + address points) use numeric folios (474236050790). No published crosswalk. So condo units — which are most parcels in beach ZIPs — cannot be geo-located by folio join at all. Address matching between NAL free-text and GIS structured fields doesn't normalize reliably (68 ST vs 68TH ST). Building-pin resolver got Broward to only ~41%.
+- Collier worked (100%) only because Collier's GIS happens to use the same folio as the NAL.
+- So folio-join geometry completeness is per-county and unreliable for condo counties.
+
+**The real fix (universal, not per-county): GEOCODE the situs address.** The NAL has clean situs address + city + ZIP for every parcel. The free US Census Bulk Geocoder (10k addresses/batch, no key) converts them to lat/lng. Condo units at the same building address geocode to the SAME point — which IS the desired building-pin behavior automatically. This sidesteps the folio mismatch entirely and works for all 67 counties uniformly. NOT YET BUILT — this is the next FL step.
+
+**Building-pin UX (approved by Jeremy):** map shows ONE large dot per building with an X-owners count badge; click expands a searchable list of the units inside. Data support: seed now carries building_id (folio prefix / base address) so co-located units group cleanly. Frontend clustering in MapPanel + an expand/search panel is the follow-on feature build.
+
+**Committed:** fetch_geom_fl_building() condo-aware resolver + building_id in seeds (foundation, works where IDs match). NO condo-county launched (held on geometry parity — Broward at 41% not shipped). Fleet 193; Collier the only live NAL-built FL market.
+
+**Next FL steps (clear):** (1) build the Census-bulk-geocoder geometry path in build_fl_nal_owners.py (universal, gives building-level pins for condos automatically); (2) build the building-pin map clustering UX; (3) then roll out Broward/Miami-Dade/Sarasota/Martin/Monroe/Lee cleanly.
+
 ### 2026-07-30 (FL geometry — per-county reality + condo blocker)
 
 Solved FL geometry for counties that publish a per-folio parcel layer; found a hard blocker for condo-heavy beach counties. No half-geometry ZIPs launched (per standing rule).
