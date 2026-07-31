@@ -565,6 +565,16 @@ First shipped slice of the marketplace (per the 2026-07-23 design dossier). Buye
 
 **Next slices (not started, need go):** hidden UI (dusk-family, per the buyer-network concept demo); beds/baths enrichment starting WA_KING; visibility firewall between buyer-side and territory-side report views at unlock.
 
+### 2026-07-30 (VERIFIED-OPEN queue) — Arapahoe + Martha's Vineyard
+
+Started building down the ranked target sheet (VERIFIED-OPEN tier). Two banked:
+
+**CO_ARAPAHOE** (#1 target) — Cherry Hills Village + Greenwood Village + Centennial. Arapahoe OpenDataService parcel layer, A-grade situs-ZIP-native (Owner/Zip/Sale_Date/Price/Appr_Value/PUC/Coordinate_X-Y). 80113+80110 Cherry Hills Vlg, 80111+80121 Greenwood Vlg, 80122 Centennial. ~44.3k parcels, buckets at cap. Per-county CO pattern. build_arapahoe_owners.py.
+
+**MA_DUKES** (Martha's Vineyard) — rides MassGIS builder, new-county 6-step wiring only. Edgartown 02539, Oak Bluffs 02557, Vineyard Haven 02568, West Tisbury 02575, Chilmark 02535. ~18.1k parcels. (Cosmetic: folds to 'Boston' metro tab via STATE grouping — Islands mislabel, functionally fine.)
+
+CO cluster now 23 territories (Pitkin+Denver+Boulder+Arapahoe); MA now 45 (5 counties). Remaining VERIFIED-OPEN queue: Broward/Martin/Sarasota/Orange FL, Mecklenburg/Wake/Buncombe NC, Montgomery MD, Monmouth NJ, Tarrant/Denton TX, Blaine ID, Teton WY, Summit/Routt/Durango CO — each a fresh single-county builder.
+
 ### 2026-07-30 (Boulder) — CO_BOULDER territories LIVE; court signals NOT delivered (deed codes mismap)
 
 Boulder built as a territory market (the queued multi-source join). Fleet 173, CO now 13 territories (Pitkin 3 + Denver 5 + Boulder 5).
