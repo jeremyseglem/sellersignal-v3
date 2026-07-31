@@ -477,6 +477,77 @@ async def geocode_address_fallback(
         raise HTTPException(502, f"geocode fallback failed: {e}")
 
 
+_ENRICH_FLEET = {"running": False, "market": None, "done": [], "failed": [],
+                 "queue": [], "started_at": None}
+
+
+async def _enrich_fleet_worker(markets: list[str]):
+    import asyncio
+    from backend.ingest.kc_structure_enrich import enrich_zip
+    from backend.ingest.structure_enrich_arcgis import (
+        STRUCT_CONFIGS, enrich_zip_arcgis)
+    supa = get_supabase_client()
+    try:
+        for market in markets:
+            _ENRICH_FLEET["market"] = market
+            rows = (supa.table('zip_coverage_v3')
+                    .select('zip_code, market_key')
+                    .eq('market_key', market).execute()).data or []
+            zips = sorted(r['zip_code'] for r in rows)
+            _ENRICH_FLEET["queue"] = list(zips)
+            for z in zips:
+                try:
+                    if market == 'WA_KING':
+                        res = await asyncio.to_thread(enrich_zip, supa, z)
+                    elif market in STRUCT_CONFIGS:
+                        res = await asyncio.to_thread(
+                            enrich_zip_arcgis, supa, z, market)
+                    else:
+                        _ENRICH_FLEET["failed"].append(
+                            {"zip": z, "err": f"no adapter for {market}"})
+                        continue
+                    _ENRICH_FLEET["done"].append(
+                        {"zip": z, "wrote": res.get("rows_written", 0)})
+                except Exception as exc:
+                    _ENRICH_FLEET["failed"].append(
+                        {"zip": z, "err": str(exc)[:200]})
+                if z in _ENRICH_FLEET["queue"]:
+                    _ENRICH_FLEET["queue"].remove(z)
+                await asyncio.sleep(0.5)
+    finally:
+        _ENRICH_FLEET["running"] = False
+
+
+@router.post("/enrich-structure-fleet",
+             dependencies=[Depends(require_admin)])
+async def enrich_structure_fleet(market_key: str):
+    """
+    Background sweep: run structure enrichment across every ZIP of one
+    or more markets (comma-separated market_keys). Single task at a
+    time; idempotent, safe to re-fire after a redeploy kills it.
+    Poll /enrich-structure-fleet-status.
+    """
+    import asyncio as _aio
+    from datetime import datetime, timezone
+    if _ENRICH_FLEET["running"]:
+        raise HTTPException(409, "fleet enrichment already running")
+    markets = [m.strip() for m in market_key.split(',') if m.strip()]
+    _ENRICH_FLEET.update({"running": True, "market": markets[0],
+                          "done": [], "failed": [], "queue": [],
+                          "started_at":
+                              datetime.now(timezone.utc).isoformat()})
+    _aio.get_event_loop().create_task(_enrich_fleet_worker(markets))
+    return {"started": True, "markets": markets}
+
+
+@router.get("/enrich-structure-fleet-status",
+            dependencies=[Depends(require_admin)])
+async def enrich_structure_fleet_status():
+    return {**_ENRICH_FLEET,
+            "done_count": len(_ENRICH_FLEET["done"]),
+            "failed_count": len(_ENRICH_FLEET["failed"])}
+
+
 @router.post("/enrich-structure/{zip_code}",
              dependencies=[Depends(require_admin)])
 async def enrich_structure(
