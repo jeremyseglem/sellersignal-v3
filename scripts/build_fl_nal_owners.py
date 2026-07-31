@@ -28,6 +28,10 @@ csv.field_size_limit(10 * 1024 * 1024)
 COUNTY_CONFIG = {
     "collier": {  # Naples
         "slug": "collier", "market": "FL_COLLIER",
+        # geometry source: county ArcGIS parcel layer keyed by Folio (== NAL PARCEL_ID).
+        # Verified 100% join on Naples ZIPs. Provides the lat/lng the NAL lacks.
+        "geom_url": "https://services2.arcgis.com/SlIq32SqARUHIhSx/arcgis/rest/services/Parcel/FeatureServer/2",
+        "geom_id_field": "Folio", "geom_zip_field": "SiteZipCode",
         "zips": {
             "34102": ("Naples",        {"NAPLES"}),   # Old Naples / Port Royal
             "34103": ("Naples",        {"NAPLES"}),   # Moorings / Coquina Sands
@@ -37,6 +41,37 @@ COUNTY_CONFIG = {
         },
     },
 }
+
+
+def fetch_geom(cfg, z):
+    """Return {parcel_id: (lat, lng)} from the county ArcGIS layer for one situs ZIP."""
+    import urllib.parse, urllib.request, time
+    url = cfg.get("geom_url")
+    if not url:
+        return {}
+    idf = cfg["geom_id_field"]; zf = cfg["geom_zip_field"]
+    ua = {"User-Agent": "Mozilla/5.0 SellerSignal-Seed/1.0"}
+    geom, off = {}, 0
+    while True:
+        p = {"where": f"{zf}='{z}'", "outFields": idf, "returnCentroid": "true",
+             "returnGeometry": "false", "resultOffset": off, "resultRecordCount": 2000, "f": "json"}
+        for a in range(4):
+            try:
+                d = json.load(urllib.request.urlopen(
+                    urllib.request.Request(url + "/query?" + urllib.parse.urlencode(p), headers=ua), timeout=90)); break
+            except Exception:
+                if a == 3: raise
+                time.sleep(3 * (a + 1))
+        fs = d.get("features", [])
+        if not fs: break
+        for f in fs:
+            c = f.get("centroid") or {}
+            fo = f["attributes"].get(idf)
+            if fo and c.get("x") is not None:
+                geom[str(fo)] = (c["y"], c["x"])
+        off += len(fs)
+        if len(fs) < 2000: break
+    return geom
 
 _R_CODES = {"001", "002", "007", "008", "000", "003", "009"}  # residential
 _K_CODES = {"004", "005"}  # condo / coop
@@ -67,6 +102,12 @@ def main():
     csv_path = os.environ.get("FL_NAL_CSV") or f"/tmp/fldor/{county}_NAL.csv"
     zips = cfg["zips"]
     target = [z.strip() for z in os.environ.get("ZIPS", "").split(",") if z.strip()] or list(zips)
+    # pull geometry per target ZIP from the county layer (Folio -> lat/lng)
+    geom_by_zip = {}
+    for z in target:
+        g = fetch_geom(cfg, z)
+        geom_by_zip[z] = g
+        print(f"[seed] {z} geometry: {len(g):,} parcel centroids from county layer", flush=True)
     buckets = {z: {} for z in target}
     seen = 0
     with open(csv_path, newline="") as fh:
@@ -86,13 +127,14 @@ def main():
             addr = (row.get("PHY_ADDR1") or "").strip()
             try: val = int(float(row.get("JV") or 0))
             except (ValueError, TypeError): val = 0
+            lat, lng = geom_by_zip.get(pz, {}).get(pid, (None, None))
             buckets[pz][pid] = {
                 "apn": pid, "owner_name": owner, "owner_type": cls(owner),
                 "address": addr, "value": val, "tenure_years": ten, "last_transfer_date": iso,
                 "prop_type": pt, "owner_state": ms or None, "owner_city": mc or None,
                 "is_out_of_state": bool(ms and ms != "FL"),
                 "is_absentee": bool(ms and ms != "FL") or bool(mc and mc not in local),
-                "legal_description": "", "lat": None, "lng": None,
+                "legal_description": "", "lat": lat, "lng": lng,
             }
     for z in target:
         items = buckets[z]; city = zips[z][0]
@@ -101,7 +143,12 @@ def main():
         p = f"data/seeds/fl-{cfg['slug']}-{z}-owners.json"; json.dump(items, open(p, "w"))
         rk = sum(1 for i in items.values() if i["prop_type"] in ("R", "K"))
         tn = sum(1 for i in items.values() if i["tenure_years"] is not None)
-        print(f"[seed] {z} ({city}): {len(items):,} parcels, addr {cov:.0f}%, tenure {tn/max(len(items),1)*100:.0f}%, R/K {rk/max(len(items),1)*100:.0f}% -> {p}", flush=True)
+        gm = sum(1 for i in items.values() if i["lat"] is not None)
+        gcov = gm / max(len(items), 1) * 100
+        if items and gcov < 90:
+            print(f"[seed] WARNING {z} geometry only {gcov:.0f}% — check county layer join", flush=True)
+        print(f"[seed] {z} ({city}): {len(items):,} parcels, addr {cov:.0f}%, geom {gcov:.0f}%, "
+              f"tenure {tn/max(len(items),1)*100:.0f}%, R/K {rk/max(len(items),1)*100:.0f}% -> {p}", flush=True)
 
 
 if __name__ == "__main__":
