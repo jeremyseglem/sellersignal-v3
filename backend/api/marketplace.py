@@ -52,7 +52,7 @@ _PAGE = 1000
 _PARCEL_COLS = (
     'pin, zip_code, market_key, address, city, owner_name, owner_type, '
     'prop_type, total_value, sqft, year_built, acres, tenure_years, '
-    'bedrooms, bathrooms, stories, year_renovated, waterfront, '
+    'bedrooms, bathrooms, stories, year_renovated, waterfront, features, '
     'waterfront_footage, view_rating, '
     'is_absentee, is_vacant_land, band, signal_family, lat, lng'
 )
@@ -114,6 +114,7 @@ class NeedIn(BaseModel):
     view_min: Optional[int] = None
     stories_min: Optional[float] = None
     year_renovated_min: Optional[int] = None
+    feature_filters: Optional[dict] = None
     soft_notes: Optional[str] = None
     attestation: bool = False
     expires_at: Optional[str] = None
@@ -138,6 +139,7 @@ class NeedPatch(BaseModel):
     view_min: Optional[int] = None
     stories_min: Optional[float] = None
     year_renovated_min: Optional[int] = None
+    feature_filters: Optional[dict] = None
     soft_notes: Optional[str] = None
     attestation: Optional[bool] = None
     expires_at: Optional[str] = None
@@ -277,6 +279,77 @@ def _evaluate(parcel: dict, need: dict, signal_types: Optional[list[str]]):
         else:
             return False, 0, [], [], 'C'
 
+    # Open-vocabulary feature filters. Key conventions:
+    #   "<key>": true          -> parcel features[key] truthy; absent = unknown
+    #   "<key>": false         -> require absent/false; absent = PASS
+    #                             (counties flag these affirmatively)
+    #   "<key>_min": N         -> features[key] >= N; absent = unknown
+    #   "<key>_max": N         -> features[key] <= N; absent = PASS
+    #   "<key>": "value"       -> equality (e.g. sewer: "public")
+    #   "style_any": [...]     -> substring match on features.style
+    #   "view_any": [...]      -> any listed category in features.views
+    #                             with rating >= feature_filters.view_cat_min
+    #                             (default 1); absent views = unknown
+    ff = need.get('feature_filters') or {}
+    fts = parcel.get('features') or {}
+    for k, crit in ff.items():
+        if k == 'view_cat_min':
+            continue
+        specified += 1
+        name = f'ft:{k}'
+        if k == 'view_any':
+            vmin = ff.get('view_cat_min') or 1
+            views = fts.get('views') or {}
+            if not views:
+                unknown.append(name)
+            elif any((views.get(c) or 0) >= vmin for c in (crit or [])):
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+        elif k == 'style_any':
+            style = str(fts.get('style') or '')
+            if not style:
+                unknown.append(name)
+            elif any(str(c).lower() in style for c in (crit or [])):
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+        elif k.endswith('_min'):
+            v = fts.get(k[:-4])
+            if v is None:
+                unknown.append(name)
+            elif v >= crit:
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+        elif k.endswith('_max'):
+            v = fts.get(k[:-4])
+            if v is None or v <= crit:
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+        elif crit is False:
+            if not fts.get(k):
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+        elif crit is True:
+            v = fts.get(k)
+            if v is None:
+                unknown.append(name)
+            elif v:
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+        else:  # equality
+            v = fts.get(k)
+            if v is None:
+                unknown.append(name)
+            elif str(v).lower() == str(crit).lower():
+                matched.append(name)
+            else:
+                return False, 0, [], [], 'C'
+
     score = round(len(matched) / specified, 3) if specified else 1.0
     tier = _seller_tier(parcel, signal_types)
     return True, score, matched, unknown, tier
@@ -361,6 +434,7 @@ def _run_match(supa, need: dict) -> dict:
                     'waterfront': p.get('waterfront'),
                     'waterfront_footage': p.get('waterfront_footage'),
                     'view_rating': p.get('view_rating'),
+                    'features': p.get('features'),
                     'acres': p.get('acres'),
                     'tenure_years': p.get('tenure_years'),
                     'is_absentee': p.get('is_absentee'),
@@ -403,7 +477,8 @@ def _run_match(supa, need: dict) -> dict:
             'zips', 'streets', 'price_min', 'price_max', 'prop_types',
             'beds_min', 'baths_min', 'year_built_min', 'year_built_max',
             'sqft_min', 'acres_min', 'acres_max', 'waterfront', 'view_min',
-            'stories_min', 'year_renovated_min') if need.get(k) is not None},
+            'stories_min', 'year_renovated_min', 'feature_filters')
+            if need.get(k) is not None},
     }
     return {'candidates': candidates, 'matches': all_matches, 'report': report}
 
@@ -423,6 +498,47 @@ async def marketplace_status(authorization: Optional[str] = Header(None),
     allowlist_set = bool(os.environ.get('MARKETPLACE_ALLOWLIST', '').strip())
     return {'ok': True, 'caller': who, 'schema_applied': schema_ok,
             'allowlist_active': allowlist_set}
+
+
+@router.get('/filters')
+async def filter_availability(zips: str,
+                              authorization: Optional[str] = Header(None),
+                              x_admin_key: Optional[str] = Header(None)):
+    """
+    Per-ZIP filter availability: which core columns and feature keys are
+    populated, and on how many parcels. This is what makes the need form
+    data-driven — a ZIP only offers filters the county actually grades
+    there (lake views on Mercer Island, golf adjacency in Scottsdale,
+    style in MA). Also the enrichment-gap readout per territory.
+    """
+    _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    zlist = [z.strip() for z in zips.split(',') if z.strip()][:12]
+    out = {}
+    CORE = ('total_value', 'sqft', 'year_built', 'bedrooms', 'bathrooms',
+            'stories', 'acres', 'year_renovated', 'waterfront',
+            'view_rating', 'prop_type')
+    for z in zlist:
+        rows = _fetch_all(supa, 'parcels_v3',
+                          ', '.join(CORE) + ', features', z)
+        core_counts = {c: 0 for c in CORE}
+        feat_counts: dict = {}
+        view_counts: dict = {}
+        for r in rows:
+            for c in CORE:
+                if r.get(c) not in (None, 0, ''):
+                    core_counts[c] += 1
+            for k, v in (r.get('features') or {}).items():
+                if k == 'views':
+                    for cat in (v or {}):
+                        view_counts[cat] = view_counts.get(cat, 0) + 1
+                elif v not in (None, 0, '', False):
+                    feat_counts[k] = feat_counts.get(k, 0) + 1
+        out[z] = {'parcels': len(rows), 'core': core_counts,
+                  'features': dict(sorted(feat_counts.items(),
+                                          key=lambda x: -x[1])),
+                  'views': view_counts}
+    return {'filters': out}
 
 
 @router.post('/needs')

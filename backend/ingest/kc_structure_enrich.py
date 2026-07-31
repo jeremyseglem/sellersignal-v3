@@ -55,6 +55,19 @@ _SOURCES = {
                 "Parcel.zip", "EXTR_Parcel.csv"),
 }
 
+_VIEW_KEYS_PARCEL = {
+    "MtRainier": "rainier", "Olympics": "olympics", "Cascades": "cascades",
+    "Territorial": "territorial", "SeattleSkyline": "skyline",
+    "PugetSound": "sound", "LakeWashington": "lake_wa",
+    "LakeSammamish": "lake_samm", "SmallLakeRiverCreek": "lake_river_creek",
+    "OtherView": "other",
+}
+_VIEW_KEYS_CONDO = {
+    "ViewMountain": "mountain", "ViewLakeRiver": "lake_river_creek",
+    "ViewCityTerritorial": "territorial", "ViewPugetSound": "sound",
+    "ViewLakeWaSamm": "lake_wa",
+}
+
 _VIEW_COLS_PARCEL = (
     "MtRainier", "Olympics", "Cascades", "Territorial", "SeattleSkyline",
     "PugetSound", "LakeWashington", "LakeSammamish", "SmallLakeRiverCreek",
@@ -160,6 +173,26 @@ def enrich_zip(supa, zip_code: str) -> dict:
         u["year_built"] = _num(row.get("YrBuilt"))
         u["year_renovated"] = _num(row.get("YrRenovated"))
         u["stories"] = _num(row.get("Stories"), cast=float)
+        ft = u.setdefault("features", {})
+        gar = (_num(row.get("SqFtGarageAttached")) or 0) \
+            + (_num(row.get("SqFtGarageBasement")) or 0)
+        if gar:
+            ft["garage_sqft"] = int(gar)
+        if _num(row.get("SqFtDeck")):
+            ft["deck_sqft"] = int(_num(row.get("SqFtDeck")))
+        fp = sum((_num(row.get(c)) or 0) for c in
+                 ("FpSingleStory", "FpMultiStory", "FpFreestanding",
+                  "FpAdditional"))
+        if fp:
+            ft["fireplaces"] = int(fp)
+        if _num(row.get("BrickStone")):
+            ft["brick_stone"] = True
+        if str(row.get("DaylightBasement") or "").strip().upper() == "Y":
+            ft["daylight_basement"] = True
+        if _num(row.get("BldgGrade")):
+            ft["bldg_grade"] = int(_num(row.get("BldgGrade")))
+        if _num(row.get("Condition")):
+            ft["condition"] = int(_num(row.get("Condition")))
 
     # 3. Condo units — EXTR_CondoUnit2 (unit-level truth; wins over any
     #    ResBldg collision, which shouldn't occur for K pins anyway).
@@ -175,9 +208,23 @@ def enrich_zip(supa, zip_code: str) -> dict:
                                 "BathHalfCount")
         u["sqft"] = _num(row.get("Footage"))
         u["year_built"] = _num(row.get("YrBuilt"))
-        views = [(_num(row.get(c)) or 0) for c in _VIEW_COLS_CONDO]
-        if max(views) > 0:
-            u["view_rating"] = int(max(views))
+        ft = u.setdefault("features", {})
+        vd = {}
+        for col, key in _VIEW_KEYS_CONDO.items():
+            v = _num(row.get(col))
+            if v:
+                vd[key] = int(v)
+        if vd:
+            ft["views"] = vd
+            u["view_rating"] = max(vd.values())
+        if str(row.get("TopFloor") or "").strip().upper() == "Y":
+            ft["top_floor"] = True
+        if str(row.get("EndUnit") or "").strip().upper() == "Y":
+            ft["end_unit"] = True
+        if _num(row.get("FloorNbr")):
+            ft["floor"] = int(_num(row.get("FloorNbr")))
+        if _num(row.get("PkgGarage")) or _num(row.get("PkgGarageTandem")):
+            ft["parking_garage"] = True
 
     # 4. Parcel amenities — views, waterfront, lot-size fill.
     parcel_hits = 0
@@ -187,10 +234,46 @@ def enrich_zip(supa, zip_code: str) -> dict:
             continue
         parcel_hits += 1
         u = upd(pin)
-        views = [(_num(row.get(c)) or 0) for c in _VIEW_COLS_PARCEL]
-        if max(views) > 0:
-            u["view_rating"] = max(int(max(views)),
+        ft = u.setdefault("features", {})
+        vd = dict((ft.get("views") or {}))
+        for col, key in _VIEW_KEYS_PARCEL.items():
+            v = _num(row.get(col))
+            if v:
+                vd[key] = max(int(v), vd.get(key, 0))
+        if vd:
+            ft["views"] = vd
+            u["view_rating"] = max(max(vd.values()),
                                    u.get("view_rating") or 0)
+        def yn(col):
+            return str(row.get(col) or "").strip().upper() == "Y"
+        if yn("AdjacentGolfFairway"):
+            ft["golf_adjacent"] = True
+        if yn("AdjacentGreenbelt"):
+            ft["greenbelt_adjacent"] = True
+        tn = _num(row.get("TrafficNoise"))
+        if tn:
+            ft["traffic_noise"] = int(tn)
+        if yn("PowerLines"):
+            ft["power_lines"] = True
+        if _num(row.get("HistoricSite")):
+            ft["historic_site"] = True
+        if yn("HundredYrFloodPlain"):
+            ft["flood_plain"] = True
+        ws = _num(row.get("WaterSystem"))
+        if ws == 1:
+            ft["water"] = "well"
+        elif ws in (2, 3, 4):
+            ft["water"] = "public"
+        sw = _num(row.get("SewerSystem"))
+        if sw == 1:
+            ft["sewer"] = "septic"
+        elif sw in (2, 3, 4):
+            ft["sewer"] = "public"
+        wb = _num(row.get("WfntBank"))
+        if wb:
+            ft["wfnt_bank"] = int(wb)
+        if yn("WfntAccessRights"):
+            ft["wfnt_access_rights"] = True
         wfnt_loc = _num(row.get("WfntLocation"))
         if wfnt_loc:
             u["waterfront"] = True
@@ -206,6 +289,8 @@ def enrich_zip(supa, zip_code: str) -> dict:
     #    entries per row and batch by identical key-signature.
     payload = []
     for u in updates.values():
+        if not u.get("features"):
+            u.pop("features", None)
         clean = {k: v for k, v in u.items() if v is not None}
         if len(clean) > 1:  # more than just the pin
             # Postgres validates NOT NULL on the candidate insert tuple

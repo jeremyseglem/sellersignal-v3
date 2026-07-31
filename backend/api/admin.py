@@ -539,7 +539,7 @@ async def enrich_structure_bulk(body: _EnrichBulkBody):
     import asyncio
     ALLOWED = {"pin", "bedrooms", "bathrooms", "stories", "year_built",
                "year_renovated", "sqft", "acres", "waterfront",
-               "waterfront_footage", "view_rating"}
+               "waterfront_footage", "view_rating", "features"}
     supa = get_supabase_client()
 
     def _write():
