@@ -43,7 +43,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 _UA = {"User-Agent": "Mozilla/5.0 (SellerSignal structure enrichment)"}
-_CHUNK = 200          # pins per source query
+_CHUNK = 400          # pins per source query (POST — no URL-length limit)
 _SLEEP = 0.2          # politeness between source queries
 
 
@@ -112,6 +112,14 @@ def _map_tn(a: dict) -> dict:
     }
 
 
+def _map_collin(a: dict) -> dict:
+    return {
+        "sqft": _num(a.get("imprvMainArea")),
+        "year_built": _num(a.get("imprvYearBuilt")),
+        "acres": _num(a.get("landSizeAcres"), float),
+    }
+
+
 def _map_ma(a: dict) -> dict:
     return {
         "sqft": _num(a.get("RES_AREA")) or _num(a.get("BLD_AREA")),
@@ -165,6 +173,19 @@ STRUCT_CONFIGS: dict[str, dict] = {
         "pin_field": "APN_DASH",
         "out_fields": "APN_DASH,CONST_YEAR,LIVING_SPACE",
         "map": _map_maricopa,
+    },
+    "TX_COLLIN": {
+        # CCAD parcels layer carries improvement attrs directly.
+        # acres only written where currently null (engine-side no-op is
+        # handled by the write path sending values as-is — Collin acres
+        # coverage in parcels_v3 is 0%, so overwrite risk is nil).
+        "url": ("https://services2.arcgis.com/uXyoacYrZTPTKD3R/arcgis/"
+                "rest/services/CCAD_Parcel_Feature_Set/FeatureServer/4"),
+        "pin_field": "propID",
+        "numeric_pin": True,
+        "out_fields": "propID,imprvYearBuilt,imprvMainArea,landSizeAcres",
+        "map": _map_collin,
+        "prefer_max": "sqft",
     },
     "CO_BOULDER": {
         # CAMA building-attributes TABLE (MapServer layer 1); one row per

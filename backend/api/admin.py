@@ -16,6 +16,7 @@ Endpoints:
   POST /api/admin/legal-filings/upload           — (placeholder, not yet wired)
 """
 import os
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Header, Depends, Path, BackgroundTasks
 from typing import Optional
 
@@ -516,6 +517,53 @@ async def _enrich_fleet_worker(markets: list[str]):
                 await asyncio.sleep(0.5)
     finally:
         _ENRICH_FLEET["running"] = False
+
+
+class _EnrichBulkBody(BaseModel):
+    zip_code: str
+    market_key: str
+    rows: list[dict]
+
+
+@router.post("/enrich-structure-bulk",
+             dependencies=[Depends(require_admin)])
+async def enrich_structure_bulk(body: _EnrichBulkBody):
+    """
+    Write precomputed structure-enrichment rows. Exists because some
+    county GIS servers (Maricopa) throttle Railway's datacenter IP to
+    ~25 min/zip while sandbox IPs run the same queries in seconds — so
+    the source-side compute happens client-side and only the upsert
+    runs here. Same write semantics as the enrichers: key-signature
+    batching, NOT NULL columns carried, allowed columns whitelisted.
+    """
+    import asyncio
+    ALLOWED = {"pin", "bedrooms", "bathrooms", "stories", "year_built",
+               "year_renovated", "sqft", "acres", "waterfront",
+               "waterfront_footage", "view_rating"}
+    supa = get_supabase_client()
+
+    def _write():
+        payload = []
+        for r in body.rows:
+            clean = {k: v for k, v in r.items()
+                     if k in ALLOWED and v is not None}
+            if len(clean) > 1 and clean.get("pin"):
+                clean["zip_code"] = body.zip_code
+                clean["market_key"] = body.market_key
+                payload.append(clean)
+        by_sig: dict[tuple, list] = {}
+        for u in payload:
+            by_sig.setdefault(tuple(sorted(u.keys())), []).append(u)
+        written = 0
+        for _sig, rows_ in by_sig.items():
+            for i in range(0, len(rows_), 500):
+                supa.table("parcels_v3").upsert(
+                    rows_[i:i + 500], on_conflict="pin").execute()
+                written += len(rows_[i:i + 500])
+        return written
+
+    written = await asyncio.to_thread(_write)
+    return {"zip_code": body.zip_code, "rows_written": written}
 
 
 @router.post("/enrich-structure-fleet",
