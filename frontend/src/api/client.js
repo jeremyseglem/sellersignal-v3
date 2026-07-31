@@ -81,6 +81,21 @@ async function authedRequest(path, options = {}) {
   });
 }
 
+// ── Marketplace (buyer network — dark launch, allowlist-gated) ─────
+// Every endpoint 404s unless the signed-in email is on the server
+// allowlist. Treat 404 here as "feature does not exist for this user."
+
+export const network = {
+  status:  ()            => authedRequest('/marketplace/status'),
+  filters: (zips)        => authedRequest(`/marketplace/filters?zips=${encodeURIComponent(zips)}`),
+  needs:   ()            => authedRequest('/marketplace/needs'),
+  need:    (id)          => authedRequest(`/marketplace/needs/${id}`),
+  createNeed: (body)     => authedRequest('/marketplace/needs', { method: 'POST', body: JSON.stringify(body) }),
+  patchNeed:  (id, body) => authedRequest(`/marketplace/needs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  runMatch:   (id)       => authedRequest(`/marketplace/needs/${id}/match`, { method: 'POST' }),
+  report:     (id, q='') => authedRequest(`/marketplace/needs/${id}/report${q}`),
+};
+
 // ── Coverage ───────────────────────────────────────────────────────
 
 export const coverage = {

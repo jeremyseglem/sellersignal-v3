@@ -507,6 +507,37 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-07-31 (night) — Buyer Network hidden UI live at /network (commit `63d90e2`)
+
+Dark UI for the demand tool: direct URL only, zero nav links, AuthGate + server-allowlist gate (the page probes /api/marketplace/status on mount; 404 -> silent redirect home, indistinguishable from a dead URL). Three views in one self-contained page (`frontend/src/pages/NetworkPage.jsx`, Estate tokens, inline-styled like the rest of the app): **Client registry** (needs list + run), **Client brief** (the need form — data-driven from /marketplace/filters, renders only filters populated for the chosen ZIPs with live parcel counts on every toggle: view categories with 1-4 minimum, must-have amenities, must-not-have excludes, soft notes), **Match report** (signature element: the seller-tier bar — Likely sellers / Structural archetypes / Fabric as one proportional band in call-now/gold/sage, with the line "N of these homes are held by likely sellers — court-verified"). New `network.*` section in api/client.js (authedRequest). Built with build:safe.
+
+**To actually use it: set `MARKETPLACE_ALLOWLIST` in Railway env** (comma-separated emails — Jeremy + Brian). Until set, every signed-in user 404s at the gate and bounces home; that's the intended locked state.
+
+
+### 2026-07-31 (later) — TX_DALLAS enriched from Jeremy-supplied DCAD bulk (13 markets / 128 territories now enriched)
+
+DCAD blocks datacenter downloads, so Jeremy uploaded DCAD2026/2027_CURRENT zips directly. Used 2027 (current appraisal year). Flow entirely local + bulk endpoint: ACCOUNT_INFO streamed for account->zip on **PROPERTY_ZIPCODE** (first pass wrongly keyed OWNER_ZIPCODE — mailing address; would have mis-bucketed absentee owners; caught and redone), then RES_DETAIL streamed for target accounts (94.5k), largest-living-area record per account. Mapped: NUM_BEDROOMS, NUM_FULL+0.5*HALF baths, TOT_LIVING_AREA_SF, YR_BUILT, NUM_STORIES_DESC-parsed stories, and features {pool, spa, sauna, sprinkler_system, deck, fireplaces, brick_stone (EXT_WALL contains BRICK/STONE)}. All 10 Dallas zips pushed via enrich-structure-bulk in ~45s total (~75k rows written).
+
+Verification: 75225 University Park = 98% structure coverage (7,632/7,796 sqft; beds 7,581; baths 7,603), pool on 2,627 parcels, brick_stone 6,619, sprinklers 4,205. Truth-test ($1.5-4M / 4bd+ / pool / 1980+ across 75225+75205+75209): 20,798 -> 4,482 matched, tier B leaders at score 1.0 incl. 34.9y-tenure pool homes. Tier A=0 on this sample — court-signal depth in these zips is supply-side work, not enrichment.
+
+DCAD zips archived nowhere (chat-session only) — re-runs need a fresh Jeremy download. Remaining wave-4: TX_TRAVIS, FL_PBC, WA_SNOHOMISH, MT x2, CO_ARAPAHOE.
+
+
+### 2026-07-31 — Feature vocabulary v1 (schema/037): zip-native filters live; flagship query beats MLS-class search
+
+**Design:** universal core criteria everywhere + per-market vocabulary discovered from data presence, stored in `parcels_v3.features JSONB` (GIN-indexed) — no migration per attribute. `GET /api/marketplace/filters?zips=` returns per-zip filter availability (which keys, how many parcels) — the need form's facet source AND the enrichment-gap scoreboard. A zip only offers filters its county actually grades.
+
+**Vocabulary v1 (KC extracts, all in hand):** golf_adjacent, greenbelt_adjacent, traffic_noise 1-3, power_lines, historic_site, flood_plain, sewer public|septic, water public|well, wfnt_bank 1-4, wfnt_access_rights, per-category views (lake_wa/lake_samm/rainier/olympics/cascades/skyline/sound/territorial/... each 1-4), garage_sqft, deck_sqft, fireplaces, brick_stone, daylight_basement, bldg_grade (KC 1-13 construction quality — the luxury-tier filter), condition, condo-unit attrs (top_floor, end_unit, floor, parking_garage). Plus style (MA x5 + Boulder DesignDscr) and pool (Collin imprvPoolFlag). KC pools deferred — accessory-extract URL 404s.
+
+**Engine:** `feature_filters` on needs with generic key conventions (bool true=require/unknown-ranks, false=require-absent-with-absent-passes since counties flag affirmatively, _min/_max, equality, style_any substring, view_any + view_cat_min). New vocabulary keys need zero engine changes. Bulk endpoint whitelists `features`.
+
+**Mercer Island availability after re-sweep:** lake_wa views on 2,504 parcels, wfnt_bank on 764, bldg_grade on 9,024, golf 8, historic 6.
+
+**Flagship truth-test** ($2-4.5M / 4bd+ / lake_wa view >=3 / no power lines / garage 600+ / grade 9+ on 98040): 11,681 -> 1,378 matched, tier A=17. Top hit score 1.0: $2.85M, 4bd, grade 11, rated-3 lake view, 810sqft garage, 19.1y tenure, ACTIVE PROBATE. Off-market, court-verified, fully criteria-confirmed — a query no MLS/Zillow can run because they search listings, we search the parcel fabric.
+
+**Sweep status:** WA_KING re-swept with features (34/34). MA/Boulder/Collin re-sweep interrupted by a parallel-session redeploy (fleet state is in-process memory) — re-fired; idempotent. Wave-4 (bulk-file sources) unchanged: TX_DALLAS (DCAD zip blocks datacenter IPs), TX_TRAVIS, FL_PBC, WA_SNOHOMISH, MT x2, CO_ARAPAHOE.
+
+
 ### 2026-07-31 — Structure enrichment SWEEP COMPLETE: 12 markets / 118 territories enriched
 
 Fleet sweep finished with ZERO failures: MA_MIDDLESEX 19, MA_NORFOLK 13, MA_ESSEX 4, MA_PLYMOUTH 4, MA_DUKES 5, CO_BOULDER 5, TN_DAVIDSON 6, TX_COLLIN 5 (61 zips server-side) + AZ_MARICOPA 25 via the local-compute/bulk-write path (Maricopa throttles Railway's IP to ~25 min/zip; sandbox computes the same zip in seconds — all 22 remaining zips precomputed in ~5 min and written via /admin/enrich-structure-bulk in ~2 min). With WA_KING 34, CT 8, Pitkin 3, Denver 5 from earlier waves: **structure data now live in 12 of 19 markets (~118 of 183 territories)**.
