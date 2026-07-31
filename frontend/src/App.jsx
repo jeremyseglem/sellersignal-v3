@@ -12,6 +12,7 @@ import MyLeadsPage     from './pages/MyLeadsPage.jsx';
 import LettersPage     from './pages/LettersPage.jsx';
 import ProfilePage     from './pages/ProfilePage.jsx';
 import VoiceOnboardingPage from './pages/VoiceOnboardingPage.jsx';
+import NetworkPage from './pages/NetworkPage.jsx';
 import { PrivacyPage, TermsPage } from './pages/LegalPages.jsx';
 
 import AuthGate from './components/shell/AuthGate.jsx';
@@ -101,6 +102,17 @@ export default function App() {
         element={
           <AuthGate>
             <VoiceOnboardingPage />
+          </AuthGate>
+        }
+      />
+
+      {/* Buyer Network — DARK LAUNCH. Direct URL only, no nav links.
+          Server allowlist gates it; non-allowlisted users bounce home. */}
+      <Route
+        path="/network"
+        element={
+          <AuthGate>
+            <NetworkPage />
           </AuthGate>
         }
       />
