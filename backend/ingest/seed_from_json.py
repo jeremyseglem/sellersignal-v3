@@ -116,6 +116,7 @@ _MARKET_STATE = {
     'CO_DENVER':    'CO',
     'CO_BOULDER':   'CO',
     'CO_ARAPAHOE':  'CO',
+    'NC_WAKE':      'NC',
 }
 
 
