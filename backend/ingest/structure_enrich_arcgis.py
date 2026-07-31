@@ -93,6 +93,25 @@ def _map_maricopa(a: dict) -> dict:
     }
 
 
+def _map_boulder(a: dict) -> dict:
+    baths = (_num(a.get("FullBaths"), float) or 0) \
+        + 0.75 * (_num(a.get("ThreeQtrBaths"), float) or 0) \
+        + 0.5 * (_num(a.get("HalfBaths"), float) or 0)
+    return {
+        "bedrooms": _num(a.get("Bedrooms")),
+        "bathrooms": round(baths, 2) if baths > 0 else None,
+        "sqft": _num(a.get("FinishedSqft")),
+        "year_built": _num(a.get("YearBuilt")),
+    }
+
+
+def _map_tn(a: dict) -> dict:
+    return {
+        "sqft": _num(a.get("FinishedArea")),
+        "year_built": _num(a.get("YearBuilt")),
+    }
+
+
 def _map_ma(a: dict) -> dict:
     return {
         "sqft": _num(a.get("RES_AREA")) or _num(a.get("BLD_AREA")),
@@ -146,6 +165,28 @@ STRUCT_CONFIGS: dict[str, dict] = {
         "pin_field": "APN_DASH",
         "out_fields": "APN_DASH,CONST_YEAR,LIVING_SPACE",
         "map": _map_maricopa,
+    },
+    "CO_BOULDER": {
+        # CAMA building-attributes TABLE (MapServer layer 1); one row per
+        # building — the enricher keeps the largest FinishedSqft per pin.
+        # parcels_v3 pin = strap/AccountNo (e.g. 'R0008431').
+        "url": ("https://maps.bouldercounty.org/arcgis/rest/services/"
+                "CamaView/PropSearch_BLDG_ATTRIBUTES/MapServer/1"),
+        "pin_field": "AccountNo",
+        "out_fields": ("AccountNo,Bedrooms,FullBaths,HalfBaths,"
+                       "ThreeQtrBaths,YearBuilt,FinishedSqft"),
+        "map": _map_boulder,
+        "prefer_max": "sqft",
+    },
+    "TN_DAVIDSON": {
+        "url": ("https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/"
+                "rest/services/Parcels_with_Building_Characteristics_view/"
+                "FeatureServer/0"),
+        "pin_field": "ParcelID",   # numeric; equals our ParID-derived pin
+        "numeric_pin": True,
+        "out_fields": "ParcelID,FinishedArea,YearBuilt",
+        "map": _map_tn,
+        "prefer_max": "sqft",
     },
     "MA_MIDDLESEX": _MA_CONFIG,
     "MA_NORFOLK": _MA_CONFIG,
@@ -245,6 +286,12 @@ def enrich_zip_arcgis(supa, zip_code: str, market_key: str) -> dict:
                     continue
                 source_hits += 1
                 mapped["pin"] = pin
+                pref = cfg.get("prefer_max")
+                prev = updates.get(pin)
+                if prev is not None and pref:
+                    # multiple buildings per parcel — keep the largest
+                    if (prev.get(pref) or 0) >= (mapped.get(pref) or 0):
+                        continue
                 updates[pin] = mapped
             if i + _CHUNK < len(pins):
                 time.sleep(_SLEEP)
