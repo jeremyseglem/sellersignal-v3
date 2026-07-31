@@ -47,12 +47,7 @@ COUNTY_CONFIG = {
         "33156": ("Pinecrest", {"PINECREST", "MIAMI"}), # Pinecrest
         "33154": ("Bal Harbour", {"BAL HARBOUR", "MIAMI BEACH", "SURFSIDE"})}},
     "broward": {"slug": "broward", "market": "FL_BROWARD", "co_no": 16,
-        "geom_url": "https://services.arcgis.com/JMAJrTsHNLrSsWf5/arcgis/rest/services/PARCEL_POLY_BCPA_TAXROLL/FeatureServer/0",
-        "geom_id_field": "FOLIO", "geom_zip_field": "ZIP",
-        "geom_addr_num": "SITUS_STREET_NUMBER", "geom_addr_name": "SITUS_STREET_NAME",
-        "point_url": "https://services.arcgis.com/JMAJrTsHNLrSsWf5/arcgis/rest/services/GISAddressPoints_FloodZone/FeatureServer/0",
-        "point_id_field": "FOLIO", "point_zip_field": "ZIP",
-        "zips": {
+        "geom_mode": "geocode", "zips": {
         "33301": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Las Olas
         "33308": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Lauderdale beach
         "33316": ("Fort Lauderdale", {"FORT LAUDERDALE"}),   # Harbor Beach
@@ -172,6 +167,79 @@ def fetch_geom_fl_building(cfg, z):
         pull(cfg["geom_url"], cfg["geom_id_field"], cfg["geom_zip_field"],
              cfg.get("geom_addr_num"), cfg.get("geom_addr_name"), use_centroid=True)
     return folio2ll, addr2ll
+
+
+def geocode_addresses(items, state="FL", chunk=9000):
+    """US Census bulk geocoder (free, no key). items: list of (id, street, city, zip).
+    Returns {id: (lat,lng)}. Batches of <=10k. One point per building address, so
+    condo units sharing a base address all resolve to the same building location."""
+    import requests, csv as _csv, io, time
+    out = {}
+    ids = list(items)
+    for i in range(0, len(ids), chunk):
+        batch = ids[i:i + chunk]
+        buf = io.StringIO()
+        w = _csv.writer(buf)
+        for rid, street, city, zc in batch:
+            w.writerow([rid, street, city, state, zc])
+        for attempt in range(4):
+            try:
+                r = requests.post(
+                    "https://geocoding.geo.census.gov/geocoder/locations/addressbatch",
+                    files={"addressFile": ("a.csv", buf.getvalue(), "text/csv")},
+                    data={"benchmark": "Public_AR_Current"}, timeout=300)
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}")
+                break
+            except Exception:
+                if attempt == 3:
+                    print(f"[seed]   geocode batch {i} FAILED after retries", flush=True)
+                    r = None; break
+                time.sleep(5 * (attempt + 1))
+        if not r:
+            continue
+        for row in _csv.reader(io.StringIO(r.text)):
+            # id, input, Match/No_Match, exactness, matched, "lon,lat", tiger, side
+            if len(row) >= 6 and row[2] == "Match" and row[5]:
+                try:
+                    lon, lat = row[5].split(",")
+                    out[row[0]] = (float(lat), float(lon))
+                except (ValueError, IndexError):
+                    pass
+        print(f"[seed]   geocoded {min(i+chunk,len(ids)):,}/{len(ids):,} building addresses "
+              f"({len(out):,} matched)", flush=True)
+    return out
+
+
+def _street_of(base_addr):
+    return base_addr  # base_addr already unit-stripped
+
+
+def fetch_geom_geocode(recs, city_default):
+    """Geometry via Census geocoding of unique building (base situs) addresses.
+    Universal FL path — works regardless of folio scheme; condos cluster at their
+    building automatically. Sets rec['building_id'] to the base address."""
+    # dedupe to unique (base_addr, city, zip)
+    uniq = {}
+    for pid, rec in recs.items():
+        ba = _base_addr(rec.get("address"))
+        rec["building_id"] = ba or pid
+        if not ba:
+            continue
+        city = (rec.get("owner_city") if False else None) or city_default
+        zc = rec.get("_situs_zip") or ""
+        key = ba
+        if key not in uniq:
+            uniq[key] = (ba, city, zc)
+    items = [(k, v[0], v[1], v[2]) for k, v in uniq.items()]
+    print(f"[seed]   {len(items):,} unique building addresses to geocode", flush=True)
+    addr2ll = geocode_addresses(items)
+    hit = 0
+    for pid, rec in recs.items():
+        ll = addr2ll.get(rec["building_id"])
+        if ll:
+            rec["lat"], rec["lng"] = ll[0], ll[1]; hit += 1
+    return hit
 
 
 def fetch_geom_county(cfg, z):
@@ -302,39 +370,35 @@ def main():
                 "prop_type": pt, "owner_state": ms or None, "owner_city": mc or None,
                 "is_out_of_state": bool(ms and ms != "FL"),
                 "is_absentee": bool(ms and ms != "FL") or bool(mc and mc not in local),
-                "legal_description": "", "lat": None, "lng": None,
+                "legal_description": "", "lat": None, "lng": None, "_situs_zip": pz,
             }
-    # geometry: condo-aware. per-folio point where published; else the unit
-    # inherits its building's location (base situs address, then folio prefix).
-    # building_id groups co-located units for the map's building-pin UX.
+    # geometry
     for z in target:
-        if cfg.get("point_url") or cfg.get("geom_addr_num"):
+        recs = buckets[z]
+        if cfg.get("geom_mode") == "geocode":
+            hit = fetch_geom_geocode(recs, zips[z][0])
+        elif cfg.get("point_url") or cfg.get("geom_addr_num"):
             folio2ll, addr2ll = fetch_geom_fl_building(cfg, z)
-            recs = buckets[z]
-            # pass 1: exact folio, then base-address
-            bldg_ll = {}  # building_key -> ll (seed for propagation)
+            bldg_ll = {}
             for pid, rec in recs.items():
-                bid = _bldg_key(pid)
-                rec["building_id"] = bid
+                bid = _bldg_key(pid); rec["building_id"] = bid
                 ll = folio2ll.get(pid) or addr2ll.get(_base_addr(rec["address"]))
                 if ll:
-                    rec["lat"], rec["lng"] = ll[0], ll[1]
-                    bldg_ll.setdefault(bid, ll)
-            # pass 2: propagate a known building location to its other units
+                    rec["lat"], rec["lng"] = ll[0], ll[1]; bldg_ll.setdefault(bid, ll)
             for pid, rec in recs.items():
                 if rec["lat"] is None:
                     ll = bldg_ll.get(rec["building_id"])
-                    if ll:
-                        rec["lat"], rec["lng"] = ll[0], ll[1]
+                    if ll: rec["lat"], rec["lng"] = ll[0], ll[1]
             hit = sum(1 for r in recs.values() if r["lat"] is not None)
         else:
-            geo = fetch_geom(cfg, z)
-            hit = 0
-            for pid, rec in buckets[z].items():
+            geo = fetch_geom(cfg, z); hit = 0
+            for pid, rec in recs.items():
                 ll = geo.get(pid)
-                if ll:
-                    rec["lat"], rec["lng"] = ll[0], ll[1]; hit += 1
-        print(f"[seed] {z} geometry: {hit:,}/{len(buckets[z]):,} matched", flush=True)
+                if ll: rec["lat"], rec["lng"] = ll[0], ll[1]; hit += 1
+        # strip temp field
+        for rec in recs.values():
+            rec.pop("_situs_zip", None)
+        print(f"[seed] {z} geometry: {hit:,}/{len(recs):,} matched", flush=True)
     for z in target:
         items = buckets[z]; city = zips[z][0]
         cov = sum(1 for i in items.values() if i["address"]) / max(len(items), 1) * 100
