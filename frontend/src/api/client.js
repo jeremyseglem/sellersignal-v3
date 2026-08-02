@@ -94,6 +94,7 @@ export const network = {
   patchNeed:  (id, body) => authedRequest(`/marketplace/needs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   runMatch:   (id)       => authedRequest(`/marketplace/needs/${id}/match`, { method: 'POST' }),
   report:     (id, q='') => authedRequest(`/marketplace/needs/${id}/report${q}`),
+  demand:     (zip)      => authedRequest(`/marketplace/demand/${zip}`),
 };
 
 // ── Coverage ───────────────────────────────────────────────────────

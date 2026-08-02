@@ -153,7 +153,7 @@ export default function NetworkPage() {
   const [needs, setNeeds] = useState([]);
   const [activeNeed, setActiveNeed] = useState(null);
   const [runResult, setRunResult] = useState(null);
-  const [reportRows, setReportRows] = useState([]);
+  
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -175,10 +175,8 @@ export default function NetworkPage() {
     setBusy(true); setError('');
     try {
       const run = freshRun || (await network.runMatch(need.id));
-      const rep = await network.report(need.id, '?limit=40');
-      setActiveNeed(need); setRunResult(run.report ? run : rep.run ? { ...rep.run, ...rep.run.report ? {} : {} } : run);
-      setRunResult({ report: run.report || rep.run?.report, matched: run.matched ?? rep.run?.matched, candidates: run.candidates ?? rep.run?.candidates });
-      setReportRows(rep.matches || []);
+      setActiveNeed(need);
+      setRunResult({ report: run.report, matched: run.matched, candidates: run.candidates });
       setView('report');
     } catch (e) { setError(safeErrorMessage(e)); }
     finally { setBusy(false); }
@@ -219,6 +217,24 @@ export default function NetworkPage() {
           </div>
         )}
 
+        <div style={{ display: 'flex', gap: 20, marginBottom: 24,
+          borderBottom: '1px solid var(--border)' }}>
+          {[['registry', 'My clients'], ['demand', 'Incoming demand']].map(([v, label]) => {
+            const on = view === v || (v === 'registry' && (view === 'compose' || view === 'report'));
+            return (
+              <button key={v} onClick={() => { setView(v); setError(''); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer',
+                  fontFamily: F.sans, fontSize: 14, fontWeight: on ? 700 : 500,
+                  color: on ? 'var(--text)' : 'var(--text-secondary)',
+                  padding: '0 2px 12px',
+                  borderBottom: on ? '2px solid var(--accent)' : '2px solid transparent' }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        {view === 'demand' && <DemandView setError={setError} />}
         {view === 'registry' && (
           <Registry needs={needs} busy={busy}
             onCompose={() => { setView('compose'); setError(''); }}
@@ -231,7 +247,7 @@ export default function NetworkPage() {
             setError={setError} />
         )}
         {view === 'report' && activeNeed && (
-          <Report need={activeNeed} result={runResult} rows={reportRows} busy={busy}
+          <Report need={activeNeed} result={runResult} busy={busy}
             onBack={() => { setView('registry'); refreshNeeds(); }}
             onRerun={() => openReport(activeNeed)} />
         )}
@@ -491,18 +507,17 @@ function Compose({ onCancel, onCreated, setError }) {
   );
 }
 
-/* ── Report — Zillow-clear, address-blind ────────────────────────
- * The buyer side never sees which home it is. Cards describe the home
- * (price, beds/baths/sqft, year, features, area, how long it's been
- * held) and the seller-likelihood badge — never the address or parcel
- * id. That's the blind-matching contract: demand learns what exists,
- * supply identity stays with the territory owner.
+/* ── Report — buyer side sees THE NUMBER, nothing else ──────────
+ * The demand contract: a brief returns how much supply exists and how
+ * likely it is to move — never which homes. The homes themselves route
+ * to the territory owner as an attack list (Incoming demand tab).
  */
 
-function Report({ need, result, rows, busy, onBack, onRerun }) {
+function Report({ need, result, busy, onBack, onRerun }) {
   const rep = result?.report || {};
   const tiers = rep.tiers || { A: 0, B: 0, C: 0 };
   const matched = result?.matched ?? 0;
+  const perZip = rep.per_zip || {};
 
   return (
     <div>
@@ -515,7 +530,7 @@ function Report({ need, result, rows, busy, onBack, onRerun }) {
           <button onClick={onRerun} disabled={busy} style={{ background: 'none', border: 'none',
             fontFamily: F.sans, fontSize: 13, color: 'var(--accent)', cursor: 'pointer',
             textDecoration: 'underline' }}>
-            {busy ? 'Matching…' : 'Refresh matches'}
+            {busy ? 'Searching…' : 'Refresh'}
           </button>
           <button onClick={onBack} style={{ background: 'none', border: 'none',
             fontFamily: F.sans, fontSize: 13, color: 'var(--text-secondary)', cursor: 'pointer',
@@ -525,89 +540,183 @@ function Report({ need, result, rows, busy, onBack, onRerun }) {
         </div>
       </div>
 
-      <div style={{ fontFamily: F.display, fontSize: 34, color: 'var(--text)', margin: '10px 0 2px' }}>
-        {matched.toLocaleString()} homes match
-      </div>
-      <div style={{ fontFamily: F.serif, fontSize: 14.5, color: 'var(--text-secondary)', marginBottom: 18 }}>
-        in {(need.zips || []).join(' · ')} — none of them on the market.
-      </div>
-
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderRadius: 10, padding: '20px 22px', marginBottom: 24 }}>
-        <TierBar tiers={tiers} matched={matched} />
+        borderRadius: 12, padding: '38px 34px', textAlign: 'center', marginBottom: 18 }}>
+        <div style={{ fontFamily: F.display, fontSize: 64, lineHeight: 1, color: 'var(--text)' }}>
+          {matched.toLocaleString()}
+        </div>
+        <div style={{ fontFamily: F.serif, fontSize: 16, color: 'var(--text-secondary)',
+          marginTop: 8 }}>
+          homes match this search — none of them on the market
+        </div>
+        <div style={{ maxWidth: 520, margin: '26px auto 0' }}>
+          <TierBar tiers={tiers} matched={matched} />
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))',
-        gap: 14 }}>
-        {rows.map(m => <HomeCard key={m.id || m.pin} m={m} />)}
+      {Object.keys(perZip).length > 1 && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+          {Object.entries(perZip).map(([z, st]) => (
+            <div key={z} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 8, padding: '10px 16px', fontFamily: F.sans, fontSize: 13 }}>
+              <span style={{ color: 'var(--text-tertiary)' }}>{z}</span>
+              {'  '}
+              <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                {(st.matched || 0).toLocaleString()}
+              </span>
+              {(st.tiers?.A || 0) > 0 && (
+                <span style={{ color: 'var(--call-now)' }}> · {st.tiers.A} likely</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontFamily: F.serif, fontSize: 14, color: 'var(--text-secondary)',
+        fontStyle: 'italic' }}>
+        This search is now visible to the territory owners in
+        {' '}{(need.zips || []).join(' · ')} — they hold the homes behind these numbers.
       </div>
     </div>
   );
 }
 
-function HomeCard({ m }) {
-  const d = m.detail || {}; const ft = d.features || {};
-  const meta = TIER_META[m.tier] || TIER_META.C;
+/* ── Incoming demand — the SUPPLY side ───────────────────────────
+ * Territory owner's view: each active brief touching the ZIP, as
+ * narrowed criteria plus the matching parcels at full detail — the
+ * attack list. Addresses live here and only here.
+ */
 
-  const specs = [
-    d.bedrooms != null ? `${d.bedrooms} bd` : null,
-    d.bathrooms != null ? `${d.bathrooms} ba` : null,
-    d.sqft ? `${Number(d.sqft).toLocaleString()} sqft` : null,
-  ].filter(Boolean).join('  |  ');
+function DemandView({ setError }) {
+  const [zip, setZip] = useState('');
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  const chips = [];
-  if (d.year_built) chips.push(`Built ${d.year_built}`);
-  if (ft.pool) chips.push('Pool');
-  if (d.waterfront) chips.push('Waterfront');
-  const vd = ft.views || {};
-  const topView = Object.entries(vd).sort((a, b) => b[1] - a[1])[0];
-  if (topView) chips.push(`${VIEW_LABELS[topView[0]] || 'View'}`);
-  if (ft.bldg_grade >= 10) chips.push('High-end build');
-  if (ft.golf_adjacent) chips.push('On the fairway');
-  if (d.acres >= 0.5) chips.push(`${d.acres} acres`);
-
-  const held = d.tenure_years != null ? Math.round(d.tenure_years) : null;
+  async function load(z) {
+    if (!/^\d{5}$/.test(z)) return;
+    setLoading(true); setError('');
+    try { setData(await network.demand(z)); }
+    catch (e) { setError(safeErrorMessage(e)); }
+    finally { setLoading(false); }
+  }
 
   return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 22 }}>
+        <div style={{ width: 220 }}>
+          <Label>Your territory ZIP</Label>
+          <Input placeholder="98040" value={zip}
+            onChange={(e) => setZip(e.target.value.trim())}
+            onKeyDown={(e) => e.key === 'Enter' && load(zip)} />
+        </div>
+        <Btn onClick={() => load(zip)} disabled={loading || !/^\d{5}$/.test(zip)}>
+          {loading ? 'Loading…' : 'Show demand'}
+        </Btn>
+      </div>
+
+      {data && data.briefs.length === 0 && (
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 10, padding: '36px 30px', textAlign: 'center',
+          fontFamily: F.serif, fontSize: 14, color: 'var(--text-secondary)' }}>
+          No active buyer searches touch {data.zip_code} yet.
+        </div>
+      )}
+
+      {data && data.briefs.map(b => <BriefCard key={b.need_id} b={b} zip={data.zip_code} />)}
+    </div>
+  );
+}
+
+function criteriaLine(c) {
+  const bits = [];
+  if (c.price_min != null || c.price_max != null)
+    bits.push(`${money(c.price_min)}–${money(c.price_max)}`);
+  if (c.beds_min) bits.push(`${c.beds_min}+ bd`);
+  if (c.baths_min) bits.push(`${c.baths_min}+ ba`);
+  if (c.sqft_min) bits.push(`${Number(c.sqft_min).toLocaleString()}+ sqft`);
+  if (c.year_built_min) bits.push(`built ${c.year_built_min}+`);
+  const ff = c.feature_filters || {};
+  Object.entries(ff).forEach(([k, v]) => {
+    if (k === 'view_any') bits.push(`view: ${(v || []).map(x => VIEW_LABELS[x] || x).join('/')}`);
+    else if (k === 'view_cat_min') return;
+    else if (v === true) bits.push(FEATURE_LABELS[k] ? FEATURE_LABELS[k].toLowerCase() : k);
+    else if (v === false) bits.push(EXCLUDE_LABELS[k] ? EXCLUDE_LABELS[k].toLowerCase() : `no ${k}`);
+    else bits.push(`${k}: ${v}`);
+  });
+  return bits.join('  ·  ');
+}
+
+function BriefCard({ b, zip }) {
+  const [open, setOpen] = useState(false);
+  const t = b.tiers_in_zip || {};
+  const inZip = (t.A || 0) + (t.B || 0) + (t.C || 0);
+  return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
-      borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ height: 4, background: meta.color }} />
-      <div style={{ padding: '14px 16px 15px', display: 'flex', flexDirection: 'column',
-        flexGrow: 1 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <div style={{ fontFamily: F.display, fontSize: 20, color: 'var(--text)' }}>
-            {money(d.total_value)}
+      borderRadius: 10, padding: '16px 20px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16,
+        alignItems: 'flex-start' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: F.sans, fontSize: 11, letterSpacing: '0.1em',
+            textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 5 }}>
+            Verified buyer search
           </div>
-          <div style={{ fontFamily: F.sans, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-            {d.city ? `${d.city} ` : ''}{m.zip_code}
+          <div style={{ fontFamily: F.serif, fontSize: 15, color: 'var(--text)' }}>
+            {criteriaLine(b.criteria) || 'Any home in the ZIP'}
           </div>
+          {b.criteria.soft_notes && (
+            <div style={{ fontFamily: F.serif, fontStyle: 'italic', fontSize: 13.5,
+              color: 'var(--text-secondary)', marginTop: 5 }}>
+              “{b.criteria.soft_notes}”
+            </div>
+          )}
         </div>
-        <div style={{ fontFamily: F.sans, fontSize: 13.5, color: 'var(--text)', marginTop: 4 }}>
-          {specs || 'Details on file'}
-        </div>
-        {chips.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-            {chips.slice(0, 4).map(c => (
-              <span key={c} style={{ fontFamily: F.sans, fontSize: 11.5,
-                color: 'var(--text-secondary)', background: 'var(--bg)', borderRadius: 4,
-                padding: '3px 8px', border: '1px solid var(--border)' }}>
-                {c}
-              </span>
-            ))}
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div style={{ fontFamily: F.display, fontSize: 24, color: 'var(--text)' }}>
+            {inZip}
           </div>
-        )}
-        <div style={{ marginTop: 'auto', paddingTop: 12, display: 'flex',
-          justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontFamily: F.sans, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-            {held != null ? `Held ${held} yrs` : ''}
-          </span>
-          <span style={{ background: meta.bg, color: meta.color, borderRadius: 4,
-            padding: '3px 9px', fontFamily: F.sans, fontSize: 10.5, fontWeight: 700,
-            letterSpacing: '0.07em', textTransform: 'uppercase' }}>
-            {meta.label}
-          </span>
+          <div style={{ fontFamily: F.sans, fontSize: 11, color: 'var(--text-tertiary)' }}>
+            of your homes fit
+          </div>
+          {(t.A || 0) > 0 && (
+            <div style={{ fontFamily: F.sans, fontSize: 11.5, color: 'var(--call-now)',
+              fontWeight: 700, marginTop: 3 }}>
+              {t.A} likely to sell
+            </div>
+          )}
         </div>
       </div>
+      {inZip > 0 && (
+        <button onClick={() => setOpen(o => !o)} style={{ background: 'none', border: 'none',
+          padding: 0, marginTop: 12, fontFamily: F.sans, fontSize: 12.5,
+          color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}>
+          {open ? 'Hide the homes' : 'Show the homes'}
+        </button>
+      )}
+      {open && (b.matches_in_zip || []).map(m => {
+        const d = m.detail || {};
+        const meta = TIER_META[m.tier] || TIER_META.C;
+        return (
+          <div key={m.id || m.pin} style={{ display: 'flex', justifyContent: 'space-between',
+            gap: 12, padding: '9px 0', borderTop: '1px solid var(--border)',
+            marginTop: 9, alignItems: 'baseline' }}>
+            <div style={{ fontFamily: F.serif, fontSize: 14, color: 'var(--text)' }}>
+              {d.address || m.pin}
+              <span style={{ fontFamily: F.sans, fontSize: 12, color: 'var(--text-secondary)' }}>
+                {'  '}{d.bedrooms != null ? `${d.bedrooms}bd ` : ''}
+                {d.bathrooms != null ? `${d.bathrooms}ba ` : ''}
+                {d.sqft ? `${Number(d.sqft).toLocaleString()}sf ` : ''}
+                · {money(d.total_value)}
+                {d.tenure_years != null ? ` · held ${Math.round(d.tenure_years)}y` : ''}
+              </span>
+            </div>
+            <span style={{ background: meta.bg, color: meta.color, borderRadius: 4,
+              padding: '2px 8px', fontFamily: F.sans, fontSize: 10, fontWeight: 700,
+              letterSpacing: '0.07em', textTransform: 'uppercase', flexShrink: 0 }}>
+              {meta.label}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

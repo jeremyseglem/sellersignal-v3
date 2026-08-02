@@ -577,6 +577,54 @@ async def list_needs(status: Optional[str] = None,
     return {'needs': rows, 'count': len(rows)}
 
 
+@router.get('/demand/{zip_code}')
+async def demand_for_zip(zip_code: str,
+                         authorization: Optional[str] = Header(None),
+                         x_admin_key: Optional[str] = Header(None)):
+    """
+    SUPPLY-SIDE view: active briefs touching this ZIP, each with the
+    latest run's matches IN THIS ZIP at full detail (addresses, pins) —
+    the territory owner's attack list. Buyer identity and client_ref are
+    withheld; the demand spec travels, the buyer stays blind too.
+    """
+    _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    needs = (supa.table('buyer_needs_v3').select('*')
+             .contains('zips', [zip_code])
+             .eq('status', 'active')
+             .order('created_at', desc=True).limit(50).execute()).data or []
+    out = []
+    for n in needs:
+        runs = (supa.table('need_match_runs_v3')
+                .select('id, run_at, matched')
+                .eq('need_id', n['id']).order('run_at', desc=True)
+                .limit(1).execute()).data or []
+        matches = []
+        tiers = {'A': 0, 'B': 0, 'C': 0}
+        if runs:
+            rows = (supa.table('need_matches_v3').select('*')
+                    .eq('run_id', runs[0]['id']).eq('zip_code', zip_code)
+                    .order('tier').order('score', desc=True)
+                    .limit(100).execute()).data or []
+            for m in rows:
+                tiers[m.get('tier') or 'C'] = tiers.get(m.get('tier') or 'C', 0) + 1
+            matches = rows
+        criteria = {k: n.get(k) for k in (
+            'zips', 'streets', 'price_min', 'price_max', 'prop_types',
+            'beds_min', 'baths_min', 'year_built_min', 'year_built_max',
+            'sqft_min', 'acres_min', 'acres_max', 'feature_filters',
+            'soft_notes') if n.get(k) is not None}
+        out.append({
+            'need_id': n['id'],
+            'posted_at': n.get('created_at'),
+            'criteria': criteria,
+            'last_run_at': runs[0]['run_at'] if runs else None,
+            'tiers_in_zip': tiers,
+            'matches_in_zip': matches,
+        })
+    return {'zip_code': zip_code, 'briefs': out, 'count': len(out)}
+
+
 @router.get('/needs/{need_id}')
 async def get_need(need_id: str,
                    authorization: Optional[str] = Header(None),
