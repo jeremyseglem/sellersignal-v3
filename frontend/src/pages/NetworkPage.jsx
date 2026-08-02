@@ -176,7 +176,7 @@ export default function NetworkPage() {
     try {
       const run = freshRun || (await network.runMatch(need.id));
       setActiveNeed(need);
-      setRunResult({ report: run.report, matched: run.matched, candidates: run.candidates });
+      setRunResult({ buyerView: run.buyer_view, matched: run.matched });
       setView('report');
     } catch (e) { setError(safeErrorMessage(e)); }
     finally { setBusy(false); }
@@ -514,10 +514,9 @@ function Compose({ onCancel, onCreated, setError }) {
  */
 
 function Report({ need, result, busy, onBack, onRerun }) {
-  const rep = result?.report || {};
-  const tiers = rep.tiers || { A: 0, B: 0, C: 0 };
-  const matched = result?.matched ?? 0;
-  const perZip = rep.per_zip || {};
+  const bv = result?.buyerView || {};
+  const matched = bv.matched ?? result?.matched ?? 0;
+  const zips = bv.zips || {};
 
   return (
     <div>
@@ -541,7 +540,7 @@ function Report({ need, result, busy, onBack, onRerun }) {
       </div>
 
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderRadius: 12, padding: '38px 34px', textAlign: 'center', marginBottom: 18 }}>
+        borderRadius: 12, padding: '40px 34px', textAlign: 'center', marginBottom: 18 }}>
         <div style={{ fontFamily: F.display, fontSize: 64, lineHeight: 1, color: 'var(--text)' }}>
           {matched.toLocaleString()}
         </div>
@@ -549,33 +548,36 @@ function Report({ need, result, busy, onBack, onRerun }) {
           marginTop: 8 }}>
           homes match this search — none of them on the market
         </div>
-        <div style={{ maxWidth: 520, margin: '26px auto 0' }}>
-          <TierBar tiers={tiers} matched={matched} />
-        </div>
+        {bv.signal_band && (
+          <div style={{ fontFamily: F.serif, fontStyle: 'italic', fontSize: 16,
+            color: 'var(--call-now)', marginTop: 16 }}>
+            {bv.signal_band} of them are showing signs they may sell
+          </div>
+        )}
       </div>
 
-      {Object.keys(perZip).length > 1 && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
-          {Object.entries(perZip).map(([z, st]) => (
-            <div key={z} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
-              borderRadius: 8, padding: '10px 16px', fontFamily: F.sans, fontSize: 13 }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>{z}</span>
-              {'  '}
-              <span style={{ color: 'var(--text)', fontWeight: 600 }}>
-                {(st.matched || 0).toLocaleString()}
-              </span>
-              {(st.tiers?.A || 0) > 0 && (
-                <span style={{ color: 'var(--call-now)' }}> · {st.tiers.A} likely</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+        {Object.entries(zips).map(([z, st]) => (
+          <div key={z} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 8, padding: '10px 16px', fontFamily: F.sans, fontSize: 13,
+            display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ color: 'var(--text-tertiary)' }}>{z}</span>
+            <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+              {(st.matched || 0).toLocaleString()}
+            </span>
+            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.07em',
+              textTransform: 'uppercase',
+              color: st.territory === 'claimed' ? 'var(--hold)' : 'var(--accent)' }}>
+              {st.territory === 'claimed' ? 'Represented' : 'Territory open'}
+            </span>
+          </div>
+        ))}
+      </div>
 
       <div style={{ fontFamily: F.serif, fontSize: 14, color: 'var(--text-secondary)',
         fontStyle: 'italic' }}>
-        This search is now visible to the territory owners in
-        {' '}{(need.zips || []).join(' · ')} — they hold the homes behind these numbers.
+        The agents who represent these territories can now see this search.
+        When one has a fit, you'll hear from them.
       </div>
     </div>
   );
@@ -660,6 +662,12 @@ function BriefCard({ b, zip }) {
             textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 5 }}>
             Verified buyer search
           </div>
+          {b.posted_by && (
+            <div style={{ fontFamily: F.sans, fontSize: 12, color: 'var(--text-secondary)',
+              marginBottom: 4 }}>
+              Posted by {b.posted_by}
+            </div>
+          )}
           <div style={{ fontFamily: F.serif, fontSize: 15, color: 'var(--text)' }}>
             {criteriaLine(b.criteria) || 'Any home in the ZIP'}
           </div>

@@ -181,6 +181,28 @@ def _zip_context(supa, zips: list[str]) -> dict:
     return ctx
 
 
+def _signal_band(n: int) -> Optional[str]:
+    """Contract 1 banding: the buyer seat never sees a precise signal
+    count. Floor: under 5, signal presence is not shown at all — this
+    kills micro-varied-need triangulation while keeping the tease."""
+    if n < 5:
+        return None
+    for lo, hi in ((5, 15), (15, 30), (30, 60), (60, 120)):
+        if n < hi:
+            return f"{lo}\u2013{hi}"
+    return "120+"
+
+
+def _claimed_zips(supa, zips: list[str]) -> set:
+    try:
+        rows = (supa.table('agent_profiles_v3').select('assigned_zip')
+                .in_('assigned_zip', zips).execute()).data or []
+        return {r['assigned_zip'] for r in rows if r.get('assigned_zip')}
+    except Exception:
+        log.exception('marketplace: claimed lookup failed')
+        return set()
+
+
 def _seller_tier(parcel: dict, signal_types: Optional[list[str]]) -> str:
     if signal_types:
         return 'A'
@@ -616,6 +638,7 @@ async def demand_for_zip(zip_code: str,
             'soft_notes') if n.get(k) is not None}
         out.append({
             'need_id': n['id'],
+            'posted_by': n.get('created_by'),
             'posted_at': n.get('created_at'),
             'criteria': criteria,
             'last_run_at': runs[0]['run_at'] if runs else None,
@@ -694,11 +717,26 @@ async def run_match(need_id: str,
         for i in range(0, len(payload), 500):
             supa.table('need_matches_v3').insert(payload[i:i + 500]).execute()
 
+    tiers = result['report'].get('tiers', {})
+    signals = (tiers.get('A', 0) or 0) + (tiers.get('B', 0) or 0)
+    claimed = _claimed_zips(supa, need.get('zips') or [])
+    buyer_view = {
+        'matched': len(matches),
+        'signal_band': _signal_band(signals),
+        'zips': {
+            z: {
+                'matched': st.get('matched', 0),
+                'territory': 'claimed' if z in claimed else 'open',
+            }
+            for z, st in result['report'].get('per_zip', {}).items()
+        },
+    }
     return {
         'run_id': run['id'],
         'candidates': result['candidates'],
         'matched': len(matches),
         'stored': len(to_store),
+        'buyer_view': buyer_view,
         'report': result['report'],
     }
 
