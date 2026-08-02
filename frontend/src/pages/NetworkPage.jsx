@@ -43,9 +43,12 @@ const EXCLUDE_LABELS = {
   power_lines: 'No power lines', flood_plain: 'Not in flood plain',
 };
 const TIER_META = {
-  A: { label: 'Likely sellers', color: 'var(--call-now)', bg: 'var(--call-now-bg)' },
-  B: { label: 'Structural archetypes', color: 'var(--build-now)', bg: 'var(--build-now-bg)' },
-  C: { label: 'Fabric', color: 'var(--hold)', bg: 'var(--hold-bg)' },
+  A: { label: 'Likely to sell', sub: 'court record',
+       color: 'var(--call-now)', bg: 'var(--call-now-bg)' },
+  B: { label: 'May be open', sub: 'ownership pattern',
+       color: 'var(--build-now)', bg: 'var(--build-now-bg)' },
+  C: { label: 'Fits the brief', sub: 'no signal yet',
+       color: 'var(--hold)', bg: 'var(--hold-bg)' },
 };
 
 function money(v) {
@@ -132,6 +135,7 @@ function TierBar({ tiers, matched }) {
             </span>
             <span style={{ fontFamily: F.sans, fontSize: 12, color: 'var(--text-secondary)' }}>
               {TIER_META[t].label}
+              <span style={{ color: 'var(--text-tertiary)' }}> · {TIER_META[t].sub}</span>
             </span>
           </div>
         ))}
@@ -244,18 +248,18 @@ function Registry({ needs, onCompose, onOpen, busy }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: 22 }}>
         <div style={{ fontFamily: F.display, fontSize: 22, color: 'var(--text)' }}>
-          Client registry
+          Clients
         </div>
-        <Btn onClick={onCompose}>New client brief</Btn>
+        <Btn onClick={onCompose}>New search</Btn>
       </div>
       {needs.length === 0 ? (
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
           borderRadius: 10, padding: '46px 30px', textAlign: 'center' }}>
           <div style={{ fontFamily: F.display, fontSize: 19, color: 'var(--text)', marginBottom: 8 }}>
-            No client briefs yet
+            No searches yet
           </div>
           <div style={{ fontFamily: F.serif, fontSize: 14, color: 'var(--text-secondary)' }}>
-            Write the first brief and match it against every home in the territory — listed or not.
+            Set up a client's search and see every matching home — listed or not.
           </div>
         </div>
       ) : needs.map(n => (
@@ -275,7 +279,7 @@ function Registry({ needs, onCompose, onOpen, busy }) {
             </div>
           </div>
           <Btn kind="ghost" disabled={busy} onClick={() => onOpen(n)}>
-            {busy ? 'Matching…' : 'Run match'}
+            {busy ? 'Matching…' : 'See matches'}
           </Btn>
         </div>
       ))}
@@ -367,7 +371,7 @@ function Compose({ onCancel, onCreated, setError }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
         marginBottom: 6 }}>
         <div style={{ fontFamily: F.display, fontSize: 22, color: 'var(--text)' }}>
-          New client brief
+          New search
         </div>
         <button onClick={onCancel} style={{ background: 'none', border: 'none',
           fontFamily: F.sans, fontSize: 13, color: 'var(--text-secondary)',
@@ -376,7 +380,7 @@ function Compose({ onCancel, onCreated, setError }) {
         </button>
       </div>
       <div style={{ fontFamily: F.serif, fontSize: 14, color: 'var(--text-secondary)', marginBottom: 24 }}>
-        The brief matches against every home in these ZIPs — filters appear only where the county records them.
+        This searches every home in these ZIPs, not just listings. Filters appear only where the county records that data.
       </div>
 
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -388,13 +392,13 @@ function Compose({ onCancel, onCreated, setError }) {
               value={f.client_ref} onChange={set('client_ref')} />
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
-            <Label>ZIP territories (up to 12)</Label>
+            <Label>Where (ZIP codes, up to 12)</Label>
             <Input placeholder="98040, 98004" value={zipText}
               onChange={(e) => setZipText(e.target.value)} />
             {agg && (
               <div style={{ fontFamily: F.sans, fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
-                {agg.parcels.toLocaleString()} homes in scope
-                {loadingAvail ? ' · reading county coverage…' : ''}
+                {agg.parcels.toLocaleString()} homes in these ZIPs
+                {loadingAvail ? ' · checking what filters are available…' : ''}
               </div>
             )}
           </div>
@@ -406,7 +410,7 @@ function Compose({ onCancel, onCreated, setError }) {
             <Input placeholder="4" inputMode="numeric" value={f.beds_min} onChange={set('beds_min')} /></div>
           <div><Label>Bathrooms (min)</Label>
             <Input placeholder="2.5" inputMode="decimal" value={f.baths_min} onChange={set('baths_min')} /></div>
-          <div><Label>Living area (min sqft)</Label>
+          <div><Label>Sqft (min)</Label>
             <Input placeholder="3,000" inputMode="numeric" value={f.sqft_min} onChange={set('sqft_min')} /></div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div><Label>Built after</Label>
@@ -418,7 +422,7 @@ function Compose({ onCancel, onCreated, setError }) {
 
         {sortedViews.length > 0 && (
           <div style={{ marginTop: 26 }}>
-            <Label>Views — county-graded, minimum {viewMin} of 4</Label>
+            <Label>Views (county-graded)</Label>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
               {sortedViews.map(([k, count]) => (
                 <Toggle key={k} count={count} on={viewCats.includes(k)}
@@ -468,7 +472,7 @@ function Compose({ onCancel, onCreated, setError }) {
         )}
 
         <div style={{ marginTop: 26 }}>
-          <Label>Anything else about this client (not machine-matched)</Label>
+          <Label>Notes about this client (not used for matching)</Label>
           <textarea value={f.soft_notes} onChange={set('soft_notes')} rows={3}
             placeholder="West-facing preferred. Will renovate for the right lot."
             style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg-input)',
@@ -479,7 +483,7 @@ function Compose({ onCancel, onCreated, setError }) {
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 26 }}>
           <Btn kind="ghost" onClick={onCancel}>Cancel</Btn>
           <Btn disabled={!zips.length || saving} onClick={submit}>
-            {saving ? 'Matching against the territory…' : 'Match this brief'}
+            {saving ? 'Searching…' : 'See matches'}
           </Btn>
         </div>
       </div>
@@ -487,14 +491,18 @@ function Compose({ onCancel, onCreated, setError }) {
   );
 }
 
-/* ── Report ──────────────────────────────────────────────────────── */
+/* ── Report — Zillow-clear, address-blind ────────────────────────
+ * The buyer side never sees which home it is. Cards describe the home
+ * (price, beds/baths/sqft, year, features, area, how long it's been
+ * held) and the seller-likelihood badge — never the address or parcel
+ * id. That's the blind-matching contract: demand learns what exists,
+ * supply identity stays with the territory owner.
+ */
 
 function Report({ need, result, rows, busy, onBack, onRerun }) {
   const rep = result?.report || {};
   const tiers = rep.tiers || { A: 0, B: 0, C: 0 };
   const matched = result?.matched ?? 0;
-  const candidates = result?.candidates ?? 0;
-  const cov = rep.field_coverage_pct || {};
 
   return (
     <div>
@@ -507,89 +515,99 @@ function Report({ need, result, rows, busy, onBack, onRerun }) {
           <button onClick={onRerun} disabled={busy} style={{ background: 'none', border: 'none',
             fontFamily: F.sans, fontSize: 13, color: 'var(--accent)', cursor: 'pointer',
             textDecoration: 'underline' }}>
-            {busy ? 'Matching…' : 'Re-run'}
+            {busy ? 'Matching…' : 'Refresh matches'}
           </button>
           <button onClick={onBack} style={{ background: 'none', border: 'none',
             fontFamily: F.sans, fontSize: 13, color: 'var(--text-secondary)', cursor: 'pointer',
             textDecoration: 'underline' }}>
-            Back to registry
+            All clients
           </button>
         </div>
       </div>
-      <div style={{ fontFamily: F.serif, fontSize: 14, color: 'var(--text-secondary)', marginBottom: 22 }}>
-        {matched.toLocaleString()} of {candidates.toLocaleString()} homes in
-        {' '}{(need.zips || []).join(' · ')} fit this brief — none of them listed.
+
+      <div style={{ fontFamily: F.display, fontSize: 34, color: 'var(--text)', margin: '10px 0 2px' }}>
+        {matched.toLocaleString()} homes match
+      </div>
+      <div style={{ fontFamily: F.serif, fontSize: 14.5, color: 'var(--text-secondary)', marginBottom: 18 }}>
+        in {(need.zips || []).join(' · ')} — none of them on the market.
       </div>
 
       <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderRadius: 10, padding: '22px 24px', marginBottom: 22 }}>
+        borderRadius: 10, padding: '20px 22px', marginBottom: 24 }}>
         <TierBar tiers={tiers} matched={matched} />
-        {(tiers.A || 0) > 0 && (
-          <div style={{ fontFamily: F.serif, fontStyle: 'italic', fontSize: 14,
-            color: 'var(--call-now)', marginTop: 14 }}>
-            {tiers.A} of these homes are held by likely sellers — court-verified.
-          </div>
-        )}
       </div>
 
-      {rows.map(m => {
-        const d = m.detail || {}; const ft = d.features || {};
-        const meta = TIER_META[m.tier] || TIER_META.C;
-        const bits = [
-          d.bedrooms != null ? `${d.bedrooms} bd` : null,
-          d.bathrooms != null ? `${d.bathrooms} ba` : null,
-          d.sqft ? `${Number(d.sqft).toLocaleString()} sqft` : null,
-          d.year_built ? `built ${d.year_built}` : null,
-          ft.pool ? 'pool' : null,
-          ft.bldg_grade ? `grade ${ft.bldg_grade}` : null,
-          d.tenure_years != null ? `${Math.round(d.tenure_years)}y held` : null,
-        ].filter(Boolean).join('  ·  ');
-        const sig = (d.signal_types || []).join(', ');
-        return (
-          <div key={m.id || m.pin} style={{ background: 'var(--bg-card)',
-            border: '1px solid var(--border)', borderRadius: 10, padding: '14px 18px',
-            marginBottom: 10, display: 'flex', justifyContent: 'space-between',
-            alignItems: 'center', gap: 16 }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 3 }}>
-                <span style={{ fontFamily: F.serif, fontSize: 15.5, color: 'var(--text)' }}>
-                  {d.address || m.pin}
-                </span>
-                <span style={{ fontFamily: F.sans, fontSize: 12, color: 'var(--text-tertiary)' }}>
-                  {m.zip_code}
-                </span>
-              </div>
-              <div style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                {bits}
-              </div>
-              {sig && (
-                <div style={{ fontFamily: F.sans, fontSize: 12, color: meta.color, marginTop: 3 }}>
-                  {sig}
-                </div>
-              )}
-            </div>
-            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div style={{ fontFamily: F.display, fontSize: 17, color: 'var(--text)' }}>
-                {money(d.total_value)}
-              </div>
-              <div style={{ display: 'inline-block', marginTop: 5, background: meta.bg,
-                color: meta.color, borderRadius: 4, padding: '2px 8px',
-                fontFamily: F.sans, fontSize: 10.5, fontWeight: 700,
-                letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                {meta.label}
-              </div>
-            </div>
-          </div>
-        );
-      })}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))',
+        gap: 14 }}>
+        {rows.map(m => <HomeCard key={m.id || m.pin} m={m} />)}
+      </div>
+    </div>
+  );
+}
 
-      {Object.keys(cov).length > 0 && (
-        <div style={{ fontFamily: F.sans, fontSize: 11.5, color: 'var(--text-tertiary)', marginTop: 16 }}>
-          County data coverage in these ZIPs — {Object.entries(cov)
-            .filter(([, v]) => v > 0)
-            .map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}%`).join(' · ')}
+function HomeCard({ m }) {
+  const d = m.detail || {}; const ft = d.features || {};
+  const meta = TIER_META[m.tier] || TIER_META.C;
+
+  const specs = [
+    d.bedrooms != null ? `${d.bedrooms} bd` : null,
+    d.bathrooms != null ? `${d.bathrooms} ba` : null,
+    d.sqft ? `${Number(d.sqft).toLocaleString()} sqft` : null,
+  ].filter(Boolean).join('  |  ');
+
+  const chips = [];
+  if (d.year_built) chips.push(`Built ${d.year_built}`);
+  if (ft.pool) chips.push('Pool');
+  if (d.waterfront) chips.push('Waterfront');
+  const vd = ft.views || {};
+  const topView = Object.entries(vd).sort((a, b) => b[1] - a[1])[0];
+  if (topView) chips.push(`${VIEW_LABELS[topView[0]] || 'View'}`);
+  if (ft.bldg_grade >= 10) chips.push('High-end build');
+  if (ft.golf_adjacent) chips.push('On the fairway');
+  if (d.acres >= 0.5) chips.push(`${d.acres} acres`);
+
+  const held = d.tenure_years != null ? Math.round(d.tenure_years) : null;
+
+  return (
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
+      borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ height: 4, background: meta.color }} />
+      <div style={{ padding: '14px 16px 15px', display: 'flex', flexDirection: 'column',
+        flexGrow: 1 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <div style={{ fontFamily: F.display, fontSize: 20, color: 'var(--text)' }}>
+            {money(d.total_value)}
+          </div>
+          <div style={{ fontFamily: F.sans, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+            {d.city ? `${d.city} ` : ''}{m.zip_code}
+          </div>
         </div>
-      )}
+        <div style={{ fontFamily: F.sans, fontSize: 13.5, color: 'var(--text)', marginTop: 4 }}>
+          {specs || 'Details on file'}
+        </div>
+        {chips.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+            {chips.slice(0, 4).map(c => (
+              <span key={c} style={{ fontFamily: F.sans, fontSize: 11.5,
+                color: 'var(--text-secondary)', background: 'var(--bg)', borderRadius: 4,
+                padding: '3px 8px', border: '1px solid var(--border)' }}>
+                {c}
+              </span>
+            ))}
+          </div>
+        )}
+        <div style={{ marginTop: 'auto', paddingTop: 12, display: 'flex',
+          justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontFamily: F.sans, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+            {held != null ? `Held ${held} yrs` : ''}
+          </span>
+          <span style={{ background: meta.bg, color: meta.color, borderRadius: 4,
+            padding: '3px 9px', fontFamily: F.sans, fontSize: 10.5, fontWeight: 700,
+            letterSpacing: '0.07em', textTransform: 'uppercase' }}>
+            {meta.label}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
