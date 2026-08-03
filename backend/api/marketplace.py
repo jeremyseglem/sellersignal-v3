@@ -584,6 +584,25 @@ async def filter_availability(zips: str,
     return {'filters': out}
 
 
+@router.get('/ledger')
+async def ledger_peek(limit: int = 30,
+                      actor: Optional[str] = None,
+                      need_id: Optional[str] = None,
+                      authorization: Optional[str] = Header(None),
+                      x_admin_key: Optional[str] = Header(None)):
+    """Dark-phase observation window into the credibility ledger."""
+    _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    q = (supa.table('network_ledger_v3').select('*')
+         .order('created_at', desc=True).limit(min(limit, 200)))
+    if actor:
+        q = q.eq('actor', actor)
+    if need_id:
+        q = q.eq('need_id', need_id)
+    rows = q.execute().data or []
+    return {'events': rows, 'count': len(rows)}
+
+
 @router.post('/needs')
 async def create_need(body: NeedIn,
                       authorization: Optional[str] = Header(None),
