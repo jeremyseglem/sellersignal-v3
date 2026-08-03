@@ -293,6 +293,19 @@ function Registry({ needs, onCompose, onOpen, busy }) {
               {n.beds_min ? `  ·  ${n.beds_min}+ bd` : ''}
               {n.status !== 'active' ? `  ·  ${n.status}` : ''}
             </div>
+            {(n.pursuit_count > 0 || (n.connections || []).length > 0) && (
+              <div style={{ fontFamily: F.sans, fontSize: 12.5, marginTop: 5 }}>
+                {(n.connections || []).length > 0 ? (
+                  <span style={{ color: 'var(--call-now)', fontWeight: 600 }}>
+                    Connection open — {n.connections[0].agent} ({n.connections[0].zip})
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--build-now)', fontWeight: 600 }}>
+                    {n.pursuit_count} agent{n.pursuit_count > 1 ? 's' : ''} pursuing
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           <Btn kind="ghost" disabled={busy} onClick={() => onOpen(n)}>
             {busy ? 'Matching…' : 'See matches'}
@@ -313,6 +326,7 @@ function Compose({ onCancel, onCreated, setError }) {
   const [f, setF] = useState({ client_ref: '', price_min: '', price_max: '',
     beds_min: '', baths_min: '', sqft_min: '', year_built_min: '',
     year_built_max: '', soft_notes: '' });
+  const [attest, setAttest] = useState(false);
   const [flags, setFlags] = useState({});       // feature bool toggles
   const [excludes, setExcludes] = useState({}); // power_lines etc.
   const [viewCats, setViewCats] = useState([]); // selected view categories
@@ -367,7 +381,7 @@ function Compose({ onCancel, onCreated, setError }) {
         year_built_min: f.year_built_min ? Number(f.year_built_min) : null,
         year_built_max: f.year_built_max ? Number(f.year_built_max) : null,
         soft_notes: f.soft_notes || null,
-        attestation: true,
+        attestation: attest,
       };
       Object.keys(body).forEach(k => body[k] == null && delete body[k]);
       if (Object.keys(feature_filters).length) body.feature_filters = feature_filters;
@@ -496,9 +510,20 @@ function Compose({ onCancel, onCreated, setError }) {
               fontFamily: F.serif, fontSize: 14, color: 'var(--text)', resize: 'vertical' }} />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 26 }}>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 26,
+          cursor: 'pointer', fontFamily: 'var(--font-serif)', fontSize: 13.5,
+          color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          <input type="checkbox" checked={attest} onChange={e => setAttest(e.target.checked)}
+            style={{ marginTop: 3, accentColor: 'var(--accent)' }} />
+          <span>
+            I confirm this search represents a <b>specific, real client</b> I'm
+            actively working with — not market research. My standing in the
+            network depends on it.
+          </span>
+        </label>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 20 }}>
           <Btn kind="ghost" onClick={onCancel}>Cancel</Btn>
-          <Btn disabled={!zips.length || saving} onClick={submit}>
+          <Btn disabled={!zips.length || !attest || saving} onClick={submit}>
             {saving ? 'Searching…' : 'See matches'}
           </Btn>
         </div>
@@ -699,11 +724,11 @@ function BriefCard({ b, zip }) {
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-        {responded ? (
+        {responded === 'pursue' ? (
+          <PostPursue zip={zip} needId={b.need_id} />
+        ) : responded ? (
           <span style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--text-secondary)' }}>
-            {responded === 'pursue' ? "You're pursuing this — the buyer's agent will see movement."
-              : responded === 'decline' ? 'Declined — this search is set aside.'
-              : 'Ignored.'}
+            {responded === 'decline' ? 'Declined — this search is set aside.' : 'Ignored.'}
           </span>
         ) : (
           <>
@@ -754,5 +779,70 @@ function BriefCard({ b, zip }) {
         );
       })}
     </div>
+  );
+}
+
+
+/* After Pursue: the handshake, then the rating. Opening the connection
+ * is the identity handoff — your name and territory cross to the buyer
+ * seat. The rating afterward is what makes fake buyers expensive. */
+function PostPursue({ zip, needId }) {
+  const [stage, setStage] = useState('pursuing'); // pursuing | connected | rated
+  const [stars, setStars] = useState(0);
+  const [real, setReal] = useState(true);
+
+  if (stage === 'pursuing') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+          You're pursuing this — the buyer's agent sees movement.
+        </span>
+        <Btn style={{ padding: '7px 14px', fontSize: 12.5 }}
+          onClick={async () => {
+            try { await network.connect(zip, needId); setStage('connected'); } catch {}
+          }}>
+          Open connection
+        </Btn>
+      </div>
+    );
+  }
+  if (stage === 'connected') {
+    return (
+      <div>
+        <div style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--call-now)',
+          fontWeight: 600, marginBottom: 8 }}>
+          Connection open — the buyer's agent now has your name and territory.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+            After you talk, rate it:
+          </span>
+          {[1, 2, 3, 4, 5].map(n => (
+            <button key={n} onClick={() => setStars(n)} style={{ background: 'none',
+              border: 'none', cursor: 'pointer', fontSize: 17,
+              color: n <= stars ? 'var(--accent)' : 'var(--border-strong)' }}>
+              ★
+            </button>
+          ))}
+          <label style={{ fontFamily: F.sans, fontSize: 12, color: 'var(--text-secondary)',
+            display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="checkbox" checked={!real} onChange={e => setReal(!e.target.checked)}
+              style={{ accentColor: 'var(--call-now)' }} />
+            No real buyer behind this
+          </label>
+          <Btn kind="ghost" disabled={!stars} style={{ padding: '6px 12px', fontSize: 12 }}
+            onClick={async () => {
+              try { await network.rate(zip, needId, stars, real); setStage('rated'); } catch {}
+            }}>
+            Submit
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <span style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+      Rated. Your report shapes this agent's standing in the network.
+    </span>
   );
 }

@@ -609,8 +609,43 @@ async def create_need(body: NeedIn,
                       x_admin_key: Optional[str] = Header(None)):
     who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+
+    # Attestation is the accountability moment (dossier §3) — not optional.
+    if not body.attestation:
+        raise HTTPException(422, 'attestation required: you must confirm this '
+                                 'search represents a specific, real client')
+
+    # Two confirmed no-real-buyer flags terminate the seat (Contract 3).
+    try:
+        flags = (supa.table('network_ledger_v3').select('id')
+                 .eq('event_type', 'flag_confirmed').eq('counterparty', who)
+                 .limit(2).execute()).data or []
+        if len(flags) >= 2:
+            raise _hidden()
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # Cap: 5 active needs per seat — scarcity keeps specs honest.
+    try:
+        active = (supa.table('buyer_needs_v3').select('id')
+                  .eq('created_by', who).eq('status', 'active')
+                  .limit(6).execute()).data or []
+        if len(active) >= 5:
+            raise HTTPException(422, 'active search limit reached (5) — '
+                                     'close or withdraw one first')
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     row = body.model_dump(exclude_none=True)
     row['created_by'] = who
+    if not row.get('expires_at'):
+        from datetime import timedelta
+        row['expires_at'] = (datetime.now(timezone.utc)
+                             + timedelta(days=60)).isoformat()
     try:
         res = supa.table('buyer_needs_v3').insert(row).execute()
     except Exception as exc:
@@ -643,6 +678,48 @@ async def list_needs(status: Optional[str] = None,
         if _table_missing(exc):
             raise HTTPException(503, 'schema 034 not applied')
         raise
+
+    # Lazy expiry: 60 days, then the need dies quietly (dossier §3).
+    now = datetime.now(timezone.utc).isoformat()
+    for r in rows:
+        if r.get('status') == 'active' and r.get('expires_at') \
+                and r['expires_at'] < now:
+            try:
+                supa.table('buyer_needs_v3').update(
+                    {'status': 'expired'}).eq('id', r['id']).execute()
+                r['status'] = 'expired'
+                _ledger(supa, 'system', 'system', 'need_expired',
+                        need_id=r['id'])
+            except Exception:
+                pass
+
+    # Status ladder from the ledger: pursuits + open connections per need.
+    try:
+        ids = [r['id'] for r in rows]
+        if ids:
+            ev = (supa.table('network_ledger_v3')
+                  .select('need_id, event_type, actor, zip_code, created_at')
+                  .in_('need_id', ids)
+                  .in_('event_type', ['ping_pursued', 'connection_opened'])
+                  .order('created_at', desc=True).limit(500).execute()
+                  ).data or []
+            by_need: dict = {}
+            for e in ev:
+                d = by_need.setdefault(e['need_id'],
+                                       {'pursuing': set(), 'connections': []})
+                if e['event_type'] == 'ping_pursued':
+                    d['pursuing'].add(e['actor'])
+                else:
+                    d['connections'].append({'agent': e['actor'],
+                                             'zip': e.get('zip_code'),
+                                             'opened_at': e.get('created_at')})
+            for r in rows:
+                d = by_need.get(r['id'])
+                r['pursuit_count'] = len(d['pursuing']) if d else 0
+                r['connections'] = d['connections'] if d else []
+    except Exception:
+        log.exception('needs status-ladder enrichment failed')
+
     return {'needs': rows, 'count': len(rows)}
 
 
@@ -722,6 +799,57 @@ async def respond_to_demand(zip_code: str, need_id: str, action: str,
             need_id=need_id, zip_code=zip_code,
             counterparty=rows[0].get('created_by'))
     return {'ok': True, 'action': action}
+
+
+@router.post('/demand/{zip_code}/{need_id}/connect')
+async def open_connection(zip_code: str, need_id: str,
+                          authorization: Optional[str] = Header(None),
+                          x_admin_key: Optional[str] = Header(None)):
+    """
+    Territory owner opens the connection: their identity crosses to the
+    buyer seat (the contact handoff — Phase 2's payoff of Pursue). The
+    buyer sees who and which territory; everything before this stayed
+    blind.
+    """
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    rows = (supa.table('buyer_needs_v3').select('id, created_by')
+            .eq('id', need_id).limit(1).execute()).data or []
+    if not rows:
+        raise _hidden()
+    _ledger(supa, who, 'territory_owner', 'connection_opened',
+            need_id=need_id, zip_code=zip_code,
+            counterparty=rows[0].get('created_by'))
+    return {'ok': True, 'connection': {'agent': who, 'zip': zip_code}}
+
+
+@router.post('/demand/{zip_code}/{need_id}/rate')
+async def rate_connection(zip_code: str, need_id: str,
+                          rating: int, client_was_real: bool = True,
+                          authorization: Optional[str] = Header(None),
+                          x_admin_key: Optional[str] = Header(None)):
+    """
+    Post-connection peer rating (Contract 3). A not-real-client report
+    also raises an integrity flag; two CONFIRMED flags terminate the
+    seat. Ratings feed standing; they never gate.
+    """
+    who = _gate(authorization, x_admin_key)
+    if not 1 <= rating <= 5:
+        raise HTTPException(422, 'rating must be 1-5')
+    supa = get_supabase_client()
+    rows = (supa.table('buyer_needs_v3').select('id, created_by')
+            .eq('id', need_id).limit(1).execute()).data or []
+    if not rows:
+        raise _hidden()
+    poster = rows[0].get('created_by')
+    _ledger(supa, who, 'territory_owner', 'connection_rated',
+            need_id=need_id, zip_code=zip_code, counterparty=poster,
+            payload={'rating': rating, 'client_was_real': client_was_real})
+    if not client_was_real:
+        _ledger(supa, who, 'territory_owner', 'flag_raised',
+                need_id=need_id, zip_code=zip_code, counterparty=poster,
+                payload={'reason': 'no_real_buyer'})
+    return {'ok': True}
 
 
 @router.get('/needs/{need_id}')

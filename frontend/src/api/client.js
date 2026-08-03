@@ -97,6 +97,11 @@ export const network = {
   demand:     (zip)      => authedRequest(`/marketplace/demand/${zip}`),
   respond:    (zip, needId, action) => authedRequest(
     `/marketplace/demand/${zip}/${needId}/respond?action=${action}`, { method: 'POST' }),
+  connect:    (zip, needId) => authedRequest(
+    `/marketplace/demand/${zip}/${needId}/connect`, { method: 'POST' }),
+  rate:       (zip, needId, rating, real) => authedRequest(
+    `/marketplace/demand/${zip}/${needId}/rate?rating=${rating}&client_was_real=${real}`,
+    { method: 'POST' }),
 };
 
 // ── Coverage ───────────────────────────────────────────────────────
