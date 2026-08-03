@@ -650,6 +650,11 @@ function criteriaLine(c) {
 
 function BriefCard({ b, zip }) {
   const [open, setOpen] = useState(false);
+  const [responded, setResponded] = useState(null);
+  async function respond(action) {
+    try { await network.respond(zip, b.need_id, action); setResponded(action); }
+    catch { /* ledger action is best-effort UI-side */ }
+  }
   const t = b.tiers_in_zip || {};
   const inZip = (t.A || 0) + (t.B || 0) + (t.C || 0);
   return (
@@ -692,6 +697,29 @@ function BriefCard({ b, zip }) {
             </div>
           )}
         </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+        {responded ? (
+          <span style={{ fontFamily: F.sans, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+            {responded === 'pursue' ? "You're pursuing this — the buyer's agent will see movement."
+              : responded === 'decline' ? 'Declined — this search is set aside.'
+              : 'Ignored.'}
+          </span>
+        ) : (
+          <>
+            <Btn onClick={() => respond('pursue')} style={{ padding: '7px 14px', fontSize: 12.5 }}>
+              Pursue
+            </Btn>
+            <Btn kind="ghost" onClick={() => respond('ignore')}
+              style={{ padding: '7px 14px', fontSize: 12.5 }}>
+              Ignore
+            </Btn>
+            <Btn kind="ghost" onClick={() => respond('decline')}
+              style={{ padding: '7px 14px', fontSize: 12.5 }}>
+              Decline
+            </Btn>
+          </>
+        )}
       </div>
       {inZip > 0 && (
         <button onClick={() => setOpen(o => !o)} style={{ background: 'none', border: 'none',

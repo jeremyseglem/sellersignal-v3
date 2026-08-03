@@ -60,6 +60,27 @@ _PARCEL_COLS = (
 
 # ---------------------------------------------------------------- gate
 
+def _ledger(supa, actor: str, role: str, event: str, *,
+            need_id: Optional[str] = None, zip_code: Optional[str] = None,
+            counterparty: Optional[str] = None, payload: Optional[dict] = None):
+    """Contract 3: append-only, recorded from the first interaction.
+    Best-effort — a ledger hiccup never blocks the product path — but
+    absence of the table is logged loudly because unrecorded history
+    cannot be backfilled."""
+    try:
+        supa.table('network_ledger_v3').insert({
+            'actor': actor, 'actor_role': role, 'event_type': event,
+            'need_id': need_id, 'zip_code': zip_code,
+            'counterparty': counterparty, 'payload': payload,
+        }).execute()
+    except Exception as exc:
+        if _table_missing(exc):
+            log.error('LEDGER TABLE MISSING (schema 038) — %s by %s NOT recorded',
+                      event, actor)
+        else:
+            log.exception('ledger write failed: %s', event)
+
+
 def _hidden() -> HTTPException:
     # Indistinguishable from a route that doesn't exist.
     return HTTPException(status_code=404, detail='Not Found')
@@ -578,6 +599,13 @@ async def create_need(body: NeedIn,
             raise HTTPException(503, 'schema 034 not applied')
         raise
     need = (res.data or [{}])[0]
+    criteria_keys = [k for k in row if k not in
+                     ('created_by', 'client_ref', 'attestation', 'zips',
+                      'soft_notes', 'expires_at')]
+    _ledger(supa, who, 'buyer_seat', 'need_posted', need_id=need.get('id'),
+            payload={'zips': body.zips, 'specificity': len(criteria_keys),
+                     'criteria_keys': criteria_keys,
+                     'attestation': body.attestation})
     return {'need': need, 'zip_context': _zip_context(supa, body.zips)}
 
 
@@ -645,7 +673,36 @@ async def demand_for_zip(zip_code: str,
             'tiers_in_zip': tiers,
             'matches_in_zip': matches,
         })
+    who = _gate(authorization, x_admin_key)
+    if out:
+        _ledger(supa, who, 'territory_owner', 'demand_viewed',
+                zip_code=zip_code,
+                payload={'need_ids': [b['need_id'] for b in out]})
     return {'zip_code': zip_code, 'briefs': out, 'count': len(out)}
+
+
+@router.post('/demand/{zip_code}/{need_id}/respond')
+async def respond_to_demand(zip_code: str, need_id: str, action: str,
+                            authorization: Optional[str] = Header(None),
+                            x_admin_key: Optional[str] = Header(None)):
+    """
+    Territory owner -> platform: pursue / ignore / decline (dossier §4).
+    Feeds the ledger on both sides. 'pursue' is the pre-connection
+    commitment; the connection-open handshake is a later phase.
+    """
+    who = _gate(authorization, x_admin_key)
+    if action not in ('pursue', 'ignore', 'decline'):
+        raise HTTPException(422, "action must be pursue | ignore | decline")
+    supa = get_supabase_client()
+    rows = (supa.table('buyer_needs_v3').select('id, created_by')
+            .eq('id', need_id).limit(1).execute()).data or []
+    if not rows:
+        raise _hidden()
+    _ledger(supa, who, 'territory_owner', f'ping_{action}d'
+            if action != 'pursue' else 'ping_pursued',
+            need_id=need_id, zip_code=zip_code,
+            counterparty=rows[0].get('created_by'))
+    return {'ok': True, 'action': action}
 
 
 @router.get('/needs/{need_id}')
@@ -680,6 +737,11 @@ async def patch_need(need_id: str, body: NeedPatch,
            .eq('id', need_id).execute())
     if not res.data:
         raise _hidden()
+    who2 = _gate(authorization, x_admin_key)
+    event = 'need_withdrawn' if updates.get('status') in ('fulfilled', 'paused') \
+        else 'need_updated'
+    _ledger(supa, who2, 'buyer_seat', event, need_id=need_id,
+            payload={'fields': sorted(k for k in updates if k != 'updated_at')})
     return {'need': res.data[0]}
 
 
@@ -731,6 +793,11 @@ async def run_match(need_id: str,
             for z, st in result['report'].get('per_zip', {}).items()
         },
     }
+    _ledger(supa, 'system', 'system', 'match_run', need_id=need_id,
+            payload={'matched': len(matches), 'tiers': tiers,
+                     'zips': list((result['report'].get('per_zip') or {}).keys()),
+                     'claimed_zips_pinged': sorted(claimed)})
+
     return {
         'run_id': run['id'],
         'candidates': result['candidates'],

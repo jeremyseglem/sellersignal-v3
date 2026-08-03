@@ -95,6 +95,8 @@ export const network = {
   runMatch:   (id)       => authedRequest(`/marketplace/needs/${id}/match`, { method: 'POST' }),
   report:     (id, q='') => authedRequest(`/marketplace/needs/${id}/report${q}`),
   demand:     (zip)      => authedRequest(`/marketplace/demand/${zip}`),
+  respond:    (zip, needId, action) => authedRequest(
+    `/marketplace/demand/${zip}/${needId}/respond?action=${action}`, { method: 'POST' }),
 };
 
 // ── Coverage ───────────────────────────────────────────────────────
