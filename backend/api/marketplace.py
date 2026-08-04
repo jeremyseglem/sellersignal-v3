@@ -688,9 +688,13 @@ async def create_need(body: NeedIn,
 async def list_needs(status: Optional[str] = None,
                      authorization: Optional[str] = Header(None),
                      x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
-    q = supa.table('buyer_needs_v3').select('*').order('created_at', desc=True)
+    # A buyer seat's registry is ITS OWN briefs, nobody else's — even
+    # operators see only their own here (supply-side visibility lives
+    # on the demand tab, buyer-side privacy holds everywhere else).
+    q = (supa.table('buyer_needs_v3').select('*')
+         .eq('created_by', who).order('created_at', desc=True))
     if status:
         q = q.eq('status', status)
     try:
@@ -891,11 +895,14 @@ async def rate_connection(zip_code: str, need_id: str,
 async def get_need(need_id: str,
                    authorization: Optional[str] = Header(None),
                    x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
     rows = (supa.table('buyer_needs_v3').select('*')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
+        raise _hidden()
+    ctx = _caller_context(supa, who)
+    if rows[0].get('created_by') != who and not ctx['is_operator']:
         raise _hidden()
     runs = (supa.table('need_match_runs_v3')
             .select('id, run_at, candidates, matched, report')
@@ -909,8 +916,15 @@ async def get_need(need_id: str,
 async def patch_need(need_id: str, body: NeedPatch,
                      authorization: Optional[str] = Header(None),
                      x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+    owner_rows = (supa.table('buyer_needs_v3').select('created_by')
+                  .eq('id', need_id).limit(1).execute()).data or []
+    if not owner_rows:
+        raise _hidden()
+    ctx = _caller_context(supa, who)
+    if owner_rows[0].get('created_by') != who and not ctx['is_operator']:
+        raise _hidden()
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(422, 'no fields to update')
@@ -919,7 +933,7 @@ async def patch_need(need_id: str, body: NeedPatch,
            .eq('id', need_id).execute())
     if not res.data:
         raise _hidden()
-    who2 = _gate(authorization, x_admin_key)
+    who2 = who
     event = 'need_withdrawn' if updates.get('status') in ('fulfilled', 'paused') \
         else 'need_updated'
     _ledger(supa, who2, 'buyer_seat', event, need_id=need_id,
@@ -931,13 +945,16 @@ async def patch_need(need_id: str, body: NeedPatch,
 async def run_match(need_id: str,
                     authorization: Optional[str] = Header(None),
                     x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
     rows = (supa.table('buyer_needs_v3').select('*')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
         raise _hidden()
     need = rows[0]
+    ctx = _caller_context(supa, who)
+    if need.get('created_by') != who and not ctx['is_operator']:
+        raise _hidden()
 
     result = _run_match(supa, need)
     matches = result['matches']
@@ -996,8 +1013,13 @@ async def match_report(need_id: str,
                        tier: Optional[str] = None,
                        authorization: Optional[str] = Header(None),
                        x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+    own = (supa.table('buyer_needs_v3').select('created_by')
+           .eq('id', need_id).limit(1).execute()).data or []
+    ctx = _caller_context(supa, who)
+    if not own or (own[0].get('created_by') != who and not ctx['is_operator']):
+        raise _hidden()
     runs = (supa.table('need_match_runs_v3')
             .select('id, run_at, candidates, matched, report')
             .eq('need_id', need_id).order('run_at', desc=True)
