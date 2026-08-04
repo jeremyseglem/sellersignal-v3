@@ -13,6 +13,7 @@ import LettersPage     from './pages/LettersPage.jsx';
 import ProfilePage     from './pages/ProfilePage.jsx';
 import VoiceOnboardingPage from './pages/VoiceOnboardingPage.jsx';
 import NetworkPage from './pages/NetworkPage.jsx';
+import NetworkJoinPage from './pages/NetworkJoinPage.jsx';
 import { PrivacyPage, TermsPage } from './pages/LegalPages.jsx';
 
 import AuthGate from './components/shell/AuthGate.jsx';
@@ -113,6 +114,15 @@ export default function App() {
         element={
           <AuthGate>
             <NetworkPage />
+          </AuthGate>
+        }
+      />
+
+      <Route
+        path="/network/join"
+        element={
+          <AuthGate>
+            <NetworkJoinPage />
           </AuthGate>
         }
       />
