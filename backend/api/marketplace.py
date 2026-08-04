@@ -765,6 +765,23 @@ async def approve_seat(email: str, approved: bool = True,
     return {'ok': True, 'email': email.lower(), 'approved': approved}
 
 
+@router.get('/profile-peek')
+async def profile_peek(email: str,
+                       authorization: Optional[str] = Header(None),
+                       x_admin_key: Optional[str] = Header(None)):
+    """Operator support tool: a seat's role/territory/approval state."""
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator']:
+        raise _hidden()
+    rows = (supa.table('agent_profiles_v3')
+            .select('email, full_name, brokerage, phone, role, assigned_zip, '
+                    'network_approved, license_state, license_status')
+            .ilike('email', email).execute()).data or []
+    return {'profiles': rows}
+
+
 @router.get('/ledger')
 async def ledger_peek(limit: int = 30,
                       actor: Optional[str] = None,
