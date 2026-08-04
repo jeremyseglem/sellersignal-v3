@@ -521,7 +521,7 @@ The marketplace design dossier (2026-07-23) is now substantially implemented in 
 - Claimed ("Represented") vs open ("Territory open") per zip from `agent_profiles_v3.assigned_zip`
 - Supply edge carries poster identity (dossier grants it for credibility); `client_ref` stays private to the poster in BOTH directions
 
-**Contract 3 (the ledger) — schema/039? NO: schema/038 `network_ledger_v3`** (append-only, RLS no-policies, indexed on actor/need/event). "History cannot be backfilled" — shipped before scoring exists. Events wired at every live edge: need_posted (with specificity = criteria count), need_updated/withdrawn/expired, match_run (tiers + claimed zips pinged — response-latency clock starts here), demand_viewed, ping_pursued/ignored/declined, connection_opened, connection_rated, flag_raised. `GET /api/marketplace/ledger` = dark-phase observation window.
+**Contract 3 (the ledger) — schema/038 `network_ledger_v3`** (append-only, RLS no-policies, indexed on actor/need/event). "History cannot be backfilled" — shipped before scoring exists. Events wired at every live edge: need_posted (with specificity = criteria count), need_updated/withdrawn/expired, match_run (tiers + claimed zips pinged — response-latency clock starts here), demand_viewed, ping_pursued/ignored/declined, connection_opened, connection_rated, flag_raised. `GET /api/marketplace/ledger` = dark-phase observation window.
 
 **Trust layer + handshake (the Phase-2 core):**
 - Attestation as a ceremony: required checkbox ("specific, real client... my standing depends on it") + independent server rejection (422) — can't be scripted around
