@@ -149,6 +149,7 @@ function TierBar({ tiers, matched }) {
 export default function NetworkPage() {
   const nav = useNavigate();
   const [gate, setGate] = useState('checking'); // checking | open
+  const [role, setRole] = useState({ territory_zips: [], is_operator: false });
   const [view, setView] = useState('registry'); // registry | compose | report
   const [needs, setNeeds] = useState([]);
   const [activeNeed, setActiveNeed] = useState(null);
@@ -160,7 +161,12 @@ export default function NetworkPage() {
   useEffect(() => {
     let dead = false;
     network.status()
-      .then(() => { if (!dead) { setGate('open'); refreshNeeds(); } })
+      .then((st) => {
+        if (dead) return;
+        setRole({ territory_zips: st.territory_zips || [],
+                  is_operator: !!st.is_operator });
+        setGate('open'); refreshNeeds();
+      })
       .catch(() => { if (!dead) nav('/', { replace: true }); });
     return () => { dead = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -219,7 +225,9 @@ export default function NetworkPage() {
 
         <div style={{ display: 'flex', gap: 20, marginBottom: 24,
           borderBottom: '1px solid var(--border)' }}>
-          {[['registry', 'My clients'], ['demand', 'Incoming demand']].map(([v, label]) => {
+          {[['registry', 'My clients'],
+            ...(role.is_operator || role.territory_zips.length
+              ? [['demand', 'Incoming demand']] : [])].map(([v, label]) => {
             const on = view === v || (v === 'registry' && (view === 'compose' || view === 'report'));
             return (
               <button key={v} onClick={() => { setView(v); setError(''); }}
@@ -234,7 +242,7 @@ export default function NetworkPage() {
           })}
         </div>
 
-        {view === 'demand' && <DemandView setError={setError} />}
+        {view === 'demand' && <DemandView setError={setError} role={role} />}
         {view === 'registry' && (
           <Registry needs={needs} busy={busy}
             onCompose={() => { setView('compose'); setError(''); }}
@@ -614,10 +622,16 @@ function Report({ need, result, busy, onBack, onRerun }) {
  * attack list. Addresses live here and only here.
  */
 
-function DemandView({ setError }) {
+function DemandView({ setError, role }) {
   const [zip, setZip] = useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const myZips = role?.territory_zips || [];
+
+  useEffect(() => {
+    if (myZips.length === 1) { setZip(myZips[0]); load(myZips[0]); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function load(z) {
     if (!/^\d{5}$/.test(z)) return;
@@ -629,17 +643,27 @@ function DemandView({ setError }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 22 }}>
-        <div style={{ width: 220 }}>
-          <Label>Your territory ZIP</Label>
-          <Input placeholder="98040" value={zip}
-            onChange={(e) => setZip(e.target.value.trim())}
-            onKeyDown={(e) => e.key === 'Enter' && load(zip)} />
+      {myZips.length > 0 && !role?.is_operator ? (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 22 }}>
+          {myZips.map(z => (
+            <Toggle key={z} on={zip === z} onClick={() => { setZip(z); load(z); }}>
+              {z}
+            </Toggle>
+          ))}
         </div>
-        <Btn onClick={() => load(zip)} disabled={loading || !/^\d{5}$/.test(zip)}>
-          {loading ? 'Loading…' : 'Show demand'}
-        </Btn>
-      </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 22 }}>
+          <div style={{ width: 220 }}>
+            <Label>Territory ZIP{role?.is_operator ? ' (operator view)' : ''}</Label>
+            <Input placeholder="98040" value={zip}
+              onChange={(e) => setZip(e.target.value.trim())}
+              onKeyDown={(e) => e.key === 'Enter' && load(zip)} />
+          </div>
+          <Btn onClick={() => load(zip)} disabled={loading || !/^\d{5}$/.test(zip)}>
+            {loading ? 'Loading…' : 'Show demand'}
+          </Btn>
+        </div>
+      )}
 
       {data && data.briefs.length === 0 && (
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',

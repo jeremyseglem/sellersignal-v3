@@ -81,6 +81,24 @@ def _ledger(supa, actor: str, role: str, event: str, *,
             log.exception('ledger write failed: %s', event)
 
 
+def _caller_context(supa, who: str) -> dict:
+    """Role truth for the caller: which territories they own, and
+    whether they're an operator (operators + admin see everything —
+    dark-phase testing and support)."""
+    if who == 'admin':
+        return {'territory_zips': [], 'is_operator': True}
+    try:
+        rows = (supa.table('agent_profiles_v3')
+                .select('assigned_zip, role')
+                .ilike('email', who).execute()).data or []  # case-insensitive
+        zips = sorted({r['assigned_zip'] for r in rows if r.get('assigned_zip')})
+        is_op = any((r.get('role') or '') == 'operator' for r in rows)
+        return {'territory_zips': zips, 'is_operator': is_op}
+    except Exception:
+        log.exception('marketplace: caller context lookup failed')
+        return {'territory_zips': [], 'is_operator': False}
+
+
 def _hidden() -> HTTPException:
     # Indistinguishable from a route that doesn't exist.
     return HTTPException(status_code=404, detail='Not Found')
@@ -539,8 +557,11 @@ async def marketplace_status(authorization: Optional[str] = Header(None),
     except Exception as exc:
         schema_ok = not _table_missing(exc)
     allowlist_set = bool(os.environ.get('MARKETPLACE_ALLOWLIST', '').strip())
+    ctx = _caller_context(supa, who)
     return {'ok': True, 'caller': who, 'schema_applied': schema_ok,
-            'allowlist_active': allowlist_set}
+            'allowlist_active': allowlist_set,
+            'territory_zips': ctx['territory_zips'],
+            'is_operator': ctx['is_operator']}
 
 
 @router.get('/filters')
@@ -733,8 +754,13 @@ async def demand_for_zip(zip_code: str,
     the territory owner's attack list. Buyer identity and client_ref are
     withheld; the demand spec travels, the buyer stays blind too.
     """
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    # Supply side is per-territory: you see demand for ZIPs you own,
+    # nothing else. Operators/admin see all (dark phase + support).
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
     needs = (supa.table('buyer_needs_v3').select('*')
              .contains('zips', [zip_code])
              .eq('status', 'active')
@@ -790,6 +816,9 @@ async def respond_to_demand(zip_code: str, need_id: str, action: str,
     if action not in ('pursue', 'ignore', 'decline'):
         raise HTTPException(422, "action must be pursue | ignore | decline")
     supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
     rows = (supa.table('buyer_needs_v3').select('id, created_by')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
@@ -813,6 +842,9 @@ async def open_connection(zip_code: str, need_id: str,
     """
     who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
     rows = (supa.table('buyer_needs_v3').select('id, created_by')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
@@ -837,6 +869,9 @@ async def rate_connection(zip_code: str, need_id: str,
     if not 1 <= rating <= 5:
         raise HTTPException(422, 'rating must be 1-5')
     supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
     rows = (supa.table('buyer_needs_v3').select('id, created_by')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
