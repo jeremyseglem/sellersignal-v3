@@ -507,6 +507,36 @@ Documented above under "The canonical onboarding pipeline." Summary:
 
 ## Build journal (most recent at top)
 
+### 2026-08-03 — Buyer Network: full dossier implementation (Contracts 1-3 live, dark)
+
+The marketplace design dossier (2026-07-23) is now substantially implemented in production, all behind the allowlist gate at /network. Sequence of slices since the UI first shipped:
+
+**Two-sided reshape (Jeremy's product ruling: buyer gets THE NUMBER, supply gets THE ATTACK LIST):**
+- Buyer report stripped to: match count, banded signal line, per-zip chips w/ claimed/open state, status line. No homes, no addresses, no tier decomposition. Killed the "Fabric" jargon → plain-English tiers (Likely to sell / May be open / Fits the brief) used ONLY supply-side.
+- New supply surface: "Incoming demand" tab + `GET /api/marketplace/demand/{zip}` — active briefs touching the zip as narrowed criteria + full-detail matches (addresses live here and only here), tier-badged, likely-sellers on top.
+
+**Contract 1 (asymmetry) — enforced SERVER-SIDE in the run_match response (`buyer_view`):**
+- Banded signal figure (5–15 / 15–30 / 30–60 / 60–120 / 120+), never a precise integer, never decomposed into signal types
+- Floor: under 5 signals → nothing shown (kills micro-varied-need triangulation)
+- Claimed ("Represented") vs open ("Territory open") per zip from `agent_profiles_v3.assigned_zip`
+- Supply edge carries poster identity (dossier grants it for credibility); `client_ref` stays private to the poster in BOTH directions
+
+**Contract 3 (the ledger) — schema/039? NO: schema/038 `network_ledger_v3`** (append-only, RLS no-policies, indexed on actor/need/event). "History cannot be backfilled" — shipped before scoring exists. Events wired at every live edge: need_posted (with specificity = criteria count), need_updated/withdrawn/expired, match_run (tiers + claimed zips pinged — response-latency clock starts here), demand_viewed, ping_pursued/ignored/declined, connection_opened, connection_rated, flag_raised. `GET /api/marketplace/ledger` = dark-phase observation window.
+
+**Trust layer + handshake (the Phase-2 core):**
+- Attestation as a ceremony: required checkbox ("specific, real client... my standing depends on it") + independent server rejection (422) — can't be scripted around
+- 5 active needs per seat cap; 60-day expiry default + lazy sweep w/ need_expired events
+- Status ladder on the buyer registry, derived from ledger: "N agents pursuing" → "Connection open — {agent} ({zip})"
+- Supply flow: Pursue → Open connection (identity handoff — territory owner's name/territory crosses to buyer seat; everything prior is blind) → 5-star rating + "No real buyer behind this" checkbox → not-real report auto-raises flag_raised; **two flag_confirmed events against a seat → silent 404 termination** (checked at need creation)
+- Ratings/flags feed standing; nothing gates on the ledger (rank-not-gate per dossier)
+
+**E2E verified in prod:** post(attested, specificity=2) → match(2,901; buyer sees "120+" band) → pursue → connect → rate 5★ → withdraw; buyer ladder showed 1 pursuing then the open connection; ledger recorded all seven events in order with timestamps (latency measurable).
+
+**Dossier items still unbuilt:** license verification vs state registries (external integration), buyer-side contact-handoff display polish, derived credibility score (stays invisible until ledger history matures — accrual started 2026-08-03), homeowner soft-signal phase, Stannp demand-letter rail, per-need new-match notification events.
+
+**Marketplace schema to date:** 034 (needs/runs/matches) · 036 (criteria columns) · 037 (features JSONB both tables) · 038 (ledger). All applied.
+
+
 ### 2026-07-31 (night) — Buyer Network hidden UI live at /network (commit `63d90e2`)
 
 Dark UI for the demand tool: direct URL only, zero nav links, AuthGate + server-allowlist gate (the page probes /api/marketplace/status on mount; 404 -> silent redirect home, indistinguishable from a dead URL). Three views in one self-contained page (`frontend/src/pages/NetworkPage.jsx`, Estate tokens, inline-styled like the rest of the app): **Client registry** (needs list + run), **Client brief** (the need form — data-driven from /marketplace/filters, renders only filters populated for the chosen ZIPs with live parcel counts on every toggle: view categories with 1-4 minimum, must-have amenities, must-not-have excludes, soft notes), **Match report** (signature element: the seller-tier bar — Likely sellers / Structural archetypes / Fabric as one proportional band in call-now/gold/sage, with the line "N of these homes are held by likely sellers — court-verified"). New `network.*` section in api/client.js (authedRequest). Built with build:safe.
