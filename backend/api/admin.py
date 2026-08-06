@@ -1956,6 +1956,12 @@ CT_ZIP_TO_CITY = {
     "06880": "Westport",
     "06897": "Wilton",
     "06883": "Weston",
+    # Fairfield County expansion (2026-07-31) — statewide layer, addr 100%.
+    "06824": "Fairfield",
+    "06825": "Fairfield",
+    "06890": "Southport",
+    "06877": "Ridgefield",
+    "06612": "Easton",
 }
 
 # Montana Phase 1 (2026-07-23) — Bozeman/Big Sky/Whitefish.

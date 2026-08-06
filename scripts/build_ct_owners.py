@@ -60,6 +60,12 @@ _TOWN_CONFIG = {
     "Westport":   ({"06880": "Westport"},   {"WESTPORT"}),
     "Wilton":     ({"06897": "Wilton"},     {"WILTON"}),
     "Weston":     ({"06883": "Weston"},     {"WESTON"}),
+    # Fairfield County expansion (2026-07-31) — trophy towns, statewide layer,
+    # addr>=99% verified. Southport (06890) is the trophy pocket of Fairfield.
+    "Fairfield":  ({"06824": "Fairfield", "06825": "Fairfield", "06890": "Southport"},
+                   {"FAIRFIELD", "SOUTHPORT"}),
+    "Ridgefield": ({"06877": "Ridgefield"}, {"RIDGEFIELD"}),
+    "Easton":     ({"06612": "Easton"},     {"EASTON"}),
 }
 if TOWN not in _TOWN_CONFIG:
     raise SystemExit(f"TOWN={TOWN!r} has no _TOWN_CONFIG entry — add its "
