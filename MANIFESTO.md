@@ -686,6 +686,18 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (option 2: clean new-geography — Asheville banked; Summit/Routt gapped; new-state recon)
+
+**Buncombe NC (Asheville) LIVE — fleet 224.** Clean inline build reusing NC state wiring. build_buncombe_owners.py (cloned from Wake): gis.buncombecounty.org opendata layer, situs-ZIP native (Zipcode), Owner/Address/DeedDate(YYYYMMDD)/AppraisedValue/Class(numeric, 1xx->R). 28801 downtown, 28803 Biltmore Forest (trophy), 28804 Grove Park, 28805, 28806. addr/tenure 100%, R/K 67-85%. NC now multi-county (Wake + Buncombe) via parallel detect blocks. (Folds to NC/Raleigh metro tab — cosmetic.)
+
+**Held (data gaps, NOT shipped sub-parity):**
+- **Summit CO (Breckenridge):** Summit_County_Tax_Parcels has owner+situs+value+geometry but NO sale date at all -> no tenure. Resort/second-home market (FL-style profile); could launch tenure-exempt like FL if desired, but held pending that call.
+- **Routt CO (Steamboat):** Routt_County_Parcels_2025 has situs+saleDate but NO value field and an ambiguous owner field (ownCareOf). Below parity. Needs a better source.
+
+**Option-3 new-state recon (Teton WY/Jackson, Blaine ID/Sun Valley, Fulton/Cobb GA):** none surface via generic AGOL search — they live on direct county GIS servers (e.g., county-hosted ArcGIS, not Esri-hosted AGOL). Each needs a targeted direct-hub dig (like Denver/Buncombe did), not a quick statewide/AGOL pull. Doable but ~a build each, not instant. Recommend picking 1-2 highest-value (Jackson Hole, Buckhead) and digging their county GIS directly next session.
+
+**Lesson:** the cheapest lane (statewide layers: CT/MA/FL) is tapped in-region; new geography now = per-county direct-GIS builds (clean-inline like Wake/Buncombe when the county publishes owner+situs+sale+value, gapped when it doesn't — verify all five before building).
+
 ### 2026-07-31 (cheap banking: CT expansion — Fairfield + Litchfield)
 
 Banked 10 CT territories with zero new adapters — pure config on the already-wired CT statewide OPM layer. Fleet 193 -> 203.
