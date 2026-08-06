@@ -2313,6 +2313,9 @@ WI_ZIP_TO_CITY = {
     "53705": "Madison", "54235": "Sturgeon Bay", "54212": "Fish Creek",
     "54234": "Sister Bay", "53066": "Oconomowoc", "53018": "Delafield",
     "53012": "Cedarburg",
+    "53562": "Middleton", "53213": "Wauwatosa", "54016": "Hudson",
+    "54548": "Minocqua", "54521": "Eagle River", "53058": "Nashotah",
+    "53072": "Pewaukee",
 }
 
 

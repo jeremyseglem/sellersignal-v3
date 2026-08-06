@@ -36,6 +36,13 @@ ZIP_CONFIG = {
     "53066": ("Oconomowoc",    {"OCONOMOWOC", "LAC LA BELLE"}),
     "53018": ("Delafield",     {"DELAFIELD"}),
     "53012": ("Cedarburg",     {"CEDARBURG"}),
+    "53562": ("Middleton",     {"MIDDLETON"}),
+    "53213": ("Wauwatosa",     {"WAUWATOSA"}),
+    "54016": ("Hudson",        {"HUDSON", "NORTH HUDSON"}),
+    "54548": ("Minocqua",      {"MINOCQUA", "WOODRUFF", "ARBOR VITAE"}),
+    "54521": ("Eagle River",   {"EAGLE RIVER", "LINCOLN", "WASHINGTON"}),
+    "53058": ("Nashotah",      {"NASHOTAH", "CHENEQUA", "MERTON"}),
+    "53072": ("Pewaukee",      {"PEWAUKEE"}),
 }
 FIELDS = "OWNERNME1,OWNERNME2,SITEADRESS,ZIPCODE,PLACENAME,ESTFMKVALUE,CNTASSDVALUE,PROPCLASS,PSTLADRESS"
 
