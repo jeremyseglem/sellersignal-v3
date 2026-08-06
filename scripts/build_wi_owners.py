@@ -28,6 +28,14 @@ ZIP_CONFIG = {
     "53122": ("Elm Grove",     {"ELM GROVE"}),
     "53092": ("Mequon",        {"MEQUON", "BAYSIDE"}),
     "53045": ("Brookfield",    {"BROOKFIELD"}),
+    # WI statewide trophy expansion (2026-07-31) — Madison, Door County, Lake Country.
+    "53705": ("Madison",       {"MADISON", "MAPLE BLUFF", "SHOREWOOD HILLS"}),
+    "54235": ("Sturgeon Bay",  {"STURGEON BAY", "SEVASTOPOL"}),
+    "54212": ("Fish Creek",    {"FISH CREEK", "BAILEYS HARBOR", "GIBRALTAR", "EGG HARBOR"}),
+    "54234": ("Sister Bay",    {"SISTER BAY", "GIBRALTAR", "LIBERTY GROVE"}),
+    "53066": ("Oconomowoc",    {"OCONOMOWOC", "LAC LA BELLE"}),
+    "53018": ("Delafield",     {"DELAFIELD"}),
+    "53012": ("Cedarburg",     {"CEDARBURG"}),
 }
 FIELDS = "OWNERNME1,OWNERNME2,SITEADRESS,ZIPCODE,PLACENAME,ESTFMKVALUE,CNTASSDVALUE,PROPCLASS,PSTLADRESS"
 
