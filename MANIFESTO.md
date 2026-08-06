@@ -686,6 +686,19 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (cheap banking: CT expansion — Fairfield + Litchfield)
+
+Banked 10 CT territories with zero new adapters — pure config on the already-wired CT statewide OPM layer. Fleet 193 -> 203.
+
+**CT_FAIRFIELD +5:** Fairfield/06824+06825, Southport/06890 (trophy), Ridgefield/06877 (backcountry estates), Easton/06612. addr 100%, sale 84-99%. Just _TOWN_CONFIG + CT_ZIP_TO_CITY additions.
+
+**CT_LITCHFIELD +5 (new market):** Lakeville-Salisbury/06068+06039, Litchfield/06759, Kent/06757, Sharon/06069 — the weekend-estate belt. addr 100%, sale 98-100%. CT made multi-county via CT_ZIP_MARKET/CT_MARKET_SLUG maps + _ct_market() helper (defaults CT_FAIRFIELD); builder now SEED_PREFIX-aware. (Cosmetic: folds to Greenwich metro tab via CT state grouping.)
+- Skipped Washington/Roxbury CT (sale 66-67%, below tenure parity) and Darien (town withholds situs addresses from the statewide layer — known).
+
+**PAT ROTATION HAPPENED (finally):** old July-13 GitHub PAT auto-revoked mid-session (secret scanning) — blocked pushes. Jeremy issued a fresh PAT via chat; used in-session only, never committed. Admin key still the July-13 one (works; rotate when convenient).
+
+**Cheap-banking lane confirmed:** statewide-layer states (CT/MA MassGIS) let you add trophy towns as pure config. Next cheap targets: more MA MassGIS (Cape Cod/Barnstable — new county, proven adapter), more Litchfield (Washington via town-source), + the clean single-county inline builds (Buncombe NC, Monmouth NJ, Summit/Routt CO). Avoid the expensive lanes (FL condo geocoding, gated CA) until warranted.
+
 ### 2026-07-30 (Wake NC + build-readiness refinement)
 
 **NC_WAKE (Raleigh) — first North Carolina, LIVE.** Cleanest complete VERIFIED-OPEN build: owner + DEED_DATE (tenure) + ZIPNUM (situs-zip native) + TOTAL_VALUE_ASSD + TYPE_USE_DECODE all inline. maps.wakegov.com Property/Parcels MapServer. 27608 Five Points/Hayes Barton 4730 / 27609 North Hills 10260 / 27612 11831 / 27613 15043 / 27607 6281. Addr 100%, tenure 100%. Centroid computed from polygon rings (no returnCentroid on this MapServer). build_wake_owners.py. New-state NC wired end-to-end.
