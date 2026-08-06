@@ -118,6 +118,7 @@ _MARKET_STATE = {
     'CO_BOULDER':   'CO',
     'CO_ARAPAHOE':  'CO',
     'NC_BUNCOMBE': 'NC',
+    'WI_MILWAUKEE': 'WI',
     'NC_WAKE':      'NC',
 }
 
