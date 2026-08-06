@@ -2316,6 +2316,7 @@ WI_ZIP_TO_CITY = {
     "53562": "Middleton", "53213": "Wauwatosa", "54016": "Hudson",
     "54548": "Minocqua", "54521": "Eagle River", "53058": "Nashotah",
     "53072": "Pewaukee",
+    "53704": "Madison", "54211": "Ephraim", "54209": "Egg Harbor",
 }
 
 
