@@ -121,6 +121,12 @@ ZIP_CONFIG = {
     "01938": ("IPSWICH",    "Ipswich",   {"IPSWICH"},                    "MA_ESSEX"),
     "01984": ("WENHAM",     "Wenham",    {"WENHAM"},                     "MA_ESSEX"),
     "02138": ("CAMBRIDGE",  "Cambridge", {"CAMBRIDGE"},                  "MA_MIDDLESEX"),
+    "01921": ("BOXFORD",    "Boxford",   {"BOXFORD"},                    "MA_ESSEX"),
+    "01966": ("ROCKPORT",   "Rockport",  {"ROCKPORT"},                   "MA_ESSEX"),
+    "01810": ("ANDOVER",    "Andover",   {"ANDOVER"},                    "MA_ESSEX"),
+    "01845": ("NORTH ANDOVER", "North Andover", {"NORTH ANDOVER"},       "MA_ESSEX"),
+    "02738": ("MARION",     "Marion",    {"MARION"},                     "MA_PLYMOUTH"),
+    "02050": ("MARSHFIELD", "Marshfield",{"MARSHFIELD"},                 "MA_PLYMOUTH"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"
