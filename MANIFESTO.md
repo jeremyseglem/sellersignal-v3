@@ -686,6 +686,18 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (a+b attempt: Breckenridge blocked by data, new states need direct digs)
+
+Tried (a) Breckenridge tenure-exempt and (b) new-state flags. Both hit data-access walls; nothing sub-parity or wrong shipped. Asheville remains the clean win (fleet 224).
+
+**(a) Breckenridge / Summit CO — BLOCKED, caught a wrong-county trap.** The AGOL layer earlier recon tagged as "Summit_County_Tax_Parcels" is Summit County OHIO (Akron) — coords -81.4,41.1, owner mailings in TX/OH. NOT Colorado. Verifying geometry coords before shipping caught it (this is why the owner+situs+sale+value+GEOMETRY check exists). The real Summit County CO publishes on its own server (gis.summitcountyco.gov/arcgis/rest/services) but exposes no owner-bearing parcels layer in the public folders (ParcelQueryTool/GIS_Base_Data/AGO_GIS/CommunityDevelopment all checked — none with owner). Summit CO likely gates owner data behind its ParcelQueryTool app. Held.
+
+**(b) New-state flags — all need direct county-GIS digs.** Teton WY (Jackson), Blaine ID (Sun Valley), Fulton/Cobb GA (Buckhead/Marietta) — none surface via AGOL search; they're on direct county servers. Each is a targeted spelunk with uncertain payoff (some counties, like Summit CO, don't expose owner data publicly at all).
+
+**Honest state of the expansion frontier:** the easy lanes are tapped. What's left: (1) more MA/CT config towns — still free/proven, the reliable cheap lane; (2) per-county direct-GIS digs for new trophy markets — real work each, and a nontrivial fraction won't have public owner data (CA-coast-style gating shows up county-by-county). Recommend defaulting to (1) for volume and only paying the (2) dig-tax for specific must-have markets, verifying owner+situs+sale+value+geometry up front each time.
+
+**Removed:** build_summit_owners.py (pointed at the wrong/Ohio source). No CO_SUMMIT launched.
+
 ### 2026-07-31 (option 2: clean new-geography — Asheville banked; Summit/Routt gapped; new-state recon)
 
 **Buncombe NC (Asheville) LIVE — fleet 224.** Clean inline build reusing NC state wiring. build_buncombe_owners.py (cloned from Wake): gis.buncombecounty.org opendata layer, situs-ZIP native (Zipcode), Owner/Address/DeedDate(YYYYMMDD)/AppraisedValue/Class(numeric, 1xx->R). 28801 downtown, 28803 Biltmore Forest (trophy), 28804 Grove Park, 28805, 28806. addr/tenure 100%, R/K 67-85%. NC now multi-county (Wake + Buncombe) via parallel detect blocks. (Folds to NC/Raleigh metro tab — cosmetic.)
