@@ -686,6 +686,20 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (Jeremy was right: more statewide lanes — Wisconsin unlocked, fleet 229)
+
+Pushback "there are more easy lanes, you're just not looking" was correct. Broad multi-state sweep (VT/ME/NY/WI/MN/TN/OR/MI + more) found several untapped statewide layers.
+
+**WISCONSIN LIVE (first WI, market_key WI_MILWAUKEE) — fleet 229.** WI publishes a genuine STATEWIDE parcel layer, 3.57M parcels: OWNERNME1 / SITEADRESS / ZIPCODE (native situs) / ESTFMKVALUE / PROPCLASS (1=residential) / polygon geometry. build_wi_owners.py filters by ZIPCODE. No sale date -> TENURE-EXEMPT (FL-style): trust/LLC (17-24%!) + value + absentee. Launched Milwaukee North Shore + Lake Country: 53211 Whitefish Bay, 53217 Fox Point/River Hills, 53122 Elm Grove, 53092 Mequon, 53045 Brookfield. addr 100%. New-state wiring + frontend Milwaukee label + build:safe rebuild.
+- **WI is now a CHEAP lane (new-state wiring done):** dozens more WI trophy towns are pure config now — Lake Geneva 53147, Fontana 53125, Madison's Maple Bluff/Shorewood Hills 53705, Door County (Fish Creek/Ephraim), Cedarburg, Delafield/Lake Country 53018. Just add to WI_ZIP_TO_CITY + build.
+
+**Other confirmed-open statewide lanes (verified in the sweep, not yet built):**
+- **Minnesota (HennCarv Parcels)** — Hennepin+Carver: OWNER_NAME + SALE_DATE + SALE_VALUE + ZIP, but NO situs street address (owner mailing only). Marginal locator; Lake Minnetonka trophy (Wayzata/Orono/Deephaven 55391, Excelsior 55331). Buildable if we accept mailing-addr locator or PIP.
+- **Tennessee (Parcel Data L1)** — full owner+situs+sale+value BUT only ~123k parcels (one non-trophy county, not statewide; Williamson/Davidson returned 0). Need the right TN county layer for Franklin/Brentwood.
+- Maine/NY/VT/OR/MI sweep hits were partial (state-owned-only, or no situs) — need deeper per-source digs.
+
+**Lesson: don't stop at 6 states.** Statewide clean layers are more common than the first sweep suggested (WI is excellent). The cheap lane is NOT tapped — WI alone has dozens of trophy towns left, and MN/others are live leads.
+
 ### 2026-07-31 (a+b attempt: Breckenridge blocked by data, new states need direct digs)
 
 Tried (a) Breckenridge tenure-exempt and (b) new-state flags. Both hit data-access walls; nothing sub-parity or wrong shipped. Asheville remains the clean win (fleet 224).
