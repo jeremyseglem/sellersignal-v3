@@ -2128,6 +2128,11 @@ MA_ZIP_TO_CITY = {
     "01845": "North Andover",
     "02738": "Marion",
     "02050": "Marshfield",
+    "01950": "Newburyport",
+    "01929": "Essex",
+    "01985": "West Newbury",
+    "01951": "Newbury",
+    "02739": "Mattapoisett",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -2186,6 +2191,11 @@ MA_ZIP_MARKET = {
     "01845": "MA_ESSEX",
     "02738": "MA_PLYMOUTH",
     "02050": "MA_PLYMOUTH",
+    "01950": "MA_ESSEX",
+    "01929": "MA_ESSEX",
+    "01985": "MA_ESSEX",
+    "01951": "MA_ESSEX",
+    "02739": "MA_PLYMOUTH",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk",

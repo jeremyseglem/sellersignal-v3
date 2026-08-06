@@ -127,6 +127,11 @@ ZIP_CONFIG = {
     "01845": ("NORTH ANDOVER", "North Andover", {"NORTH ANDOVER"},       "MA_ESSEX"),
     "02738": ("MARION",     "Marion",    {"MARION"},                     "MA_PLYMOUTH"),
     "02050": ("MARSHFIELD", "Marshfield",{"MARSHFIELD"},                 "MA_PLYMOUTH"),
+    "01950": ("NEWBURYPORT","Newburyport",{"NEWBURYPORT"},               "MA_ESSEX"),
+    "01929": ("ESSEX",      "Essex",     {"ESSEX"},                      "MA_ESSEX"),
+    "01985": ("WEST NEWBURY","West Newbury",{"WEST NEWBURY"},            "MA_ESSEX"),
+    "01951": ("NEWBURY",    "Newbury",   {"NEWBURY", "BYFIELD"},         "MA_ESSEX"),
+    "02739": ("MATTAPOISETT","Mattapoisett",{"MATTAPOISETT"},            "MA_PLYMOUTH"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"
