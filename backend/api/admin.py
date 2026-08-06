@@ -1159,6 +1159,10 @@ async def register_zip(
         market_key = "NC_WAKE"
         if city is None:
             city = NC_WAKE_ZIP_TO_CITY[zip_code]
+    if zip_code in NC_BUNCOMBE_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "NC_BUNCOMBE"
+        if city is None:
+            city = NC_BUNCOMBE_ZIP_TO_CITY[zip_code]
     if zip_code in MT_ZIP_TO_CITY and market_key == "WA_KING":
         market_key = MT_ZIP_MARKET[zip_code]
         if city is None:
@@ -1173,6 +1177,7 @@ async def register_zip(
                 or TN_ZIP_TO_CITY.get(zip_code)
                 or CO_ZIP_TO_CITY.get(zip_code)
                 or NC_WAKE_ZIP_TO_CITY.get(zip_code)
+                or NC_BUNCOMBE_ZIP_TO_CITY.get(zip_code)
                 or COLLIN_ZIP_TO_CITY.get(zip_code)
                 or MARICOPA_ZIP_TO_CITY.get(zip_code)
                 or DALLAS_ZIP_TO_CITY.get(zip_code)
@@ -1512,6 +1517,11 @@ async def onboard_zip(
         market_key = "NC_WAKE"
         if state in (None, "WA"):
             state = "NC"
+    is_ncbuncombe = zip_code in NC_BUNCOMBE_ZIP_TO_CITY
+    if is_ncbuncombe and market_key == "WA_KING":
+        market_key = "NC_BUNCOMBE"
+        if state in (None, "WA"):
+            state = "NC"
 
     # Verify the seed JSON is in place — fail-fast before kicking off.
     # Seed-file pattern depends on county:
@@ -1535,6 +1545,8 @@ async def onboard_zip(
         seed_prefix = f"co-{CO_MARKET_SLUG[market_key]}"
     elif is_ncwake:
         seed_prefix = "nc-wake"
+    elif is_ncbuncombe:
+        seed_prefix = "nc-buncombe"
     elif is_mt:
         seed_prefix = "mt"
     elif is_collin:
@@ -2273,6 +2285,13 @@ NC_WAKE_ZIP_TO_CITY = {
     "27613": "Raleigh", "27607": "Raleigh",
 }
 
+# Buncombe County NC (2026-07-31) — Asheville (market_key NC_BUNCOMBE).
+# Situs-ZIP native (Zipcode). Seeds data/seeds/nc-buncombe-{zip}-owners.json.
+NC_BUNCOMBE_ZIP_TO_CITY = {
+    "28801": "Asheville", "28803": "Asheville", "28804": "Asheville",
+    "28805": "Asheville", "28806": "Asheville",
+}
+
 
 @router.post("/seed-from-json/{zip_code}",
              dependencies=[Depends(require_admin)])
@@ -2361,6 +2380,10 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "NC_WAKE"
         city = NC_WAKE_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"nc-wake-{zip_code}-owners.json"
+    elif zip_code in NC_BUNCOMBE_ZIP_TO_CITY:
+        market_key = "NC_BUNCOMBE"
+        city = NC_BUNCOMBE_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"nc-buncombe-{zip_code}-owners.json"
     elif zip_code in SNO_ZIP_TO_CITY:
         market_key = "WA_SNOHOMISH"
         city = SNO_ZIP_TO_CITY[zip_code]
@@ -4359,6 +4382,7 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/co-arapahoe-{zip_code}-owners.json")
     if market_key == 'NC_WAKE' or zip_code.startswith('276'):
         candidates.append(f"data/seeds/nc-wake-{zip_code}-owners.json")
+        candidates.append(f"data/seeds/nc-buncombe-{zip_code}-owners.json")
     if zip_code[:3] in ('024', '025', '017', '018', '019', '020', '021'):
         # MA ZIP ranges — county unknown here, try all four county slugs
         candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
