@@ -686,6 +686,10 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (MT Flathead Lake cluster — cheap, reused cadastral)
+
+Added Flathead Lake trophy via the existing MT cadastral builder (build_mt_owners.py) + MT_FLATHEAD market — pure config. Bigfork 59911, Lakeside 59922, Kalispell 59901, Columbia Falls 59912. Strong absentee (Flathead Lake second homes: Lakeside 51%, Columbia Falls 50%, Bigfork 39%) + trust/llc. addr 99-100%. Montana Cadastral Framework (services.arcgis.com/qnjIrwR8z5Izc0ij/.../Montana_Cadastral_Framework/1, 921k parcels, owner+situs+value+owner-mailing, tenure-exempt) is the statewide source. More MT trophy still open: Livingston/Paradise Valley (Park county), Red Lodge (Carbon), Hamilton/Bitterroot (Ravalli).
+
 ### 2026-07-31 (Jeremy was right: more statewide lanes — Wisconsin unlocked, fleet 229)
 
 Pushback "there are more easy lanes, you're just not looking" was correct. Broad multi-state sweep (VT/ME/NY/WI/MN/TN/OR/MI + more) found several untapped statewide layers.
