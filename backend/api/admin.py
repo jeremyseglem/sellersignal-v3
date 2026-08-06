@@ -1132,7 +1132,7 @@ async def register_zip(
         if city is None:
             city = COLLIN_ZIP_TO_CITY[zip_code]
     if zip_code in CT_ZIP_TO_CITY and market_key == "WA_KING":
-        market_key = "CT_FAIRFIELD"
+        market_key = _ct_market(zip_code)
         if city is None:
             city = CT_ZIP_TO_CITY[zip_code]
     if zip_code in PBC_ZIP_TO_CITY and market_key == "WA_KING":
@@ -1463,7 +1463,7 @@ async def onboard_zip(
     # Greenwich CT (Fairfield) — same auto-detect/opt-out shape.
     is_ct = zip_code in CT_ZIP_TO_CITY
     if is_ct and market_key == "WA_KING":
-        market_key = "CT_FAIRFIELD"
+        market_key = _ct_market(zip_code)
         if state in (None, "WA"):
             state = "CT"
 
@@ -1522,7 +1522,7 @@ async def onboard_zip(
     if is_maricopa:
         seed_prefix = "az-maricopa"
     elif is_ct:
-        seed_prefix = "ct-fairfield"
+        seed_prefix = CT_MARKET_SLUG[_ct_market(zip_code)]
     elif is_pbc:
         seed_prefix = "fl-palmbeach"
     elif is_collier:
@@ -1962,7 +1962,22 @@ CT_ZIP_TO_CITY = {
     "06890": "Southport",
     "06877": "Ridgefield",
     "06612": "Easton",
+    # Litchfield County (2026-07-31) — weekend-estate belt.
+    "06068": "Lakeville",
+    "06039": "Lakeville",
+    "06759": "Litchfield",
+    "06757": "Kent",
+    "06069": "Sharon",
 }
+
+# CT is now multi-county. ZIPs not listed here default to CT_FAIRFIELD.
+CT_ZIP_MARKET = {
+    "06068": "CT_LITCHFIELD", "06039": "CT_LITCHFIELD", "06759": "CT_LITCHFIELD",
+    "06757": "CT_LITCHFIELD", "06069": "CT_LITCHFIELD",
+}
+CT_MARKET_SLUG = {"CT_FAIRFIELD": "ct-fairfield", "CT_LITCHFIELD": "ct-litchfield"}
+def _ct_market(zip_code):
+    return CT_ZIP_MARKET.get(zip_code, "CT_FAIRFIELD")
 
 # Montana Phase 1 (2026-07-23) — Bozeman/Big Sky/Whitefish.
 # Seed files: data/seeds/mt-{zip}-owners.json (built by
@@ -2285,9 +2300,9 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         city = COLLIN_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"tx-collin-{zip_code}-owners.json"
     elif zip_code in CT_ZIP_TO_CITY:
-        market_key = "CT_FAIRFIELD"
+        market_key = _ct_market(zip_code)
         city = CT_ZIP_TO_CITY[zip_code]
-        seed_path = repo_root / "data" / "seeds" / f"ct-fairfield-{zip_code}-owners.json"
+        seed_path = repo_root / "data" / "seeds" / f"{CT_MARKET_SLUG[market_key]}-{zip_code}-owners.json"
     elif zip_code in PBC_ZIP_TO_CITY:
         market_key = "FL_PALM_BEACH"
         city = PBC_ZIP_TO_CITY[zip_code]

@@ -66,6 +66,12 @@ _TOWN_CONFIG = {
                    {"FAIRFIELD", "SOUTHPORT"}),
     "Ridgefield": ({"06877": "Ridgefield"}, {"RIDGEFIELD"}),
     "Easton":     ({"06612": "Easton"},     {"EASTON"}),
+    # Litchfield County (2026-07-31) — weekend-estate belt (market CT_LITCHFIELD,
+    # build with SEED_PREFIX=ct-litchfield). addr 100%, sale 98-100% verified.
+    "Salisbury":  ({"06068": "Lakeville", "06039": "Lakeville"}, {"SALISBURY", "LAKEVILLE"}),
+    "Litchfield": ({"06759": "Litchfield"}, {"LITCHFIELD"}),
+    "Kent":       ({"06757": "Kent"},       {"KENT"}),
+    "Sharon":     ({"06069": "Sharon"},     {"SHARON"}),
 }
 if TOWN not in _TOWN_CONFIG:
     raise SystemExit(f"TOWN={TOWN!r} has no _TOWN_CONFIG entry — add its "
@@ -206,7 +212,8 @@ def main():
 
     print(f"[seed] town rows={len(rows):,} no_owner={no_owner} outside_zctas={unzoned}")
     for z, items in by_zip.items():
-        path = f"data/seeds/ct-fairfield-{z}-owners.json"
+        _prefix = os.environ.get("SEED_PREFIX", "ct-fairfield")
+        path = f"data/seeds/{_prefix}-{z}-owners.json"
         with_addr = sum(1 for i in items.values() if i["address"])
         cov = (with_addr / len(items) * 100) if items else 0
         if items and cov < 80:
