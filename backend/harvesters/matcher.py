@@ -461,7 +461,7 @@ SOURCE_MARKET_SCOPE: dict = {
     'tx_collin_recorder':   {'TX_COLLIN'},
     'ct_greenwich_recorder': {'CT_FAIRFIELD', 'CT_LITCHFIELD'},
     'ct_probate_courts':    {'CT_FAIRFIELD', 'CT_LITCHFIELD'},   # statewide probate case-lookup
-    'mt_district_court':    {'MT_GALLATIN', 'MT_FLATHEAD'},  # FullCourt Web (probate/divorce)
+    'mt_district_court':    {'MT_GALLATIN', 'MT_FLATHEAD', 'MT_PARK'},  # FullCourt Web (probate/divorce)
     'tx_topics_citations':  {'TX_DALLAS', 'TX_TRAVIS', 'TX_COLLIN'},  # statewide feed; one entry per live TX market
 }
 

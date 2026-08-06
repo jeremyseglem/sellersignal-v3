@@ -68,6 +68,10 @@ ZIP_CONFIG = {
     "59922": ("Lakeside",         [7],     {"LAKESIDE"}),
     "59901": ("Kalispell",        [7],     {"KALISPELL"}),
     "59912": ("Columbia Falls",   [7],     {"COLUMBIA FALLS"}),
+    # Paradise Valley / Park county (49) (2026-07-31)
+    "59047": ("Livingston",       [49],    {"LIVINGSTON"}),
+    "59027": ("Emigrant",         [49],    {"EMIGRANT", "PRAY"}),
+    "59030": ("Gardiner",         [49],    {"GARDINER"}),
 }
 ELIGIBLE_RES = {"IMPROVED PROPERTY", "TOWNHOUSE"}
 
