@@ -697,7 +697,7 @@ Banked 10 CT territories with zero new adapters — pure config on the already-w
 
 **PAT ROTATION HAPPENED (finally):** old July-13 GitHub PAT auto-revoked mid-session (secret scanning) — blocked pushes. Jeremy issued a fresh PAT via chat; used in-session only, never committed. Admin key still the July-13 one (works; rotate when convenient).
 
-**Cheap-banking lane confirmed:** statewide-layer states (CT/MA MassGIS) let you add trophy towns as pure config. Next cheap targets: more MA MassGIS (Cape Cod/Barnstable — new county, proven adapter), more Litchfield (Washington via town-source), + the clean single-county inline builds (Buncombe NC, Monmouth NJ, Summit/Routt CO). Avoid the expensive lanes (FL condo geocoding, gated CA) until warranted.
+**Cheap-banking lane confirmed:** statewide-layer states (CT/MA MassGIS) let you add trophy towns as pure config. MA cheap expansion done (fleet 214): +11 towns pure-config into live counties — Essex (Hamilton/Topsfield/Ipswich/Wenham/Boxford/Rockport/Andover/N Andover), Middlesex (Cambridge/Brattle St), Plymouth (Marion/Marshfield). MA now ~63 territories, 5 counties. Next cheap: Cape Cod/Barnstable (new county, proven adapter), more Litchfield (Washington via town-source), + the clean single-county inline builds (Buncombe NC, Monmouth NJ, Summit/Routt CO). Avoid the expensive lanes (FL condo geocoding, gated CA) until warranted.
 
 ### 2026-07-30 (Wake NC + build-readiness refinement)
 
