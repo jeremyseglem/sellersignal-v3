@@ -115,6 +115,12 @@ ZIP_CONFIG = {
     "02568": ("TISBURY",      "Vineyard Haven", {"TISBURY", "VINEYARD HAVEN"}, "MA_DUKES"),
     "02575": ("WEST TISBURY", "West Tisbury",  {"WEST TISBURY"},               "MA_DUKES"),
     "02535": ("CHILMARK",     "Chilmark",      {"CHILMARK", "AQUINNAH", "MENEMSHA"}, "MA_DUKES"),
+    # ---- North Shore Essex + Cambridge (2026-07-31) — existing live counties ----
+    "01982": ("HAMILTON",   "Hamilton",  {"HAMILTON", "SOUTH HAMILTON"}, "MA_ESSEX"),
+    "01983": ("TOPSFIELD",  "Topsfield", {"TOPSFIELD"},                  "MA_ESSEX"),
+    "01938": ("IPSWICH",    "Ipswich",   {"IPSWICH"},                    "MA_ESSEX"),
+    "01984": ("WENHAM",     "Wenham",    {"WENHAM"},                     "MA_ESSEX"),
+    "02138": ("CAMBRIDGE",  "Cambridge", {"CAMBRIDGE"},                  "MA_MIDDLESEX"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"

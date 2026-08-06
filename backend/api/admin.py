@@ -2117,6 +2117,11 @@ MA_ZIP_TO_CITY = {
     "02568": "Vineyard Haven",
     "02575": "West Tisbury",
     "02535": "Chilmark",
+    "01982": "Hamilton",
+    "01983": "Topsfield",
+    "01938": "Ipswich",
+    "01984": "Wenham",
+    "02138": "Cambridge",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -2164,6 +2169,11 @@ MA_ZIP_MARKET = {
     "02568": "MA_DUKES",
     "02575": "MA_DUKES",
     "02535": "MA_DUKES",
+    "01982": "MA_ESSEX",
+    "01983": "MA_ESSEX",
+    "01938": "MA_ESSEX",
+    "01984": "MA_ESSEX",
+    "02138": "MA_MIDDLESEX",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk",
