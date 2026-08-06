@@ -63,6 +63,11 @@ ZIP_CONFIG = {
     "59730": ("Gallatin Gateway", [6],     {"GALLATIN GATEWAY", "BOZEMAN"}),
     "59716": ("Big Sky",          [6, 25], {"BIG SKY", "GALLATIN GATEWAY", "BOZEMAN"}),
     "59937": ("Whitefish",        [7],     {"WHITEFISH"}),
+    # Flathead Lake trophy cluster (2026-07-31) — Flathead county (7)
+    "59911": ("Bigfork",          [7],     {"BIGFORK"}),
+    "59922": ("Lakeside",         [7],     {"LAKESIDE"}),
+    "59901": ("Kalispell",        [7],     {"KALISPELL"}),
+    "59912": ("Columbia Falls",   [7],     {"COLUMBIA FALLS"}),
 }
 ELIGIBLE_RES = {"IMPROVED PROPERTY", "TOWNHOUSE"}
 

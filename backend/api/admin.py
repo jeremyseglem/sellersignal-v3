@@ -2018,6 +2018,7 @@ MT_ZIP_TO_CITY = {
     "59730": "Gallatin Gateway",
     "59716": "Big Sky",
     "59937": "Whitefish",
+    "59911": "Bigfork", "59922": "Lakeside", "59901": "Kalispell", "59912": "Columbia Falls",
 }
 MT_ZIP_MARKET = {
     "59715": "MT_GALLATIN",
@@ -2026,6 +2027,7 @@ MT_ZIP_MARKET = {
     "59730": "MT_GALLATIN",
     "59716": "MT_GALLATIN",
     "59937": "MT_FLATHEAD",
+    "59911": "MT_FLATHEAD", "59922": "MT_FLATHEAD", "59901": "MT_FLATHEAD", "59912": "MT_FLATHEAD",
 }
 
 COLLIN_ZIP_TO_CITY = {
