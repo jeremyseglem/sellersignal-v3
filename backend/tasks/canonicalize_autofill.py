@@ -77,10 +77,33 @@ STARTUP_DELAY = int(os.environ.get(
     "CANONICALIZE_AUTOFILL_STARTUP_DELAY", "60"
 ))
 
-# Master enable. Set to "false" in Railway env to disable on boot.
+# Master enable. Default is FALSE (2026-08-02): pause state is in-memory,
+# so a Railway restart used to silently re-enable the task and resume
+# spending against the Anthropic API unattended ($64 leak on 08-01/02).
+# The task now starts paused after every boot unless Railway env
+# explicitly sets CANONICALIZE_AUTOFILL_ENABLED=true. Per-boot enable is
+# still available via POST /api/harvest/canonicalize-autofill-resume.
 ENABLED_DEFAULT = os.environ.get(
-    "CANONICALIZE_AUTOFILL_ENABLED", "true"
+    "CANONICALIZE_AUTOFILL_ENABLED", "false"
 ).lower() == "true"
+
+# Market allowlist (2026-08-02): only sweep ZIPs in markets that have a
+# live court-signal source. Canonicalization exists to feed the probate/
+# divorce matcher; running it on markets with no harvester wired (FL, TN,
+# NC, most of MA/CO) prepays for precision nothing consumes — that sweep
+# cost ~$240 on 08-01. Override with CANONICALIZE_AUTOFILL_MARKETS
+# (comma-separated market_keys, or "all" to disable filtering).
+_DEFAULT_MARKETS = (
+    "WA_KING,WA_SNOHOMISH,AZ_MARICOPA,MT_GALLATIN,MT_FLATHEAD,MT_MADISON,"
+    "CT_FAIRFIELD,CO_DENVER,TX_DALLAS,TX_COLLIN,TX_TRAVIS,MA_NORFOLK"
+)
+_markets_raw = os.environ.get(
+    "CANONICALIZE_AUTOFILL_MARKETS", _DEFAULT_MARKETS
+).strip()
+ALLOWED_MARKETS: Optional[set] = (
+    None if _markets_raw.lower() in ("all", "*")
+    else {m.strip() for m in _markets_raw.split(",") if m.strip()}
+)
 
 MAX_BACKOFF_SECS = 1800
 
@@ -108,6 +131,8 @@ state: dict = {
         "idle_interval":    IDLE_INTERVAL,
         "concurrency":      CONCURRENCY,
         "startup_delay":    STARTUP_DELAY,
+        "enabled_on_boot":  ENABLED_DEFAULT,
+        "allowed_markets":  sorted(ALLOWED_MARKETS) if ALLOWED_MARKETS else "all",
     },
 }
 
@@ -155,9 +180,12 @@ def _find_priority_1p5_zip(supa, state_dict: dict) -> Optional[str]:
     if cached and (now - cached["at"] < ttl) and cached.get("queue"):
         return cached["queue"].pop(0)
 
-    zips_resp = (supa.table("zip_coverage_v3").select("zip_code")
+    zips_resp = (supa.table("zip_coverage_v3").select("zip_code,market_key")
                  .eq("status", "live").execute())
-    live_zips = [r["zip_code"] for r in (zips_resp.data or [])]
+    live_zips = [
+        r["zip_code"] for r in (zips_resp.data or [])
+        if ALLOWED_MARKETS is None or r.get("market_key") in ALLOWED_MARKETS
+    ]
     scored = []
     for z in live_zips:
         try:
@@ -190,12 +218,15 @@ def _find_priority_2_zip(supa, state_dict: dict) -> Optional[str]:
     """
     zips_resp = (
         supa.table("zip_coverage_v3")
-        .select("zip_code")
+        .select("zip_code,market_key")
         .eq("status", "live")
         .order("zip_code")
         .execute()
     )
-    live_zips = [r["zip_code"] for r in (zips_resp.data or [])]
+    live_zips = [
+        r["zip_code"] for r in (zips_resp.data or [])
+        if ALLOWED_MARKETS is None or r.get("market_key") in ALLOWED_MARKETS
+    ]
     if not live_zips:
         return None
 

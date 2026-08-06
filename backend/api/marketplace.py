@@ -60,6 +60,45 @@ _PARCEL_COLS = (
 
 # ---------------------------------------------------------------- gate
 
+def _ledger(supa, actor: str, role: str, event: str, *,
+            need_id: Optional[str] = None, zip_code: Optional[str] = None,
+            counterparty: Optional[str] = None, payload: Optional[dict] = None):
+    """Contract 3: append-only, recorded from the first interaction.
+    Best-effort — a ledger hiccup never blocks the product path — but
+    absence of the table is logged loudly because unrecorded history
+    cannot be backfilled."""
+    try:
+        supa.table('network_ledger_v3').insert({
+            'actor': actor, 'actor_role': role, 'event_type': event,
+            'need_id': need_id, 'zip_code': zip_code,
+            'counterparty': counterparty, 'payload': payload,
+        }).execute()
+    except Exception as exc:
+        if _table_missing(exc):
+            log.error('LEDGER TABLE MISSING (schema 038) — %s by %s NOT recorded',
+                      event, actor)
+        else:
+            log.exception('ledger write failed: %s', event)
+
+
+def _caller_context(supa, who: str) -> dict:
+    """Role truth for the caller: which territories they own, and
+    whether they're an operator (operators + admin see everything —
+    dark-phase testing and support)."""
+    if who == 'admin':
+        return {'territory_zips': [], 'is_operator': True}
+    try:
+        rows = (supa.table('agent_profiles_v3')
+                .select('assigned_zip, role')
+                .ilike('email', who).execute()).data or []  # case-insensitive
+        zips = sorted({r['assigned_zip'] for r in rows if r.get('assigned_zip')})
+        is_op = any((r.get('role') or '') == 'operator' for r in rows)
+        return {'territory_zips': zips, 'is_operator': is_op}
+    except Exception:
+        log.exception('marketplace: caller context lookup failed')
+        return {'territory_zips': [], 'is_operator': False}
+
+
 def _hidden() -> HTTPException:
     # Indistinguishable from a route that doesn't exist.
     return HTTPException(status_code=404, detail='Not Found')
@@ -75,12 +114,28 @@ def _gate(authorization: Optional[str], x_admin_key: Optional[str]) -> str:
         for e in os.environ.get('MARKETPLACE_ALLOWLIST', '').split(',')
         if e.strip()
     }
-    if allowlist and authorization:
+    if authorization:
         try:
             user = user_from_authorization(authorization)
             email = (getattr(user, 'email', None) or '').lower()
-            if email and email in allowlist:
-                return email
+            if email:
+                if email in allowlist:
+                    return email
+                # Registered seats: territory owners + operators get in
+                # by standing; buyer agents get in once approved.
+                try:
+                    supa = get_supabase_client()
+                    rows = (supa.table('agent_profiles_v3')
+                            .select('role, assigned_zip, network_approved')
+                            .ilike('email', email).execute()).data or []
+                    for r in rows:
+                        if (r.get('role') == 'operator'
+                                or r.get('assigned_zip')
+                                or (r.get('role') == 'buyer_agent'
+                                    and r.get('network_approved'))):
+                            return email
+                except Exception:
+                    log.exception('marketplace gate: profile lookup failed')
         except HTTPException:
             pass
         except Exception:
@@ -179,6 +234,28 @@ def _zip_context(supa, zips: list[str]) -> dict:
     except Exception:
         log.exception('marketplace: zip context lookup failed')
     return ctx
+
+
+def _signal_band(n: int) -> Optional[str]:
+    """Contract 1 banding: the buyer seat never sees a precise signal
+    count. Floor: under 5, signal presence is not shown at all — this
+    kills micro-varied-need triangulation while keeping the tease."""
+    if n < 5:
+        return None
+    for lo, hi in ((5, 15), (15, 30), (30, 60), (60, 120)):
+        if n < hi:
+            return f"{lo}\u2013{hi}"
+    return "120+"
+
+
+def _claimed_zips(supa, zips: list[str]) -> set:
+    try:
+        rows = (supa.table('agent_profiles_v3').select('assigned_zip')
+                .in_('assigned_zip', zips).execute()).data or []
+        return {r['assigned_zip'] for r in rows if r.get('assigned_zip')}
+    except Exception:
+        log.exception('marketplace: claimed lookup failed')
+        return set()
 
 
 def _seller_tier(parcel: dict, signal_types: Optional[list[str]]) -> str:
@@ -485,6 +562,93 @@ def _run_match(supa, need: dict) -> dict:
 
 # ---------------------------------------------------------------- routes
 
+class JoinBody(BaseModel):
+    full_name: str
+    brokerage: str
+    phone: Optional[str] = None
+    license_number: str
+    license_state: str
+    licensure_attested: bool = False
+
+
+@router.post('/join')
+async def join_network(body: JoinBody,
+                       authorization: Optional[str] = Header(None)):
+    """
+    Buyer-agent registration. Requires a signed-in user (real auth) but
+    NOT network membership — this is the front door. Creates/updates
+    the profile as role=buyer_agent, license unverified, approval OFF:
+    signups accumulate while the network stays dark, and the pending
+    roll doubles as the verified buyer-agent marketing asset.
+    Territory agents keep their existing role untouched.
+    """
+    if not authorization:
+        raise HTTPException(401, 'sign in first')
+    user = user_from_authorization(authorization)
+    email = (getattr(user, 'email', None) or '').lower()
+    user_id = getattr(user, 'id', None)
+    if not email:
+        raise HTTPException(401, 'sign in first')
+    if not body.licensure_attested:
+        raise HTTPException(422, 'you must attest that you hold an active '
+                                 'real estate license')
+    supa = get_supabase_client()
+    existing = (supa.table('agent_profiles_v3')
+                .select('id, role, assigned_zip, network_approved')
+                .ilike('email', email).limit(1).execute()).data or []
+    fields = {
+        'full_name': body.full_name.strip(),
+        'brokerage': body.brokerage.strip(),
+        'phone': (body.phone or '').strip() or None,
+        'license_number': body.license_number.strip(),
+        'license_state': body.license_state.strip().upper()[:2],
+        'license_status': 'unverified',
+        'network_joined_at': datetime.now(timezone.utc).isoformat(),
+    }
+    if existing:
+        row = existing[0]
+        if row.get('role') == 'agent' and not row.get('assigned_zip'):
+            fields['role'] = 'buyer_agent'
+        supa.table('agent_profiles_v3').update(fields) \
+            .eq('id', row['id']).execute()
+        approved = bool(row.get('network_approved')) \
+            or bool(row.get('assigned_zip')) or row.get('role') == 'operator'
+    else:
+        fields.update({'id': user_id, 'email': email,
+                       'role': 'buyer_agent'})
+        supa.table('agent_profiles_v3').insert(fields).execute()
+        approved = False
+    _ledger(supa, email, 'buyer_seat', 'seat_registered',
+            payload={'brokerage': fields['brokerage'],
+                     'license_state': fields['license_state']})
+    return {'ok': True, 'status': 'active' if approved else 'pending_review'}
+
+
+@router.get('/join/status')
+async def join_status(authorization: Optional[str] = Header(None)):
+    """Pre-gate probe for the join page: none | pending | active."""
+    if not authorization:
+        return {'status': 'none'}
+    try:
+        user = user_from_authorization(authorization)
+        email = (getattr(user, 'email', None) or '').lower()
+    except Exception:
+        return {'status': 'none'}
+    supa = get_supabase_client()
+    rows = (supa.table('agent_profiles_v3')
+            .select('role, assigned_zip, network_approved, full_name')
+            .ilike('email', email).limit(1).execute()).data or []
+    if not rows:
+        return {'status': 'none'}
+    r = rows[0]
+    if r.get('role') == 'operator' or r.get('assigned_zip') \
+            or (r.get('role') == 'buyer_agent' and r.get('network_approved')):
+        return {'status': 'active'}
+    if r.get('role') == 'buyer_agent':
+        return {'status': 'pending', 'full_name': r.get('full_name')}
+    return {'status': 'none'}
+
+
 @router.get('/status')
 async def marketplace_status(authorization: Optional[str] = Header(None),
                              x_admin_key: Optional[str] = Header(None)):
@@ -496,8 +660,11 @@ async def marketplace_status(authorization: Optional[str] = Header(None),
     except Exception as exc:
         schema_ok = not _table_missing(exc)
     allowlist_set = bool(os.environ.get('MARKETPLACE_ALLOWLIST', '').strip())
+    ctx = _caller_context(supa, who)
     return {'ok': True, 'caller': who, 'schema_applied': schema_ok,
-            'allowlist_active': allowlist_set}
+            'allowlist_active': allowlist_set,
+            'territory_zips': ctx['territory_zips'],
+            'is_operator': ctx['is_operator']}
 
 
 @router.get('/filters')
@@ -541,14 +708,142 @@ async def filter_availability(zips: str,
     return {'filters': out}
 
 
+@router.get('/seats')
+async def list_seats(pending_only: bool = True,
+                     authorization: Optional[str] = Header(None),
+                     x_admin_key: Optional[str] = Header(None)):
+    """Operator view: the buyer-agent roll — pending applications by
+    default, the full registered audience with pending_only=false."""
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator']:
+        raise _hidden()
+    q = (supa.table('agent_profiles_v3')
+         .select('email, full_name, brokerage, phone, license_number, '
+                 'license_state, license_status, network_approved, '
+                 'network_joined_at')
+         .eq('role', 'buyer_agent')
+         .order('network_joined_at', desc=True).limit(200))
+    if pending_only:
+        q = q.eq('network_approved', False)
+    rows = q.execute().data or []
+    return {'seats': rows, 'count': len(rows)}
+
+
+@router.post('/seats/approve')
+async def approve_seat(email: str, approved: bool = True,
+                       authorization: Optional[str] = Header(None),
+                       x_admin_key: Optional[str] = Header(None)):
+    """Operator flips a buyer seat live (or revokes). Fires the
+    welcome email on approval."""
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator']:
+        raise _hidden()
+    res = (supa.table('agent_profiles_v3')
+           .update({'network_approved': approved})
+           .ilike('email', email).eq('role', 'buyer_agent').execute())
+    if not res.data:
+        raise HTTPException(404, 'no buyer_agent seat for that email')
+    _ledger(supa, who, 'system',
+            'seat_approved' if approved else 'seat_revoked',
+            counterparty=email.lower())
+    if approved:
+        try:
+            from backend.lib.email import send_email, email_configured
+            if email_configured():
+                send_email(
+                    to=email,
+                    subject='Your Buyer Network seat is active',
+                    html_body=('<p>Your SellerSignal Buyer Network seat has been '
+                          'approved. Sign in and post your first client '
+                          'search at https://sellersignal.co/network</p>'))
+        except Exception:
+            log.exception('seat approval email failed')
+    return {'ok': True, 'email': email.lower(), 'approved': approved}
+
+
+@router.get('/profile-peek')
+async def profile_peek(email: str,
+                       authorization: Optional[str] = Header(None),
+                       x_admin_key: Optional[str] = Header(None)):
+    """Operator support tool: a seat's role/territory/approval state."""
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator']:
+        raise _hidden()
+    rows = (supa.table('agent_profiles_v3')
+            .select('email, full_name, brokerage, phone, role, assigned_zip, '
+                    'network_approved, license_state, license_status')
+            .ilike('email', email).execute()).data or []
+    return {'profiles': rows}
+
+
+@router.get('/ledger')
+async def ledger_peek(limit: int = 30,
+                      actor: Optional[str] = None,
+                      need_id: Optional[str] = None,
+                      authorization: Optional[str] = Header(None),
+                      x_admin_key: Optional[str] = Header(None)):
+    """Dark-phase observation window into the credibility ledger."""
+    _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    q = (supa.table('network_ledger_v3').select('*')
+         .order('created_at', desc=True).limit(min(limit, 200)))
+    if actor:
+        q = q.eq('actor', actor)
+    if need_id:
+        q = q.eq('need_id', need_id)
+    rows = q.execute().data or []
+    return {'events': rows, 'count': len(rows)}
+
+
 @router.post('/needs')
 async def create_need(body: NeedIn,
                       authorization: Optional[str] = Header(None),
                       x_admin_key: Optional[str] = Header(None)):
     who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+
+    # Attestation is the accountability moment (dossier §3) — not optional.
+    if not body.attestation:
+        raise HTTPException(422, 'attestation required: you must confirm this '
+                                 'search represents a specific, real client')
+
+    # Two confirmed no-real-buyer flags terminate the seat (Contract 3).
+    try:
+        flags = (supa.table('network_ledger_v3').select('id')
+                 .eq('event_type', 'flag_confirmed').eq('counterparty', who)
+                 .limit(2).execute()).data or []
+        if len(flags) >= 2:
+            raise _hidden()
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    # Cap: 5 active needs per seat — scarcity keeps specs honest.
+    try:
+        active = (supa.table('buyer_needs_v3').select('id')
+                  .eq('created_by', who).eq('status', 'active')
+                  .limit(6).execute()).data or []
+        if len(active) >= 5:
+            raise HTTPException(422, 'active search limit reached (5) — '
+                                     'close or withdraw one first')
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     row = body.model_dump(exclude_none=True)
     row['created_by'] = who
+    if not row.get('expires_at'):
+        from datetime import timedelta
+        row['expires_at'] = (datetime.now(timezone.utc)
+                             + timedelta(days=60)).isoformat()
     try:
         res = supa.table('buyer_needs_v3').insert(row).execute()
     except Exception as exc:
@@ -556,6 +851,13 @@ async def create_need(body: NeedIn,
             raise HTTPException(503, 'schema 034 not applied')
         raise
     need = (res.data or [{}])[0]
+    criteria_keys = [k for k in row if k not in
+                     ('created_by', 'client_ref', 'attestation', 'zips',
+                      'soft_notes', 'expires_at')]
+    _ledger(supa, who, 'buyer_seat', 'need_posted', need_id=need.get('id'),
+            payload={'zips': body.zips, 'specificity': len(criteria_keys),
+                     'criteria_keys': criteria_keys,
+                     'attestation': body.attestation})
     return {'need': need, 'zip_context': _zip_context(supa, body.zips)}
 
 
@@ -563,9 +865,13 @@ async def create_need(body: NeedIn,
 async def list_needs(status: Optional[str] = None,
                      authorization: Optional[str] = Header(None),
                      x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
-    q = supa.table('buyer_needs_v3').select('*').order('created_at', desc=True)
+    # A buyer seat's registry is ITS OWN briefs, nobody else's — even
+    # operators see only their own here (supply-side visibility lives
+    # on the demand tab, buyer-side privacy holds everywhere else).
+    q = (supa.table('buyer_needs_v3').select('*')
+         .eq('created_by', who).order('created_at', desc=True))
     if status:
         q = q.eq('status', status)
     try:
@@ -574,18 +880,248 @@ async def list_needs(status: Optional[str] = None,
         if _table_missing(exc):
             raise HTTPException(503, 'schema 034 not applied')
         raise
+
+    # Lazy expiry: 60 days, then the need dies quietly (dossier §3).
+    now = datetime.now(timezone.utc).isoformat()
+    for r in rows:
+        if r.get('status') == 'active' and r.get('expires_at') \
+                and r['expires_at'] < now:
+            try:
+                supa.table('buyer_needs_v3').update(
+                    {'status': 'expired'}).eq('id', r['id']).execute()
+                r['status'] = 'expired'
+                _ledger(supa, 'system', 'system', 'need_expired',
+                        need_id=r['id'])
+            except Exception:
+                pass
+
+    # Status ladder from the ledger: pursuits + open connections per need.
+    try:
+        ids = [r['id'] for r in rows]
+        if ids:
+            ev = (supa.table('network_ledger_v3')
+                  .select('need_id, event_type, actor, zip_code, created_at')
+                  .in_('need_id', ids)
+                  .in_('event_type', ['ping_pursued', 'connection_opened'])
+                  .order('created_at', desc=True).limit(500).execute()
+                  ).data or []
+            by_need: dict = {}
+            for e in ev:
+                d = by_need.setdefault(e['need_id'],
+                                       {'pursuing': set(), 'connections': []})
+                if e['event_type'] == 'ping_pursued':
+                    d['pursuing'].add(e['actor'])
+                else:
+                    d['connections'].append({'agent': e['actor'],
+                                             'zip': e.get('zip_code'),
+                                             'opened_at': e.get('created_at')})
+            agents = sorted({c['agent'] for d in by_need.values()
+                             for c in d['connections']})
+            cards = {}
+            if agents:
+                for pr in ((supa.table('agent_profiles_v3')
+                            .select('email, full_name, brokerage, phone')
+                            .in_('email', agents).execute()).data or []):
+                    cards[(pr.get('email') or '').lower()] = pr
+                for d in by_need.values():
+                    for c in d['connections']:
+                        c.update({k: v for k, v in
+                                  (cards.get(c['agent'], {}) or {}).items()
+                                  if v and k != 'email'})
+            for r in rows:
+                d = by_need.get(r['id'])
+                r['pursuit_count'] = len(d['pursuing']) if d else 0
+                r['connections'] = d['connections'] if d else []
+    except Exception:
+        log.exception('needs status-ladder enrichment failed')
+
     return {'needs': rows, 'count': len(rows)}
+
+
+@router.get('/demand/{zip_code}')
+async def demand_for_zip(zip_code: str,
+                         authorization: Optional[str] = Header(None),
+                         x_admin_key: Optional[str] = Header(None)):
+    """
+    SUPPLY-SIDE view: active briefs touching this ZIP, each with the
+    latest run's matches IN THIS ZIP at full detail (addresses, pins) —
+    the territory owner's attack list. Buyer identity and client_ref are
+    withheld; the demand spec travels, the buyer stays blind too.
+    """
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    # Supply side is per-territory: you see demand for ZIPs you own,
+    # nothing else. Operators/admin see all (dark phase + support).
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
+    needs = (supa.table('buyer_needs_v3').select('*')
+             .contains('zips', [zip_code])
+             .eq('status', 'active')
+             .order('created_at', desc=True).limit(50).execute()).data or []
+    out = []
+    for n in needs:
+        runs = (supa.table('need_match_runs_v3')
+                .select('id, run_at, matched')
+                .eq('need_id', n['id']).order('run_at', desc=True)
+                .limit(1).execute()).data or []
+        matches = []
+        tiers = {'A': 0, 'B': 0, 'C': 0}
+        if runs:
+            rows = (supa.table('need_matches_v3').select('*')
+                    .eq('run_id', runs[0]['id']).eq('zip_code', zip_code)
+                    .order('tier').order('score', desc=True)
+                    .limit(100).execute()).data or []
+            for m in rows:
+                tiers[m.get('tier') or 'C'] = tiers.get(m.get('tier') or 'C', 0) + 1
+            matches = rows
+        criteria = {k: n.get(k) for k in (
+            'zips', 'streets', 'price_min', 'price_max', 'prop_types',
+            'beds_min', 'baths_min', 'year_built_min', 'year_built_max',
+            'sqft_min', 'acres_min', 'acres_max', 'feature_filters',
+            'soft_notes') if n.get(k) is not None}
+        out.append({
+            'need_id': n['id'],
+            'posted_by': n.get('created_by'),
+            'posted_at': n.get('created_at'),
+            'criteria': criteria,
+            'last_run_at': runs[0]['run_at'] if runs else None,
+            'tiers_in_zip': tiers,
+            'matches_in_zip': matches,
+        })
+    who = _gate(authorization, x_admin_key)
+    if out:
+        _ledger(supa, who, 'territory_owner', 'demand_viewed',
+                zip_code=zip_code,
+                payload={'need_ids': [b['need_id'] for b in out]})
+    return {'zip_code': zip_code, 'briefs': out, 'count': len(out)}
+
+
+@router.post('/demand/{zip_code}/{need_id}/respond')
+async def respond_to_demand(zip_code: str, need_id: str, action: str,
+                            authorization: Optional[str] = Header(None),
+                            x_admin_key: Optional[str] = Header(None)):
+    """
+    Territory owner -> platform: pursue / ignore / decline (dossier §4).
+    Feeds the ledger on both sides. 'pursue' is the pre-connection
+    commitment; the connection-open handshake is a later phase.
+    """
+    who = _gate(authorization, x_admin_key)
+    if action not in ('pursue', 'ignore', 'decline'):
+        raise HTTPException(422, "action must be pursue | ignore | decline")
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
+    rows = (supa.table('buyer_needs_v3').select('id, created_by')
+            .eq('id', need_id).limit(1).execute()).data or []
+    if not rows:
+        raise _hidden()
+    _ledger(supa, who, 'territory_owner', f'ping_{action}d'
+            if action != 'pursue' else 'ping_pursued',
+            need_id=need_id, zip_code=zip_code,
+            counterparty=rows[0].get('created_by'))
+    return {'ok': True, 'action': action}
+
+
+@router.post('/demand/{zip_code}/{need_id}/connect')
+async def open_connection(zip_code: str, need_id: str,
+                          authorization: Optional[str] = Header(None),
+                          x_admin_key: Optional[str] = Header(None)):
+    """
+    Territory owner opens the connection: their identity crosses to the
+    buyer seat (the contact handoff — Phase 2's payoff of Pursue). The
+    buyer sees who and which territory; everything before this stayed
+    blind.
+    """
+    who = _gate(authorization, x_admin_key)
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
+    rows = (supa.table('buyer_needs_v3').select('id, created_by')
+            .eq('id', need_id).limit(1).execute()).data or []
+    if not rows:
+        raise _hidden()
+    poster = rows[0].get('created_by')
+    _ledger(supa, who, 'territory_owner', 'connection_opened',
+            need_id=need_id, zip_code=zip_code, counterparty=poster)
+
+    # Contact card: the territory owner's real profile crosses over.
+    card = {'email': who, 'zip': zip_code}
+    try:
+        prof = (supa.table('agent_profiles_v3')
+                .select('full_name, brokerage, phone')
+                .ilike('email', who).limit(1).execute()).data or []
+        if prof:
+            card.update({k: v for k, v in prof[0].items() if v})
+    except Exception:
+        pass
+
+    # Notify the buyer's agent — the ladder shouldn't require polling.
+    try:
+        from backend.lib.email import send_email, email_configured
+        if poster and '@' in poster and email_configured():
+            name = card.get('full_name') or who
+            brok = card.get('brokerage') or ''
+            send_email(
+                to=poster,
+                subject="An agent opened a connection on your buyer search",
+                html_body=(f"<p>{name}{' of ' + brok if brok else ''} — the "
+                      f"territory agent for {zip_code} — has a fit for your "
+                      f"buyer search and opened a connection.</p>"
+                      f"<p>Reach them directly: {card.get('email')}"
+                      f"{' · ' + card['phone'] if card.get('phone') else ''}</p>"
+                      f"<p>— SellerSignal Buyer Network</p>"))
+    except Exception:
+        log.exception('connection email failed')
+    return {'ok': True, 'connection': card}
+
+
+@router.post('/demand/{zip_code}/{need_id}/rate')
+async def rate_connection(zip_code: str, need_id: str,
+                          rating: int, client_was_real: bool = True,
+                          authorization: Optional[str] = Header(None),
+                          x_admin_key: Optional[str] = Header(None)):
+    """
+    Post-connection peer rating (Contract 3). A not-real-client report
+    also raises an integrity flag; two CONFIRMED flags terminate the
+    seat. Ratings feed standing; they never gate.
+    """
+    who = _gate(authorization, x_admin_key)
+    if not 1 <= rating <= 5:
+        raise HTTPException(422, 'rating must be 1-5')
+    supa = get_supabase_client()
+    ctx = _caller_context(supa, who)
+    if not ctx['is_operator'] and zip_code not in ctx['territory_zips']:
+        raise _hidden()
+    rows = (supa.table('buyer_needs_v3').select('id, created_by')
+            .eq('id', need_id).limit(1).execute()).data or []
+    if not rows:
+        raise _hidden()
+    poster = rows[0].get('created_by')
+    _ledger(supa, who, 'territory_owner', 'connection_rated',
+            need_id=need_id, zip_code=zip_code, counterparty=poster,
+            payload={'rating': rating, 'client_was_real': client_was_real})
+    if not client_was_real:
+        _ledger(supa, who, 'territory_owner', 'flag_raised',
+                need_id=need_id, zip_code=zip_code, counterparty=poster,
+                payload={'reason': 'no_real_buyer'})
+    return {'ok': True}
 
 
 @router.get('/needs/{need_id}')
 async def get_need(need_id: str,
                    authorization: Optional[str] = Header(None),
                    x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
     rows = (supa.table('buyer_needs_v3').select('*')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
+        raise _hidden()
+    ctx = _caller_context(supa, who)
+    if rows[0].get('created_by') != who and not ctx['is_operator']:
         raise _hidden()
     runs = (supa.table('need_match_runs_v3')
             .select('id, run_at, candidates, matched, report')
@@ -599,8 +1135,15 @@ async def get_need(need_id: str,
 async def patch_need(need_id: str, body: NeedPatch,
                      authorization: Optional[str] = Header(None),
                      x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+    owner_rows = (supa.table('buyer_needs_v3').select('created_by')
+                  .eq('id', need_id).limit(1).execute()).data or []
+    if not owner_rows:
+        raise _hidden()
+    ctx = _caller_context(supa, who)
+    if owner_rows[0].get('created_by') != who and not ctx['is_operator']:
+        raise _hidden()
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(422, 'no fields to update')
@@ -609,6 +1152,11 @@ async def patch_need(need_id: str, body: NeedPatch,
            .eq('id', need_id).execute())
     if not res.data:
         raise _hidden()
+    who2 = who
+    event = 'need_withdrawn' if updates.get('status') in ('fulfilled', 'paused') \
+        else 'need_updated'
+    _ledger(supa, who2, 'buyer_seat', event, need_id=need_id,
+            payload={'fields': sorted(k for k in updates if k != 'updated_at')})
     return {'need': res.data[0]}
 
 
@@ -616,13 +1164,16 @@ async def patch_need(need_id: str, body: NeedPatch,
 async def run_match(need_id: str,
                     authorization: Optional[str] = Header(None),
                     x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
     rows = (supa.table('buyer_needs_v3').select('*')
             .eq('id', need_id).limit(1).execute()).data or []
     if not rows:
         raise _hidden()
     need = rows[0]
+    ctx = _caller_context(supa, who)
+    if need.get('created_by') != who and not ctx['is_operator']:
+        raise _hidden()
 
     result = _run_match(supa, need)
     matches = result['matches']
@@ -646,11 +1197,31 @@ async def run_match(need_id: str,
         for i in range(0, len(payload), 500):
             supa.table('need_matches_v3').insert(payload[i:i + 500]).execute()
 
+    tiers = result['report'].get('tiers', {})
+    signals = (tiers.get('A', 0) or 0) + (tiers.get('B', 0) or 0)
+    claimed = _claimed_zips(supa, need.get('zips') or [])
+    buyer_view = {
+        'matched': len(matches),
+        'signal_band': _signal_band(signals),
+        'zips': {
+            z: {
+                'matched': st.get('matched', 0),
+                'territory': 'claimed' if z in claimed else 'open',
+            }
+            for z, st in result['report'].get('per_zip', {}).items()
+        },
+    }
+    _ledger(supa, 'system', 'system', 'match_run', need_id=need_id,
+            payload={'matched': len(matches), 'tiers': tiers,
+                     'zips': list((result['report'].get('per_zip') or {}).keys()),
+                     'claimed_zips_pinged': sorted(claimed)})
+
     return {
         'run_id': run['id'],
         'candidates': result['candidates'],
         'matched': len(matches),
         'stored': len(to_store),
+        'buyer_view': buyer_view,
         'report': result['report'],
     }
 
@@ -661,8 +1232,13 @@ async def match_report(need_id: str,
                        tier: Optional[str] = None,
                        authorization: Optional[str] = Header(None),
                        x_admin_key: Optional[str] = Header(None)):
-    _gate(authorization, x_admin_key)
+    who = _gate(authorization, x_admin_key)
     supa = get_supabase_client()
+    own = (supa.table('buyer_needs_v3').select('created_by')
+           .eq('id', need_id).limit(1).execute()).data or []
+    ctx = _caller_context(supa, who)
+    if not own or (own[0].get('created_by') != who and not ctx['is_operator']):
+        raise _hidden()
     runs = (supa.table('need_match_runs_v3')
             .select('id, run_at, candidates, matched, report')
             .eq('need_id', need_id).order('run_at', desc=True)

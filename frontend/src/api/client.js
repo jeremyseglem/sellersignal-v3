@@ -94,6 +94,16 @@ export const network = {
   patchNeed:  (id, body) => authedRequest(`/marketplace/needs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   runMatch:   (id)       => authedRequest(`/marketplace/needs/${id}/match`, { method: 'POST' }),
   report:     (id, q='') => authedRequest(`/marketplace/needs/${id}/report${q}`),
+  demand:     (zip)      => authedRequest(`/marketplace/demand/${zip}`),
+  respond:    (zip, needId, action) => authedRequest(
+    `/marketplace/demand/${zip}/${needId}/respond?action=${action}`, { method: 'POST' }),
+  connect:    (zip, needId) => authedRequest(
+    `/marketplace/demand/${zip}/${needId}/connect`, { method: 'POST' }),
+  join:       (body)     => authedRequest('/marketplace/join', { method: 'POST', body: JSON.stringify(body) }),
+  joinStatus: ()         => authedRequest('/marketplace/join/status'),
+  rate:       (zip, needId, rating, real) => authedRequest(
+    `/marketplace/demand/${zip}/${needId}/rate?rating=${rating}&client_was_real=${real}`,
+    { method: 'POST' }),
 };
 
 // ── Coverage ───────────────────────────────────────────────────────
