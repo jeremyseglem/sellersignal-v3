@@ -105,6 +105,9 @@ _MARKET_STATE = {
     'TX_TRAVIS':    'TX',   # was missing — same 'Phoenix, WA' bug class
     'MT_GALLATIN':  'MT',
     'MT_PARK':     'MT',
+    'MT_CARBON': 'MT',
+    'MT_LAKE': 'MT',
+    'MT_RAVALLI': 'MT',
     'MT_FLATHEAD':  'MT',
     'FL_COLLIER':    'FL',
     'FL_PALM_BEACH': 'FL',

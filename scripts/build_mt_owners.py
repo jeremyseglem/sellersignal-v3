@@ -68,6 +68,12 @@ ZIP_CONFIG = {
     "59922": ("Lakeside",         [7],     {"LAKESIDE"}),
     "59901": ("Kalispell",        [7],     {"KALISPELL"}),
     "59912": ("Columbia Falls",   [7],     {"COLUMBIA FALLS"}),
+    # New MT counties (2026-07-31) — trophy resort/valley towns
+    "59047": ("Livingston",       [49],    {"LIVINGSTON", "PARADISE VALLEY", "PRAY", "EMIGRANT"}),  # Park / Paradise Valley
+    "59840": ("Hamilton",         [13],    {"HAMILTON", "CORVALLIS", "VICTOR"}),   # Ravalli / Bitterroot
+    "59860": ("Polson",           [15],    {"POLSON", "BIGFORK", "ROLLINS"}),      # Lake / Flathead Lake S
+    "59068": ("Red Lodge",        [10],    {"RED LODGE", "ROBERTS"}),              # Carbon
+    "59729": ("Ennis",            [25],    {"ENNIS", "MCALLISTER", "VIRGINIA CITY"}),  # Madison
     # Paradise Valley / Park county (49) (2026-07-31)
     "59047": ("Livingston",       [49],    {"LIVINGSTON"}),
     "59027": ("Emigrant",         [49],    {"EMIGRANT", "PRAY"}),
