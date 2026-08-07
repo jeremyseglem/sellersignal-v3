@@ -700,6 +700,14 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (CA deep hunt — evidenced conclusion: public owner mostly redacted, Los Gatos is the exception)
+
+Hunted ~15 CA counties for free public owner data through 3 channels (Esri directory search, ArcGIS Hub content index, direct county GIS servers with correct hostnames). Evidenced conclusion:
+- **CA public GIS overwhelmingly gates/redacts owner names.** Concrete proof: Sacramento County (mapservices.gis.saccounty.net/.../PARCELS) publishes a NAME field but redacts every value to the literal "OWNER OF RECORD". San Mateo (Atherton), Marin (Belvedere), LA (Beverly Hills), Santa Barbara (Montecito), Napa, Sonoma, Monterey, Riverside, Contra Costa, Placer, El Dorado, Ventura — none exposed real owner names via any channel.
+- **The Los Gatos / Santa Clara West Valley layer (services3.arcgis.com/JAU7IM34hqT9y9ew/.../Parcels/0) is a genuine EXCEPTION** — real ASSESSEE names. Likely a municipal/JPA arrangement, not a countywide feed. It remains live (CA_SANTACLARA, 95030) as the CA proof-of-concept.
+- **Implication:** CA trophy markets (Atherton, Beverly Hills, Belvedere, Montecito, Palm Springs, wine country) require a LICENSED owner source (Regrid/Loveland, county assessor bulk purchase, or title data), not free public GIS. This is a procurement decision. Individual CA municipalities that self-host (like West Valley) can still be found opportunistically but are rare.
+- Method note for future: to test any CA layer, sample the owner field VALUE — many publish the field but redact the value to a placeholder ("OWNER OF RECORD", "NOT AVAILABLE"). Field presence != data presence.
+
 ### 2026-07-31 (CALIFORNIA UNLOCKED — Jeremy was right, CA is winnable. Fleet 267)
 
 Prior "CA is owner-gated" conclusion was WRONG. **CA counties DO publish owner data — via the ASSESSEE field — on their own ArcGIS orgs, not the Esri-hosted directory I'd been searching.** That's why AGOL search returned only redacted/regional layers (HomeOwnersExemption flags, SCAG regional) while the real assessor "Parcels" layers carry ASSESSEE + situs + value + transfer date.
