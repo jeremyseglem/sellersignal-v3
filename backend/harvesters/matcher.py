@@ -250,7 +250,7 @@ def _load_owners_db(
             final_pt = raw_pt
         elif market in {'WA_SNOHOMISH', 'AZ_MARICOPA',
                         'MA_MIDDLESEX', 'MA_NORFOLK',
-                        'MA_ESSEX', 'MA_PLYMOUTH', 'MA_DUKES', 'TN_DAVIDSON',
+                        'MA_ESSEX', 'MA_PLYMOUTH', 'MA_DUKES', 'MA_NANTUCKET', 'TN_DAVIDSON',
                         'CO_PITKIN', 'CO_DENVER', 'CO_BOULDER',
                         'CO_ARAPAHOE', 'NC_WAKE', 'NC_BUNCOMBE', 'WI_MILWAUKEE', 'MN_HENNEPIN', 'FL_COLLIER'}:
             final_pt = 'R'

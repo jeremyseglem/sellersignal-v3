@@ -132,6 +132,9 @@ ZIP_CONFIG = {
     "01985": ("WEST NEWBURY","West Newbury",{"WEST NEWBURY"},            "MA_ESSEX"),
     "01951": ("NEWBURY",    "Newbury",   {"NEWBURY", "BYFIELD"},         "MA_ESSEX"),
     "02739": ("MATTAPOISETT","Mattapoisett",{"MATTAPOISETT"},            "MA_PLYMOUTH"),
+    # Nantucket (2026-07-31) — highest price-point island in the US. Own county.
+    "02554": ("NANTUCKET",  "Nantucket", {"NANTUCKET"},                  "MA_NANTUCKET"),
+    "02564": ("NANTUCKET",  "Siasconset",{"NANTUCKET", "SIASCONSET"},    "MA_NANTUCKET"),
 }
 
 FIELDS = ("PROP_ID,TOWN_ID,OWNER1,SITE_ADDR,CITY,ZIP,OWN_STATE,OWN_CITY,"

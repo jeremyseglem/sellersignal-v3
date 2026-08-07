@@ -2175,6 +2175,7 @@ MA_ZIP_TO_CITY = {
     "01985": "West Newbury",
     "01951": "Newbury",
     "02739": "Mattapoisett",
+    "02554": "Nantucket", "02564": "Siasconset",
 }
 MA_ZIP_MARKET = {
     "02481": "MA_NORFOLK",
@@ -2238,6 +2239,7 @@ MA_ZIP_MARKET = {
     "01985": "MA_ESSEX",
     "01951": "MA_ESSEX",
     "02739": "MA_PLYMOUTH",
+    "02554": "MA_NANTUCKET", "02564": "MA_NANTUCKET",
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk",
