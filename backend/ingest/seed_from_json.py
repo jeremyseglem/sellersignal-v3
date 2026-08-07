@@ -125,6 +125,7 @@ _MARKET_STATE = {
     'NC_BUNCOMBE': 'NC',
     'WI_MILWAUKEE': 'WI',
     'MN_HENNEPIN': 'MN',
+    'CA_SANTACLARA': 'CA',
     'NC_WAKE':      'NC',
 }
 
