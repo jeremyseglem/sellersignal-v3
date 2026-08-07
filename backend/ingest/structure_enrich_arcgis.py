@@ -220,7 +220,8 @@ STRUCT_CONFIGS: dict[str, dict] = {
         "prefer_max": "sqft",
     },
     "MA_MIDDLESEX": _MA_CONFIG,
-    "MA_DUKES": _MA_CONFIG,   # Martha's Vineyard — same MassGIS statewide layer
+    "MA_DUKES": _MA_CONFIG,
+    "MA_NANTUCKET": _MA_CONFIG,   # Martha's Vineyard — same MassGIS statewide layer
     "MA_NORFOLK": _MA_CONFIG,
     "MA_ESSEX": _MA_CONFIG,
     "MA_PLYMOUTH": _MA_CONFIG,

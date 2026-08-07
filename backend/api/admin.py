@@ -2243,7 +2243,8 @@ MA_ZIP_MARKET = {
 }
 # seed filename county slug per market_key (ma-middlesex-… / ma-norfolk-…)
 MA_MARKET_SLUG = {"MA_MIDDLESEX": "middlesex", "MA_NORFOLK": "norfolk",
-                  "MA_ESSEX": "essex", "MA_PLYMOUTH": "plymouth", "MA_DUKES": "dukes"}
+                  "MA_ESSEX": "essex", "MA_PLYMOUTH": "plymouth", "MA_DUKES": "dukes",
+                  "MA_NANTUCKET": "nantucket"}
 
 # Nashville / Davidson County TN wave 1 (2026-07-30) — market_key TN_DAVIDSON,
 # state TN. Seeds: data/seeds/tn-davidson-{zip}-owners.json (built by
