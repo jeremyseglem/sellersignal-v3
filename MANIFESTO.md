@@ -700,6 +700,16 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (CALIFORNIA UNLOCKED — Jeremy was right, CA is winnable. Fleet 267)
+
+Prior "CA is owner-gated" conclusion was WRONG. **CA counties DO publish owner data — via the ASSESSEE field — on their own ArcGIS orgs, not the Esri-hosted directory I'd been searching.** That's why AGOL search returned only redacted/regional layers (HomeOwnersExemption flags, SCAG regional) while the real assessor "Parcels" layers carry ASSESSEE + situs + value + transfer date.
+
+**Los Gatos CA live (market_key CA_SANTACLARA, first CA):** Santa Clara West Valley layer (services3.arcgis.com/JAU7IM34hqT9y9ew/.../Parcels/0). ASSESSEE (owner) + SiteAddressFull (situs) + SITUS_ZIP_CODE (native) + NetAssessedValue + LTST_TRANSFER_DT (YYYYMMDD, tenure 100%) + USE_CODE/LandUseCode (prop_type) + MAILSTATE (absentee) + polygon geometry. 95030: 1,465 parcels, addr 100%, tenure 100%, **trust/llc 58%** (Silicon Valley wealth in entities), R/K 100%. build_ca_owners.py. This West Valley layer also covers Monte Sereno + Saratoga (95070 partial) + Campbell.
+
+**KEY LEARNING — the CA lane is open:** to get the elite CA trophies, dig each county's OWN ArcGIS org / assessor server for the "Parcels" layer with an ASSESSEE field (NOT the AGOL generic search, which returns redacted). Confirmed gated on generic search but likely winnable via direct org: San Mateo (Atherton 94027 — #1 US ZIP), Marin (Belvedere/Ross/Tiburon), LA (Beverly Hills 90210/Bel Air/Malibu), Santa Barbara (Montecito 93108), full Santa Clara (Los Altos Hills/Palo Alto/Saratoga). Each is a direct-org dig but the ASSESSEE pattern means the data is there. THIS IS THE HIGHEST-VALUE LANE OPEN.
+
+Also verify: CA transfer-date tenure is genuine (100% in Los Gatos), so CA is full-signal (not tenure-exempt) — better than WI/MT.
+
 ### 2026-07-31 (high-value-first: Nantucket — top US price-point, cheap via MassGIS. Fleet 266)
 
 Jeremy: "look at high value price points first." Right prioritization — banked the single highest-median market in the US that rides an existing adapter. **Nantucket (MA_NANTUCKET):** 02554 Nantucket + 02564 Siasconset. MassGIS full signal, addr 100%, tenure 98-99%. Own MA county (like Dukes). NOTE new-MA-county checklist: besides state map + matcher + MA_ZIP_TO_CITY/MARKET, must add to MA_MARKET_SLUG (admin.py ~2246) AND structure_enrich_arcgis _MA markets — missing MA_MARKET_SLUG caused a register KeyError.
