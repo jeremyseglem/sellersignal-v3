@@ -700,6 +700,16 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (Minnesota unlocked — best new-state layer yet, full signal set. Fleet 264)
+
+MN HennCarv (Hennepin+Carver) parcel layer is the strongest new-state unlock: owner + situs (componentized: ANUMBER+ST_* assembled) + native ZIP + EMV_TOTAL value + SALE_DATE (real tenure 77-91%!) + owner-mailing (absentee) + polygon geometry. Unlike WI/MT (tenure-exempt), MN has every bucket. build_mn_owners.py filters by ZIP.
+- **Launched (market_key MN_HENNEPIN, 8 ZIPs):** 55391 Wayzata/Orono (Lake Minnetonka N), 55356 Long Lake, 55364 Mound/Minnetrista, 55331 Excelsior/Deephaven/Shorewood, 55424 Edina Country Club (tenure 91%!), 55410 Linden Hills/Lake Harriet, 55405 Kenwood/Lowry Hill, 55416 Cedar Lake. addr 100%, trust/llc 9-18%.
+- Correction to earlier note: MN was NOT missing situs address — it's componentized (ANUMBER + ST_NAME + ST_POS_TYP). Lesson: check for componentized address fields before writing a layer off.
+- **MN now a cheap lane:** more Twin Cities trophy is pure config — Wayzata proper 55391, more Edina (55435/55436), Minnetonka 55345, Plymouth 55447, Eden Prairie, Carver county (Chanhassen/Chaska).
+Layer: services.arcgis.com/8df8p0NlLFEShl0r/.../HennCarv_Parcels/FeatureServer/0
+
+**Session statewide-lane tally (after Jeremy's "you're not looking" push):** Wisconsin (22 territories, tenure-exempt), Montana (16, 6 counties, tenure-exempt), Minnesota (8, full-signal). Statewide clean layers are common — the cheap lane is deep. Still unprobed properly: Maine, upstate/Westchester NY, Vermont.
+
 ### 2026-07-31 (MT Flathead Lake cluster — cheap, reused cadastral)
 
 Added Flathead Lake trophy via the existing MT cadastral builder (build_mt_owners.py) + MT_FLATHEAD market — pure config. Bigfork 59911, Lakeside 59922, Kalispell 59901, Columbia Falls 59912. Strong absentee (Flathead Lake second homes: Lakeside 51%, Columbia Falls 50%, Bigfork 39%) + trust/llc. addr 99-100%. Montana Cadastral Framework (services.arcgis.com/qnjIrwR8z5Izc0ij/.../Montana_Cadastral_Framework/1, 921k parcels, owner+situs+value+owner-mailing, tenure-exempt) is the statewide source. MT now spans 6 counties: Gallatin, Flathead (5), Park (Livingston/Emigrant/Gardiner-Paradise Valley), Ravalli (Hamilton/Bitterroot), Lake (Polson), Carbon (Red Lodge). Strong absentee (Red Lodge 52%, Polson 41%). Ennis (Madison) rejected at 62% addr. NOTE: parallel session also edits MT maps — merge overwrote map lines once; re-added. More MT open: Missoula, Helena, more Flathead Lake.
