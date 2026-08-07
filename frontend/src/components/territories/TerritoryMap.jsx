@@ -102,7 +102,7 @@ const POLY_HOVER_BOOST = {
 // polygons, so a metro view stays tight as long as its ZIPs are co-located.
 // If a future market adds a far-flung same-state cluster (e.g. Spokane), switch
 // this to key off market_key / county instead.
-const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix', CT: 'Greenwich', FL: 'Palm Beach', MA: 'Boston', TN: 'Nashville', NC: 'Raleigh', WI: 'Milwaukee' };
+const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix', CT: 'Greenwich', FL: 'Palm Beach', MA: 'Boston', TN: 'Nashville', NC: 'Raleigh', WI: 'Milwaukee', MN: 'Minneapolis' };
 // Texas spans two far-flung metros (Dallas + Austin, ~180 mi apart), so TX
 // groups by market_key instead of state — the failure mode the original
 // comment predicted ("if a future market adds a far-flung same-state
@@ -113,7 +113,7 @@ const MARKET_METRO_LABELS = { TX_DALLAS: 'Dallas', TX_TRAVIS: 'Austin', TX_COLLI
   // Colorado is far-flung too (Aspen vs future Boulder ~160 mi).
   CO_PITKIN: 'Aspen', CO_DENVER: 'Denver', CO_BOULDER: 'Boulder', CO_ARAPAHOE: 'Denver' };
 // Human names for the state-level pills above the metro tabs.
-const STATE_NAMES = { WA: 'Washington', AZ: 'Arizona', TX: 'Texas', CT: 'Connecticut', FL: 'Florida', MT: 'Montana', MA: 'Massachusetts', TN: 'Tennessee', CO: 'Colorado', NC: 'North Carolina', WI: 'Wisconsin' };
+const STATE_NAMES = { WA: 'Washington', AZ: 'Arizona', TX: 'Texas', CT: 'Connecticut', FL: 'Florida', MT: 'Montana', MA: 'Massachusetts', TN: 'Tennessee', CO: 'Colorado', NC: 'North Carolina', WI: 'Wisconsin', MN: 'Minnesota' };
 
 function metroOf(z) {
   // The LABEL is the metro's identity — markets that share a metro label

@@ -123,6 +123,7 @@ _MARKET_STATE = {
     'CO_ARAPAHOE':  'CO',
     'NC_BUNCOMBE': 'NC',
     'WI_MILWAUKEE': 'WI',
+    'MN_HENNEPIN': 'MN',
     'NC_WAKE':      'NC',
 }
 
