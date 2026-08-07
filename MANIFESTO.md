@@ -700,6 +700,12 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (high-value-first: Nantucket — top US price-point, cheap via MassGIS. Fleet 266)
+
+Jeremy: "look at high value price points first." Right prioritization — banked the single highest-median market in the US that rides an existing adapter. **Nantucket (MA_NANTUCKET):** 02554 Nantucket + 02564 Siasconset. MassGIS full signal, addr 100%, tenure 98-99%. Own MA county (like Dukes). NOTE new-MA-county checklist: besides state map + matcher + MA_ZIP_TO_CITY/MARKET, must add to MA_MARKET_SLUG (admin.py ~2246) AND structure_enrich_arcgis _MA markets — missing MA_MARKET_SLUG caused a register KeyError.
+
+**Elite-market access findings:** CA top counties CONFIRMED owner-gated (LA/Beverly Hills-Malibu, San Mateo/Atherton, Orange/Newport — no owner layer). CO ultra-resorts (Eagle/Vail, San Miguel/Telluride, Gunnison/Crested Butte, Pitkin/Snowmass) not on AGOL — direct county-server dig needed (like Summit CO). High-value cheap wins still open: more MassGIS ultra-trophy (Weston/Dover have; Cape Cod/Barnstable new county), FL trophy via NAL (Manalapan/Gulf Stream/Jupiter Island — SFH, no condo geometry issue), Palm Beach island neighbors.
+
 ### 2026-07-31 (Minnesota unlocked — best new-state layer yet, full signal set. Fleet 264)
 
 MN HennCarv (Hennepin+Carver) parcel layer is the strongest new-state unlock: owner + situs (componentized: ANUMBER+ST_* assembled) + native ZIP + EMV_TOTAL value + SALE_DATE (real tenure 77-91%!) + owner-mailing (absentee) + polygon geometry. Unlike WI/MT (tenure-exempt), MN has every bucket. build_mn_owners.py filters by ZIP.
