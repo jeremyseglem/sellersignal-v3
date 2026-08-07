@@ -702,7 +702,7 @@ Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no
 
 ### 2026-07-31 (MT Flathead Lake cluster — cheap, reused cadastral)
 
-Added Flathead Lake trophy via the existing MT cadastral builder (build_mt_owners.py) + MT_FLATHEAD market — pure config. Bigfork 59911, Lakeside 59922, Kalispell 59901, Columbia Falls 59912. Strong absentee (Flathead Lake second homes: Lakeside 51%, Columbia Falls 50%, Bigfork 39%) + trust/llc. addr 99-100%. Montana Cadastral Framework (services.arcgis.com/qnjIrwR8z5Izc0ij/.../Montana_Cadastral_Framework/1, 921k parcels, owner+situs+value+owner-mailing, tenure-exempt) is the statewide source. More MT trophy still open: Livingston/Paradise Valley (Park county), Red Lodge (Carbon), Hamilton/Bitterroot (Ravalli).
+Added Flathead Lake trophy via the existing MT cadastral builder (build_mt_owners.py) + MT_FLATHEAD market — pure config. Bigfork 59911, Lakeside 59922, Kalispell 59901, Columbia Falls 59912. Strong absentee (Flathead Lake second homes: Lakeside 51%, Columbia Falls 50%, Bigfork 39%) + trust/llc. addr 99-100%. Montana Cadastral Framework (services.arcgis.com/qnjIrwR8z5Izc0ij/.../Montana_Cadastral_Framework/1, 921k parcels, owner+situs+value+owner-mailing, tenure-exempt) is the statewide source. MT now spans 6 counties: Gallatin, Flathead (5), Park (Livingston/Emigrant/Gardiner-Paradise Valley), Ravalli (Hamilton/Bitterroot), Lake (Polson), Carbon (Red Lodge). Strong absentee (Red Lodge 52%, Polson 41%). Ennis (Madison) rejected at 62% addr. NOTE: parallel session also edits MT maps — merge overwrote map lines once; re-added. More MT open: Missoula, Helena, more Flathead Lake.
 
 ### 2026-07-31 (Jeremy was right: more statewide lanes — Wisconsin unlocked, fleet 229)
 
