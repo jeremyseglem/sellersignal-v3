@@ -700,6 +700,14 @@ Cracked Florida as a one-source state (the MassGIS-equivalent play). **scripts/b
 
 Fleet 193 (Collier +5). County-number map for downloads: Collier 21, Broward (no num), Dade 23, Martin 53, Sarasota 68, Orange 58, Monroe 54, Lee 46, Palm Beach 60.
 
+### 2026-07-31 (FL high-end: Vero Beach live + county-PA-direct beats DOR NAL. Fleet 268)
+
+Finishing FL high-end. Crown already live (Palm Beach Island 33480, Naples Port Royal 34102, Gulf Stream, Pelican Bay, Admirals Cove — 13 ZIPs). Added Vero Beach.
+
+**Vero Beach (FL_INDIAN_RIVER, 32963) LIVE** — barrier island (John's Island/Windsor/Orchid). 6,608 parcels, addr 100%, geom 100%, tenure 86%, absentee 27%, R/K 90%. build_ircpa_owners.py.
+
+**KEY DISCOVERY — county Property Appraiser layers beat the DOR NAL for FL:** the DOR NAL SharePoint portal intermittently blocked file listings this session (all year folders returned 200 but 0 files; direct file URLs 404). So built Vero Beach DIRECT from the Indian River County Property Appraiser ArcGIS layer (gisportal.ircgov.com/server3/.../IRCPA/Parcels_MS/0) — OWNER_NAME + SITE_ADDR + AD_ZIP (situs) + CAMA_VALUE + SALE_YEAR/SALE_MONTH (tenure) + polygon geometry, all in ONE layer. Advantages over DOR NAL: (1) geometry inline — no statewide-centroid join; (2) no DOR-portal dependency; (3) per-parcel polygons SIDESTEP the condo-geometry problem that stalled Broward; (4) fuller tenure (86% vs NAL's ~14%). FL is an open-records state so most county PAs publish owner+geometry. **This is now the preferred FL path.** Remaining FL trophies to pursue via county PA layers: Martin (Jupiter Island 33455 — PA didn't surface via AGOL, try direct martin PA server), Lee (Sanibel/Boca Grande/Gasparilla), Monroe (Keys), Sarasota (Bird Key/Casey Key/Longboat), Miami-Dade (Bal Harbour/Fisher Island — condo, but PA polygons may resolve). DOR NAL remains the fallback for counties whose PA gates owner.
+
 ### 2026-07-31 (CA deep hunt — evidenced conclusion: public owner mostly redacted, Los Gatos is the exception)
 
 Hunted ~15 CA counties for free public owner data through 3 channels (Esri directory search, ArcGIS Hub content index, direct county GIS servers with correct hostnames). Evidenced conclusion:
