@@ -2020,6 +2020,7 @@ MT_ZIP_TO_CITY = {
     "59937": "Whitefish",
     "59911": "Bigfork", "59922": "Lakeside", "59901": "Kalispell", "59912": "Columbia Falls",
     "59047": "Livingston", "59027": "Emigrant", "59030": "Gardiner",
+    "59840": "Hamilton", "59860": "Polson", "59068": "Red Lodge",
 }
 MT_ZIP_MARKET = {
     "59715": "MT_GALLATIN",
@@ -2030,6 +2031,7 @@ MT_ZIP_MARKET = {
     "59937": "MT_FLATHEAD",
     "59911": "MT_FLATHEAD", "59922": "MT_FLATHEAD", "59901": "MT_FLATHEAD", "59912": "MT_FLATHEAD",
     "59047": "MT_PARK", "59027": "MT_PARK", "59030": "MT_PARK",
+    "59840": "MT_RAVALLI", "59860": "MT_LAKE", "59068": "MT_CARBON",
 }
 
 COLLIN_ZIP_TO_CITY = {
