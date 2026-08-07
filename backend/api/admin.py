@@ -1143,6 +1143,10 @@ async def register_zip(
         market_key = "FL_COLLIER"
         if city is None:
             city = COLLIER_ZIP_TO_CITY[zip_code]
+    if zip_code in IRC_ZIP_TO_CITY and market_key == "WA_KING":
+        market_key = "FL_INDIAN_RIVER"
+        if city is None:
+            city = IRC_ZIP_TO_CITY[zip_code]
     if zip_code in MA_ZIP_TO_CITY and market_key == "WA_KING":
         market_key = MA_ZIP_MARKET[zip_code]
         if city is None:
@@ -1507,6 +1511,12 @@ async def onboard_zip(
         if state in (None, "WA"):
             state = "FL"
 
+    is_irc = zip_code in IRC_ZIP_TO_CITY
+    if is_irc and market_key == "WA_KING":
+        market_key = "FL_INDIAN_RIVER"
+        if state in (None, "WA"):
+            state = "FL"
+
     # Greater Boston MA — market_key varies by county (Middlesex/Norfolk).
     is_ma = zip_code in MA_ZIP_TO_CITY
     if is_ma and market_key == "WA_KING":
@@ -1567,6 +1577,8 @@ async def onboard_zip(
         seed_prefix = "fl-palmbeach"
     elif is_collier:
         seed_prefix = "fl-collier"
+    elif is_irc:
+        seed_prefix = "fl-indianriver"
     elif is_ma:
         seed_prefix = f"ma-{MA_MARKET_SLUG[market_key]}"
     elif is_tn:
@@ -2104,6 +2116,13 @@ PBC_ZIP_TO_CITY = {
 # KNOWN LIMITATIONS (backfill-pending): tenure sparse (~14% — DOR publishes only
 # recent sales; full history needs county appraiser sales) and NO geometry (NAL is
 # tabular; map pins backfill from the county ArcGIS parcel layer by PARCEL_ID).
+# Indian River County FL (2026-07-31) — market_key FL_INDIAN_RIVER, state FL.
+# Built DIRECT from the IRCPA county ArcGIS layer (owner+geometry in one), bypassing
+# the DOR NAL portal. Full signal incl geometry. Seeds fl-indianriver-{zip}-owners.json.
+IRC_ZIP_TO_CITY = {
+    "32963": "Vero Beach",   # barrier island — John's Island / Windsor / Orchid
+}
+
 COLLIER_ZIP_TO_CITY = {
     "34102": "Naples",   # Old Naples / Port Royal
     "34103": "Naples",   # Moorings / Coquina Sands
@@ -2437,6 +2456,10 @@ async def seed_from_json_zip(zip_code: str = Path(..., pattern=r'^\d{5}$')):
         market_key = "FL_COLLIER"
         city = COLLIER_ZIP_TO_CITY[zip_code]
         seed_path = repo_root / "data" / "seeds" / f"fl-collier-{zip_code}-owners.json"
+    elif zip_code in IRC_ZIP_TO_CITY:
+        market_key = "FL_INDIAN_RIVER"
+        city = IRC_ZIP_TO_CITY[zip_code]
+        seed_path = repo_root / "data" / "seeds" / f"fl-indianriver-{zip_code}-owners.json"
     elif zip_code in MA_ZIP_TO_CITY:
         market_key = MA_ZIP_MARKET[zip_code]
         city = MA_ZIP_TO_CITY[zip_code]
@@ -4449,6 +4472,8 @@ def _load_seed_names(zip_code: str) -> dict:
         candidates.append(f"data/seeds/fl-palmbeach-{zip_code}-owners.json")
     if market_key == 'FL_COLLIER' or zip_code.startswith('341'):
         candidates.append(f"data/seeds/fl-collier-{zip_code}-owners.json")
+    if market_key == 'FL_INDIAN_RIVER' or zip_code == '32963':
+        candidates.append(f"data/seeds/fl-indianriver-{zip_code}-owners.json")
     if market_key == 'MA_MIDDLESEX':
         candidates.append(f"data/seeds/ma-middlesex-{zip_code}-owners.json")
     if market_key == 'MA_NORFOLK':

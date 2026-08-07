@@ -109,6 +109,7 @@ _MARKET_STATE = {
     'MT_LAKE': 'MT',
     'MT_RAVALLI': 'MT',
     'MT_FLATHEAD':  'MT',
+    'FL_INDIAN_RIVER': 'FL',
     'FL_COLLIER':    'FL',
     'FL_PALM_BEACH': 'FL',
     'MA_MIDDLESEX': 'MA',
