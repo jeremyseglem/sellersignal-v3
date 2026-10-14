@@ -108,6 +108,7 @@ _MARKET_STATE = {
     'MT_CARBON': 'MT',
     'MT_LAKE': 'MT',
     'MT_RAVALLI': 'MT',
+    'MT_MISSOULA': 'MT',
     'MT_FLATHEAD':  'MT',
     'FL_INDIAN_RIVER': 'FL',
     'FL_COLLIER':    'FL',

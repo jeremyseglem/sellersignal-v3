@@ -79,6 +79,13 @@ COURT_META = {
     "gallatin": ("Gallatin District Court", "MT_GALLATIN", "16"),
     "madison":  ("Madison District Court", "MT_GALLATIN", "29"),
     "flathead": ("Flathead District Court", "MT_FLATHEAD", "15"),
+    # Missoula/Bitterroot expansion (2026-10-14). County codes follow the MT
+    # alphabetical county list (verified: Flathead=15, Gallatin=16,
+    # Madison=29): Missoula=32, Ravalli=41. If a tenant display name below
+    # doesn't match the portal picker exactly, the run fails loudly at
+    # select_option — fix the string, nothing is written.
+    "missoula": ("Missoula District Court", "MT_MISSOULA", "32"),
+    "ravalli":  ("Ravalli District Court", "MT_RAVALLI", "41"),
 }
 
 

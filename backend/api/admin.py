@@ -2057,6 +2057,9 @@ MT_ZIP_TO_CITY = {
     "59911": "Bigfork", "59922": "Lakeside", "59901": "Kalispell", "59912": "Columbia Falls",
     "59047": "Livingston", "59027": "Emigrant", "59030": "Gardiner",
     "59840": "Hamilton", "59860": "Polson", "59068": "Red Lodge",
+    "59801": "Missoula", "59802": "Missoula", "59803": "Missoula",
+    "59808": "Missoula", "59847": "Lolo",
+    "59870": "Stevensville", "59833": "Florence",
 }
 MT_ZIP_MARKET = {
     "59715": "MT_GALLATIN",
@@ -2068,6 +2071,9 @@ MT_ZIP_MARKET = {
     "59911": "MT_FLATHEAD", "59922": "MT_FLATHEAD", "59901": "MT_FLATHEAD", "59912": "MT_FLATHEAD",
     "59047": "MT_PARK", "59027": "MT_PARK", "59030": "MT_PARK",
     "59840": "MT_RAVALLI", "59860": "MT_LAKE", "59068": "MT_CARBON",
+    "59801": "MT_MISSOULA", "59802": "MT_MISSOULA", "59803": "MT_MISSOULA",
+    "59808": "MT_MISSOULA", "59847": "MT_MISSOULA",
+    "59870": "MT_RAVALLI", "59833": "MT_RAVALLI",
 }
 
 COLLIN_ZIP_TO_CITY = {

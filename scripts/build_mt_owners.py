@@ -74,6 +74,16 @@ ZIP_CONFIG = {
     "59860": ("Polson",           [15],    {"POLSON", "BIGFORK", "ROLLINS"}),      # Lake / Flathead Lake S
     "59068": ("Red Lodge",        [10],    {"RED LODGE", "ROBERTS"}),              # Carbon
     "59729": ("Ennis",            [25],    {"ENNIS", "MCALLISTER", "VIRGINIA CITY"}),  # Madison
+    # Missoula + Bitterroot expansion (2026-10-14) — Missoula county (4),
+    # Ravalli county (13). Lolo/Florence straddle the county line on the
+    # ZCTA edge, so both counties are queried (Big Sky two-county precedent).
+    "59801": ("Missoula",     [4],      {"MISSOULA"}),
+    "59802": ("Missoula",     [4],      {"MISSOULA"}),
+    "59803": ("Missoula",     [4],      {"MISSOULA"}),
+    "59808": ("Missoula",     [4],      {"MISSOULA"}),
+    "59847": ("Lolo",         [4, 13],  {"LOLO", "MISSOULA"}),
+    "59870": ("Stevensville", [13],     {"STEVENSVILLE", "VICTOR"}),
+    "59833": ("Florence",     [13, 4],  {"FLORENCE", "LOLO", "MISSOULA"}),
     # Paradise Valley / Park county (49) (2026-07-31)
     "59047": ("Livingston",       [49],    {"LIVINGSTON"}),
     "59027": ("Emigrant",         [49],    {"EMIGRANT", "PRAY"}),
