@@ -804,7 +804,7 @@ async def lookup(payload: LookupRequest,
 #     web-research PR finder is intentionally left out (cost control in
 #     a passphrase-shared demo).
 
-@router.post("/demo-lookup")
+@router.post("/skip-trace/demo-lookup")
 async def demo_lookup(
     payload: LookupRequest,
     x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
