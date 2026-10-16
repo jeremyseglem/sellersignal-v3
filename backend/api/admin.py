@@ -3750,6 +3750,67 @@ async def snohomish_tenure_scrape_batch(
 
 
 # ─── Territory release notifications ───────────────────────────────────────
+@router.post("/scrub-leads/{zip_code}", dependencies=[Depends(require_admin)])
+async def scrub_leads(
+    zip_code: str = Path(..., pattern=r"^\d{5}$"),
+    write: int = Query(0, description="0 = dry run (report only), 1 = retire "
+                                      "matches and heal parcels"),
+):
+    """Sold/listed lead-retirement scrub (2026-10-16).
+
+    Re-fetches the current owner of record for every signal-matched parcel
+    in the ZIP (per-state adapter; MT cadastral first) and, where the
+    owner shows a clean break from the fabric's owner, retires the matches
+    (match_review_status='retired_ownership_change') and heals the parcel
+    (new owner, tenure reset, deterministic re-classify + re-band).
+
+    Found by the Gallatin MLS hindcast: 4 of 108 live CALL NOW leads had
+    already closed — this endpoint is what keeps that from recurring.
+    Intended cadence: weekly per live ZIP, after the cadastral refresh.
+    """
+    from backend.tasks.lead_retirement import scrub_zip
+    import asyncio as _aio
+    try:
+        result = await _aio.to_thread(scrub_zip, zip_code, bool(write))
+    except Exception as e:
+        raise HTTPException(500, f"scrub failed: {e}")
+    return result
+
+
+@router.post("/retire-lead/{pin}", dependencies=[Depends(require_admin)])
+async def retire_lead(
+    pin: str = Path(..., min_length=5),
+    reason: str = Query("sold", description="Why this lead is dead: "
+                        "sold | listed | do_not_contact | other"),
+    note: Optional[str] = Query(None, description="Free-text detail, e.g. "
+                                "'closed 2026-07-23 per MLS'"),
+):
+    """Manually retire every signal match on a parcel (2026-10-16).
+
+    The fast leg of lead retirement: MT cadastral ownership lags closings
+    by ~3 months, so when the agent KNOWS a lead is dead (saw it close or
+    list), one call drops it from CALL NOW / Contact Now on the next
+    briefing build. The automated cadastral scrub
+    (/scrub-leads/{zip}?write=1) catches the rest once DOR processes the
+    transfer. Matches are retired, never deleted — history stays.
+    """
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+    status = f"retired_{reason.strip().lower().replace(' ', '_')[:40]}"
+    detail = (note or "").strip()[:400] or f"manually retired ({reason})"
+    res = (supa.table('raw_signal_matches_v3')
+           .update({'match_review_status': status,
+                    'match_review_reason': detail})
+           .eq('pin', pin)
+           .execute())
+    n = len(res.data or [])
+    if n == 0:
+        return {'pin': pin, 'retired': 0,
+                'detail': 'no signal matches on this pin'}
+    return {'pin': pin, 'retired': n, 'status': status}
+
+
 @router.post("/test-release-notification/{zip_code}",
              dependencies=[Depends(require_admin)])
 async def test_release_notification(

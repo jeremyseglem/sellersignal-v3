@@ -38,7 +38,12 @@ from typing import Optional
 # ============================================================================
 
 ARCHETYPE_TO_BAND = {
-    'trust_young':              1,     # young trusts = low structural signal
+    # trust_young 1 → 2.5 (2026-10-16, Gallatin MLS hindcast): fresh trust
+    # transfers sold at 1.98x base rate over Aug–Oct 2026 (14/2,029, Wilson
+    # 95% CI 1.18–3.31x — the only archetype whose positive lift cleared
+    # significance). A recently-created trust is often estate planning in
+    # motion; these are listable, not dormant.
+    'trust_young':              2.5,
     'trust_mature':             2,     # mid-cycle trusts merit watching
     'trust_aging':              2,     # aging trusts in monitoring pool
     'llc_investor_early':       1,     # early-cycle investors unlikely to move
@@ -105,16 +110,24 @@ BROKERAGE_RX = re.compile(
 # Banding function
 # ============================================================================
 
-def determine_band(parcel: dict) -> float:
+def determine_band(parcel: dict, state: Optional[str] = None) -> float:
     """
     Assign a band to a parcel.
 
     Priority (first match wins):
       1. Hard disqualifiers → Band 0
       2. Oversized value (> $25M residential) → Band 0 (likely commercial)
-      3. Recent buyer (< 2 yr tenure) → Band 0
+      3. Recent buyer (< 2 yr tenure, INDIVIDUAL owners only) → Band 0
+         (Band 1 in MT — see below)
       4. Archetype-to-band map
       5. Default → Band 1
+
+    state: two-letter situs state, used for market calibration. The
+    Gallatin MLS hindcast (2026-10-16) showed MT recent buyers sell at
+    ≥ base rate — Bozeman is a high-churn market — so MT demotes them
+    to Band 1 (weak, still scoreable and still promotable by a court
+    signal) instead of excluding them outright. Other states keep the
+    legacy Band-0 exclusion until their own hindcasts say otherwise.
 
     Args:
         parcel: dict with pin, owner_name, signal_family (archetype),
@@ -145,10 +158,21 @@ def determine_band(parcel: dict) -> float:
     if 'commercial' in prop_type or 'industrial' in prop_type:
         return 0
 
-    # Recent buyer hard cap
+    # Recent buyer cap — INDIVIDUAL owners only (2026-10-16 fix).
+    # A trust or LLC transfer resets tenure without being a purchase:
+    # the old blanket tenure<2 rule was hard-excluding trust_young —
+    # the archetype with the strongest sale lift in the Gallatin
+    # hindcast (3 of its 14 post-banding sales sat in Band 0 via this
+    # rule). The cap's intent is "just bought, won't sell", which only
+    # describes individual purchases, so entities skip it and route by
+    # archetype instead.
+    archetype = parcel.get('signal_family')
     tenure = parcel.get('tenure_years')
-    if tenure is not None and tenure < 2:
-        return 0
+    _individual_like = (archetype is None
+                        or archetype == 'unknown'
+                        or str(archetype).startswith('individual'))
+    if tenure is not None and tenure < 2 and _individual_like:
+        return 1 if state == 'MT' else 0
 
     # No owner name or no address → can't act on
     if not owner_name or len(owner_name) < 3:
@@ -158,9 +182,13 @@ def determine_band(parcel: dict) -> float:
 
     # ── Archetype routing ──
     # parcels_v3.signal_family holds the archetype (written by classify stage)
-    archetype = parcel.get('signal_family')
     if archetype in ARCHETYPE_TO_BAND:
-        return ARCHETYPE_TO_BAND[archetype]
+        band = ARCHETYPE_TO_BAND[archetype]
+        # MT calibration: individual_recent demotes to weak rather than
+        # excluded (hindcast: recent buyers resell at ≥ base rate there).
+        if band == 0 and archetype == 'individual_recent' and state == 'MT':
+            return 1
+        return band
 
     return 1
 
@@ -178,6 +206,19 @@ def apply_banding_to_zip(zip_code: str) -> dict:
     supa = get_supabase_client()
     if not supa:
         raise RuntimeError("Supabase not configured")
+
+    # Situs state for market-calibrated rules (MT recent-buyer demotion)
+    state = None
+    try:
+        cov = (supa.table('zip_coverage_v3')
+               .select('state')
+               .eq('zip_code', zip_code)
+               .maybe_single()
+               .execute())
+        if cov and cov.data:
+            state = cov.data.get('state')
+    except Exception:
+        state = None
 
     # Paginated read — Supabase caps at 1000 per request
     parcels = []
@@ -204,7 +245,7 @@ def apply_banding_to_zip(zip_code: str) -> dict:
     band_counts = Counter()
     by_band = defaultdict(list)
     for p in parcels:
-        band = determine_band(p)
+        band = determine_band(p, state=state)
         band_counts[band] += 1
         by_band[band].append(p['pin'])
 

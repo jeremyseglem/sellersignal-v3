@@ -87,6 +87,13 @@ _PRESSURE_TABLE = {
 _LIFE_EVENT_SIGNALS = {"probate", "obituary", "divorce"}
 _FINANCIAL_SIGNALS  = {"tax_foreclosure", "tax_delinquency"}
 
+# Signals older than this (days since event_date, freshest signal on the
+# pin) can no longer carry CALL NOW urgency — see signal-age decay in
+# build_investigation_overlay. 365 chosen from the Gallatin hindcast:
+# the two clean probate→contract conversions ran 33 and 78 days; the
+# 16-month-old filing converted eventually but at no urgency.
+_STALE_DAYS = 365
+
 
 def _match_to_display(signal: dict, match: dict) -> str:
     """
@@ -175,6 +182,35 @@ def build_investigation_overlay(
 
     pressure = _highest_pressure(match_rows, signals_by_id)
 
+    # ── Signal-age decay (2026-10-16, Gallatin MLS hindcast) ──
+    # A probate filed 16 months ago is still a lead, but it is not a
+    # CALL NOW lead: the decision window has mostly closed (87 Clinton
+    # Ln sold 16 months post-filing while still being served at top
+    # urgency). When the FRESHEST dated signal on the pin is older than
+    # _STALE_DAYS, cap pressure at 2 — the lead demotes to Build Now
+    # with its rank boost intact rather than leading the week. Signals
+    # with no event_date are treated as fresh (no demotion on missing
+    # data); any one fresh signal keeps the pin at full urgency.
+    signal_age_days = None
+    if pressure >= 3:
+        from datetime import date as _date
+        ages = []
+        undated = False
+        for sig, _m in resolved:
+            ed = sig.get("event_date")
+            if not ed:
+                undated = True
+                continue
+            try:
+                d = _date.fromisoformat(str(ed)[:10])
+                ages.append((_date.today() - d).days)
+            except ValueError:
+                undated = True
+        if ages:
+            signal_age_days = min(ages)
+            if not undated and signal_age_days > _STALE_DAYS:
+                pressure = 2
+
     # Classify what kinds of signals fired
     has_life_event = any(
         sig.get("signal_type") in _LIFE_EVENT_SIGNALS
@@ -200,6 +236,8 @@ def build_investigation_overlay(
     converged = strict_count >= 2
 
     # Category + tone from pressure
+    aged_out = (signal_age_days is not None and signal_age_days > _STALE_DAYS
+                and pressure == 2)
     if pressure >= 3:
         category = "call_now"
         tone = "sensitive" if has_life_event else "direct"
@@ -211,7 +249,10 @@ def build_investigation_overlay(
     elif pressure == 2:
         category = "build_now"
         tone = "sensitive" if has_life_event else "direct"
-        next_step = "Watch for second signal; no outreach yet."
+        next_step = ("Aged signal — decision window likely passed; "
+                     "low-pressure positioning only."
+                     if aged_out
+                     else "Watch for second signal; no outreach yet.")
     else:
         category = "hold"
         tone = "direct"
@@ -252,6 +293,9 @@ def build_investigation_overlay(
         ],
         "convergence":       converged,
         "strict_match_count": strict_count,
+        # Days since the freshest dated signal on this pin (None when no
+        # strict pressure or no dated signals). UI/copy may render it.
+        "signal_age_days":   signal_age_days,
     }
 
 

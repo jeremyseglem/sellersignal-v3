@@ -254,13 +254,18 @@ def _score(L):
       - deep investigation:  +5% (signal we know more about this lead)
     """
     base = L.get('calibrated_rank_score') or L.get('rank_score') or 0
+    # Band 2.5 = elevated monitoring (trust_young, absentee_dormant,
+    # llc_investor_mature). Ranks above plain Band 2 within the shared
+    # build_now/holds pools — trust_young carried a significant 1.98x
+    # sale lift in the Gallatin MLS hindcast (2026-10-16).
+    band_boost = 1.15 if L.get('band') == 2.5 else 1.0
     inv = L.get('investigation')
     if not inv:
-        return base
+        return base * band_boost
     # Blockers are filtered upstream, but guard here too
     if inv.get('has_blocker'):
         return 0
-    boost = 1.0
+    boost = band_boost
     if inv.get('has_life_event'):  boost *= 1.10
     if inv.get('has_financial'):   boost *= 1.15
     if inv.get('mode') == 'deep':  boost *= 1.05
@@ -1046,7 +1051,12 @@ def select_build_now(leads, exclude_pins, used_owner_keys, n=8):
     # Sort each bucket by score so 'top of bucket' is the strongest
     # lead in that family.
     def in_pool(L):
-        return (L['band'] == 2
+        # Band 2.5 ("elevated monitoring") was skipped by the old
+        # `band == 2` check — trust_young / absentee_dormant /
+        # llc_investor_mature parcels never reached the playbook at
+        # all (2026-10-16 fix, Gallatin MLS hindcast). They now share
+        # the Build Now pool and outrank plain Band 2 via _score.
+        return (L['band'] in (2, 2.5)
                 and L['pin'] not in exclude_pins
                 and owner_base_key(L) not in used_owner_keys
                 and not _has_blocker(L))
@@ -1137,7 +1147,7 @@ def select_strategic_holds(leads, exclude_pins, used_owner_keys, n=2):
         n = 1000
     b2 = sorted(
         [L for L in leads
-         if L['band'] == 2
+         if L['band'] in (2, 2.5)   # 2.5 included since 2026-10-16 (see in_pool)
          and L['pin'] not in exclude_pins
          and owner_base_key(L) not in used_owner_keys
          and not _has_blocker(L)
@@ -1169,7 +1179,7 @@ def count_build_now_eligible(leads, exclude_pins, used_owner_keys) -> int:
     seen_owner_keys = set()
     count = 0
     for L in leads:
-        if L.get('band') != 2: continue
+        if L.get('band') not in (2, 2.5): continue  # 2.5 included 2026-10-16
         if L['pin'] in exclude_pins: continue
         ok = owner_base_key(L)
         if ok in used_owner_keys: continue
@@ -1187,7 +1197,7 @@ def count_strategic_holds_eligible(leads, exclude_pins, used_owner_keys) -> int:
     seen_owner_keys = set()
     count = 0
     for L in leads:
-        if L.get('band') != 2: continue
+        if L.get('band') not in (2, 2.5): continue  # 2.5 included 2026-10-16
         if L['pin'] in exclude_pins: continue
         ok = owner_base_key(L)
         if ok in used_owner_keys: continue

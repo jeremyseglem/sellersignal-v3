@@ -360,11 +360,18 @@ async def get_briefing(
             chunk = pins[i:i + CHUNK]
             m_res = (supa.table('raw_signal_matches_v3')
                      .select('raw_signal_id, pin, match_strength, '
-                             'match_method, matched_at')
+                             'match_method, matched_at, match_review_status')
                      .in_('pin', chunk)
                      .limit(5000)
                      .execute())
             for m in (m_res.data or []):
+                # Retired matches (sold/listed scrub — lead_retirement.py)
+                # never reach the playbook: the ownership behind the
+                # signal has already changed hands. Client-side filter so
+                # NULL statuses (the overwhelming majority) need no
+                # PostgREST OR-clause gymnastics.
+                if (m.get('match_review_status') or '').startswith('retired'):
+                    continue
                 matches_by_pin.setdefault(m['pin'], []).append(m)
 
         if matches_by_pin:

@@ -79,10 +79,29 @@ def _filter_bbox_outliers(coords: list[tuple[float, float]]) -> tuple[float, flo
         return _median([c[0] for c in coords]), _median([c[1] for c in coords]), set()
     med_lat = _median([c[0] for c in coords])
     med_lng = _median([c[1] for c in coords])
+
+    # Adaptive fence (2026-10-16). The fixed ~10mi deltas were calibrated
+    # for compact urban KC ZIPs and silently erased rural ZIPs that are
+    # legitimately huge: 59730 Gallatin Gateway runs ~40mi down the
+    # canyon, and the fixed fence dropped 2,635 of its 2,914 parcels
+    # (90%) as "outliers". The fence now scales with the ZIP's own
+    # spread — 3x the 95th-percentile delta from the median — floored at
+    # the legacy deltas (compact ZIPs keep tight filtering) and capped
+    # at 1.0° (~70mi), which still removes true cross-county ingest
+    # contamination, the thing this filter exists for.
+    def _p95(vals):
+        vs = sorted(vals)
+        return vs[min(len(vs) - 1, int(0.95 * len(vs)))]
+
+    lat_fence = min(1.0, max(_BBOX_FILTER_MAX_LAT_DELTA,
+                             3 * _p95([abs(c[0] - med_lat) for c in coords])))
+    lng_fence = min(1.0, max(_BBOX_FILTER_MAX_LNG_DELTA,
+                             3 * _p95([abs(c[1] - med_lng) for c in coords])))
+
     outliers = set()
     for i, (lat, lng) in enumerate(coords):
-        if (abs(lat - med_lat) > _BBOX_FILTER_MAX_LAT_DELTA
-                or abs(lng - med_lng) > _BBOX_FILTER_MAX_LNG_DELTA):
+        if (abs(lat - med_lat) > lat_fence
+                or abs(lng - med_lng) > lng_fence):
             outliers.add(i)
     return med_lat, med_lng, outliers
 
