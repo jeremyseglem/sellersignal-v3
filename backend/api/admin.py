@@ -17,7 +17,7 @@ Endpoints:
 """
 import os
 from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException, Header, Depends, Path, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Header, Depends, Path, BackgroundTasks, Query
 from typing import Optional
 
 from backend.api.db import get_supabase_client
