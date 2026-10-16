@@ -141,6 +141,51 @@ def _load_parcel(supa, pin: str) -> dict[str, Any] | None:
     return res.data[0] if res.data else None
 
 
+def _pr_from_signal_party_names(supa, signal_ids: list) -> dict[str, str] | None:
+    """PR extraction for courts that carry parties on the signal row
+    (MT district courts et al.) rather than in case_parties_v3.
+
+    party_names entries look like:
+      {"raw": "Pence, Lynnette H", "role": "personal_representative",
+       "normalized": "PENCE LYNNETTE H", ...}
+    The raw form is "Last, First Middle" — parse into the first/last
+    shape the Tracerfy person search needs. Returns None when no PR
+    party exists or the name doesn't parse into two usable parts.
+    """
+    try:
+        res = (supa.table("raw_signals_v3")
+               .select("id, signal_type, party_names")
+               .in_("id", signal_ids)
+               .eq("signal_type", "probate")
+               .execute())
+        for sig in (res.data or []):
+            for p in (sig.get("party_names") or []):
+                if not isinstance(p, dict):
+                    continue
+                if (p.get("role") or "").lower() != "personal_representative":
+                    continue
+                raw = (p.get("raw") or "").strip()
+                if "," in raw:
+                    last, _, rest = raw.partition(",")
+                    last = last.strip()
+                    first = (rest.strip().split() or [""])[0]
+                else:
+                    toks = raw.split()
+                    # No comma — assume "First [Middle] Last"
+                    first = toks[0] if toks else ""
+                    last = toks[-1] if len(toks) >= 2 else ""
+                if first and last and len(first) > 1 and len(last) > 1:
+                    return {
+                        "name_first":     first,
+                        "name_last":      last,
+                        "name_raw":       raw,
+                        "classification": "signal_party_names",
+                    }
+        return None
+    except Exception:
+        return None
+
+
 def _get_pr_for_pin(supa, pin: str) -> dict[str, str] | None:
     """For a probate parcel, return the Personal Representative's
     first/last name from court records. Returns None for non-probate
@@ -172,6 +217,16 @@ def _get_pr_for_pin(supa, pin: str) -> dict[str, str] | None:
         case_numbers = [s["document_ref"] for s in (signals_res.data or [])
                         if s.get("document_ref")]
         if not case_numbers:
+            # Non-KC courts (MT district courts and future states) don't
+            # scrape into case_parties_v3 — their harvesters store the
+            # parties ON the signal row (party_names JSON, roles
+            # included). Without this fallback every MT probate lead
+            # skip-traced as a plain owner search, i.e. it traced the
+            # DECEASED homeowner instead of the personal representative
+            # (found live 2026-10-16: pr_used=False on 500 Yonder Rd).
+            pr = _pr_from_signal_party_names(supa, signal_ids)
+            if pr:
+                return pr
             return None
 
         # Step 3: find the PR row for any of those cases
