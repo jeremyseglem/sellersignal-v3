@@ -234,6 +234,14 @@ def _get_deceased_info_for_pin(
         # first name listed.
         if "&" in name:
             name = name.split("&", 1)[0].strip()
+        # Montana cadastral writes owner names SURNAME-FIRST ("OLSON
+        # LAEF C"), but obituaries print "Laef C Olson" — flip so the
+        # web-research obit search queries the name people actually
+        # publish (2026-10-16, MT skip-trace accuracy pass).
+        if state == "MT":
+            toks = name.split()
+            if len(toks) >= 2:
+                name = " ".join(toks[1:] + toks[:1])
         return name, city, state
     except Exception:
         return "", "", ""
@@ -652,7 +660,7 @@ async def lookup(payload: LookupRequest,
                             pr_last=pr["name_last"],
                             deceased_name=deceased_name,
                             deceased_city=deceased_city,
-                            deceased_state=deceased_state or "WA",
+                            deceased_state=deceased_state or state,
                         )
                     except Exception as e:
                         # web_research already swallows internal errors
@@ -774,4 +782,96 @@ async def lookup(payload: LookupRequest,
         "search_mode":      provider_result.get("search_mode"),
         "searched_for":     (f"{pr['name_first']} {pr['name_last']}"
                              if pr else None),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Overture demo lookup (2026-10-16)
+# ════════════════════════════════════════════════════════════════════
+#
+# The Overture demo previously served SYNTHETIC skip-trace data. Jeremy
+# asked for real results when agents test it, so this endpoint lets the
+# demo backend run a REAL Tracerfy trace server-to-server:
+#
+#   - Gated by X-Admin-Key (the demo backend holds the key; no agent JWT).
+#   - STATELESS here: no cache rows (the cache table FKs auth.users and
+#     the demo has no user), no event log, no per-agent cap. The demo
+#     backend owns its own cache, its global monthly cap, and the TCPA
+#     ack UI — see overture-site backend/overture_demo.py.
+#   - Same accuracy routing as the real lookup: probate leads trace the
+#     court-named PR first, then fall back to household contacts tagged
+#     _household_fallback; everything else runs an owner search. The
+#     web-research PR finder is intentionally left out (cost control in
+#     a passphrase-shared demo).
+
+@router.post("/demo-lookup")
+async def demo_lookup(
+    payload: LookupRequest,
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+):
+    _admin_env = (os.environ.get("ADMIN_KEY") or "").strip()
+    if not (_admin_env and x_admin_key and x_admin_key == _admin_env):
+        raise HTTPException(403, "admin key required")
+
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Supabase unavailable")
+
+    pin = payload.pin
+    parcel = _load_parcel(supa, pin)
+    if not parcel:
+        raise HTTPException(404, detail={
+            "code": "parcel_not_found",
+            "message": f"Parcel {pin} not found."})
+    address  = (parcel.get("address") or "").strip()
+    city     = (parcel.get("city") or "").strip()
+    state    = (parcel.get("state") or "").strip()
+    zip_code = (parcel.get("zip_code") or "").strip()
+    if not address or not city or not state:
+        raise HTTPException(400, detail={
+            "code": "parcel_address_incomplete",
+            "message": "Parcel is missing address, city, or state."})
+
+    pr = _get_pr_for_pin(supa, pin)
+    try:
+        if pr:
+            result = tracerfy.lookup_person(
+                first_name=pr["name_first"], last_name=pr["name_last"],
+                address=address, city=city, state=state, zip_code=zip_code,
+            )
+            if not result["hit"]:
+                fb = tracerfy.lookup_owner(
+                    address=address, city=city, state=state,
+                    zip_code=zip_code,
+                )
+                household = [p for p in (fb.get("persons") or [])
+                             if not p.get("deceased")]
+                credits = (result.get("credits_deducted", 0)
+                           + fb.get("credits_deducted", 0))
+                if household:
+                    for p in household:
+                        p["_household_fallback"] = True
+                    result = {"hit": True, "persons": household,
+                              "credits_deducted": credits,
+                              "provider": tracerfy.PROVIDER_NAME}
+                else:
+                    result["credits_deducted"] = credits
+        else:
+            result = tracerfy.lookup_owner(
+                address=address, city=city, state=state, zip_code=zip_code,
+            )
+    except TracerfyError as e:
+        raise HTTPException(502, detail={
+            "code": "provider_error",
+            "message": e.message,
+            "retryable": e.retryable})
+
+    return {
+        "source":           "live",
+        "hit":              result["hit"],
+        "credits_deducted": result.get("credits_deducted", 0),
+        "persons":          result.get("persons") or [],
+        "pr_used":          bool(pr),
+        "zip_code":         zip_code,
+        "retrieved_at":     datetime.now(timezone.utc).isoformat(),
     }
