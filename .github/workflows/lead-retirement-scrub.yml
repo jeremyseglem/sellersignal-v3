@@ -1,0 +1,52 @@
+name: Lead Retirement Scrub
+
+# Weekly sold/listed lead scrub (2026-10-16, Gallatin MLS hindcast).
+# Calls POST /api/admin/scrub-leads/{zip}?write=1 for every live MT ZIP:
+# the endpoint re-fetches current owners from the MT cadastral layer and,
+# where ownership shows a clean break, retires the parcel's signal matches
+# and heals the parcel (owner, tenure, reclassify, reband). States without
+# a current-owner adapter report {"supported": false} and are skipped.
+#
+# Requires repo secret SS_ADMIN_KEY (the SellerSignal admin API key).
+# MT DOR processes transfers with ~1-3 months of lag, so this catches
+# closings late but reliably; the manual fast path is
+# POST /api/admin/retire-lead/{pin}?reason=sold.
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 to apply, 0 for dry run"
+        required: false
+        default: "0"
+      zips:
+        description: "comma list of ZIPs (default: all live MT)"
+        required: false
+        default: ""
+  schedule:
+    # Sundays 13:10 UTC (~6:10am MT), before the weekly briefing compile.
+    - cron: "10 13 * * 0"
+
+jobs:
+  scrub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run scrub per ZIP
+        env:
+          ADMIN_KEY: ${{ secrets.SS_ADMIN_KEY }}
+          WRITE: ${{ github.event_name == 'schedule' && '1' || github.event.inputs.write }}
+          ZIPS: ${{ github.event.inputs.zips || '59714,59715,59716,59718,59730,59937,59911,59922,59901,59912,59047,59840,59860,59068,59801,59802,59803,59808,59847,59870,59833' }}
+        run: |
+          set -e
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "SS_ADMIN_KEY secret is not set — add it in repo settings."; exit 1
+          fi
+          IFS=',' read -ra ZZ <<< "$ZIPS"
+          FAILS=0
+          for Z in "${ZZ[@]}"; do
+            echo "== $Z (write=$WRITE)"
+            OUT=$(curl -sS -m 300 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+              "https://sellersignal.co/api/admin/scrub-leads/${Z}?write=${WRITE}") || { echo "request failed"; FAILS=$((FAILS+1)); continue; }
+            echo "$OUT" | head -c 2000; echo
+          done
+          test "$FAILS" -lt 3
