@@ -109,7 +109,7 @@ const STATE_METRO_LABELS = { WA: 'Seattle', AZ: 'Phoenix', CT: 'Greenwich', FL: 
 // cluster, switch...").
 const MARKET_METRO_LABELS = { TX_DALLAS: 'Dallas', TX_TRAVIS: 'Austin', TX_COLLIN: 'Dallas',
   // Montana spans Bozeman + Whitefish (~280 mi) — same far-flung-state fix as TX.
-  MT_GALLATIN: 'Bozeman', MT_FLATHEAD: 'Whitefish', MT_MISSOULA: 'Missoula',
+  MT_GALLATIN: 'Bozeman', MT_FLATHEAD: 'Whitefish',
   // Colorado is far-flung too (Aspen vs future Boulder ~160 mi).
   CO_PITKIN: 'Aspen', CO_DENVER: 'Denver', CO_BOULDER: 'Boulder', CO_ARAPAHOE: 'Denver' };
 // Human names for the state-level pills above the metro tabs.

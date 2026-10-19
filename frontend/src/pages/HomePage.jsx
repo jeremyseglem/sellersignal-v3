@@ -115,7 +115,7 @@ function Hero() {
           marginBottom: 'var(--space-xl)',
           maxWidth: 640,
         }}>
-          SellerSignal surfaces the life events that force a property
+          Overture surfaces the life events that force a property
           decision &middot; long before the listing call. Probate,
           divorce, estate transition, foreclosure. We identify the
           decision-maker by name, verify their contact, and deliver
@@ -182,7 +182,7 @@ function BuiltByAgent() {
           marginBottom: 'var(--space-md)',
         }}>
           Most lead-gen tools are built by engineers selling to investors
-          and retrofitted for agents who never asked for them. SellerSignal
+          and retrofitted for agents who never asked for them. Overture
           is the opposite.
         </p>
 
@@ -374,7 +374,7 @@ function Voice() {
           lineHeight: 1.8,
           marginBottom: 'var(--space-md)',
         }}>
-          Most outreach in this industry sounds like outreach. SellerSignal
+          Most outreach in this industry sounds like outreach. Overture
           captures the agent&rsquo;s cadence, stance, and bio at onboarding,
           then generates phone, letter, and door scripts across six
           archetypes &mdash; in their voice.
@@ -445,7 +445,7 @@ function TwoSidedPersonalization() {
           color: 'var(--text-secondary)',
           lineHeight: 1.8,
         }}>
-          SellerSignal treats them differently. Six archetypes, six
+          Overture treats them differently. Six archetypes, six
           approaches. What to say, when to call, when to wait, when
           to write instead. The opposite of one-size-fits-all.
         </p>
@@ -490,7 +490,7 @@ function Territory() {
           Each territory is owned by one agent &mdash; entirely. The
           data, the contact info, the briefing &mdash; yours alone.
           Most lead-gen tools sell the same lead to ten buyers and
-          call it scale. SellerSignal sells one territory to one
+          call it scale. Overture sells one territory to one
           agent and calls it ownership. Additional markets opening
           selectively.
         </p>

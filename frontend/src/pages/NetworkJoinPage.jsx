@@ -59,7 +59,7 @@ export default function NetworkJoinPage() {
         <div style={{ maxWidth: 640, margin: '0 auto', padding: '0 28px' }}>
           <div style={{ fontFamily: F.sans, fontSize: 10, letterSpacing: '0.22em',
             textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 6 }}>
-            SellerSignal · Buyer Network
+            Overture · Buyer Network
           </div>
           <div style={{ fontFamily: F.display, fontSize: 28, color: 'var(--text-inverse)' }}>
             Represent a buyer. Search everything.

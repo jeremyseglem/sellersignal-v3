@@ -54,6 +54,23 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [isConfigured, setIsConfigured] = useState(false);
 
+  // ── DEMO BUILD ONLY: window.__OVERTURE_DEMO__ short-circuits auth ──
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.__OVERTURE_DEMO__) {
+      setSession({ user: { email: 'demo@overture.demo' }, access_token: 'demo' });
+      setProfile({
+        full_name: 'Founding Agent', email: 'demo@overture.demo',
+        brokerage: 'Overture', role: 'agent',
+        assigned_zip: '98004', assigned_zips: ['98004','98039','98040'],
+        network_approved: true,
+      });
+      setIsConfigured(true);
+      setLoading(false);
+    }
+  }, []);
+  const __demo = typeof window !== 'undefined' && !!window.__OVERTURE_DEMO__;
+
+
   // Fetch agent profile from the backend. Wrapped so we can call it
   // after sign-in or when the user updates their profile.
   const refreshProfile = useCallback(async () => {
@@ -78,6 +95,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    if (__demo) return;
     let mounted = true;
     let unsub = null;
 
@@ -122,6 +140,7 @@ export function AuthProvider({ children }) {
 
   // Whenever the session changes, refresh the profile.
   useEffect(() => {
+    if (__demo) return;
     if (session) {
       refreshProfile();
     } else {

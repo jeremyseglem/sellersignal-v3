@@ -121,7 +121,7 @@ export default function ProfilePage() {
           fontStyle: 'italic',
           marginTop: 'var(--space-xs)',
         }}>
-          Used in your dossier header and any letters SellerSignal
+          Used in your dossier header and any letters Overture
           sends on your behalf.
         </p>
       </header>

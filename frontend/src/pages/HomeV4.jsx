@@ -304,7 +304,7 @@ export default function HomeV4() {
               <rect x="13" y="13" width="2.5" height="7" rx="1" fill="currentColor" />
               <rect x="16.5" y="9" width="2.5" height="11" rx="1" fill="currentColor" />
             </svg>
-            <span className="logo-word">SellerSignal</span>
+            <span className="logo-word">Overture</span>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <Link to="/login" className="btn btn-ghost btn-sm">Sign in</Link>
@@ -395,7 +395,7 @@ export default function HomeV4() {
           <div>
             <div className="section-label">THE FOUNDERS</div>
             <h2>Built by the people <em>who use it.</em></h2>
-            <p className="body">SellerSignal was built by two top-producing agents who wanted it for themselves — and who run it in their own territories every week. <b>No one else in this space holds a license.</b> Every play, every cadence, every letter in this platform exists because it won a listing first.</p>
+            <p className="body">Overture was built by two top-producing agents who wanted it for themselves — and who run it in their own territories every week. <b>No one else in this space holds a license.</b> Every play, every cadence, every letter in this platform exists because it won a listing first.</p>
             <p className="body" style={{ marginTop: 16 }}>And the incentives run one direction: one agent per ZIP means your territory is never sold twice. We only win when you list.</p>
             <div className="kicker">Your incentives and ours are the same: the listing.</div>
           </div>

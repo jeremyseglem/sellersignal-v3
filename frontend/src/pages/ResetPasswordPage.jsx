@@ -90,7 +90,7 @@ export default function ResetPasswordPage() {
         {!authLoading && !isConfigured && (
           <div style={warnStyle}>
             Authentication isn&rsquo;t configured in this environment.
-            Contact the SellerSignal team for access.
+            Contact the Overture team for access.
           </div>
         )}
 

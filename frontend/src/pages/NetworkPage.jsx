@@ -201,7 +201,7 @@ export default function NetworkPage() {
           <div>
             <div style={{ fontFamily: F.sans, fontSize: 10, letterSpacing: '0.22em',
               textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 6 }}>
-              SellerSignal · Private preview
+              Overture · Private preview
             </div>
             <div style={{ fontFamily: F.display, fontSize: 30, color: 'var(--text-inverse)' }}>
               Buyer Network
@@ -378,16 +378,21 @@ function Compose({ onCancel, onCreated, setError }) {
         feature_filters.view_any = viewCats;
         feature_filters.view_cat_min = viewMin;
       }
+      const num = (v) => {
+        if (v == null || v === '') return null;
+        const n = Number(String(v).replace(/[^0-9.]/g, ''));
+        return Number.isFinite(n) ? n : null;
+      };
       const body = {
         zips,
         client_ref: f.client_ref || null,
-        price_min: f.price_min ? Number(f.price_min) : null,
-        price_max: f.price_max ? Number(f.price_max) : null,
-        beds_min: f.beds_min ? Number(f.beds_min) : null,
-        baths_min: f.baths_min ? Number(f.baths_min) : null,
-        sqft_min: f.sqft_min ? Number(f.sqft_min) : null,
-        year_built_min: f.year_built_min ? Number(f.year_built_min) : null,
-        year_built_max: f.year_built_max ? Number(f.year_built_max) : null,
+        price_min: num(f.price_min),
+        price_max: num(f.price_max),
+        beds_min: num(f.beds_min),
+        baths_min: num(f.baths_min),
+        sqft_min: num(f.sqft_min),
+        year_built_min: num(f.year_built_min),
+        year_built_max: num(f.year_built_max),
         soft_notes: f.soft_notes || null,
         attestation: attest,
       };

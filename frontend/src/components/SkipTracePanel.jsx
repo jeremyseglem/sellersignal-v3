@@ -27,6 +27,22 @@ import { useEffect, useState } from 'react';
 import { skipTrace, leadInteractions, safeErrorMessage } from '../api/client.js';
 import TCPAComplianceModal from './TCPAComplianceModal.jsx';
 
+// ── Demo-shape adapters (Overture demo server returns slightly
+//    different field names than production; normalize once here). ──
+const normStatus = (s) => s ? { ...s, acked: s.acked ?? s.compliance_acked } : s;
+const normResult = (r) => {
+  if (!r) return r;
+  const persons = (r.persons || []).map((p) => ({
+    ...p,
+    full_name: p.full_name || p.name,
+    emails: (p.emails || []).map((e) =>
+      typeof e === 'string' ? { email: e } : { ...e, email: e.email || e.address }),
+  }));
+  const source = r.source === 'demo_cache' ? 'cache'
+    : (r.source || (r.cached ? 'cache' : 'fresh'));
+  return { ...r, persons, source };
+};
+
 export default function SkipTracePanel({ pin, onAfterTrace }) {
   const [status, setStatus]   = useState(null);   // {acked, monthly_used, monthly_cap, ...}
   const [result, setResult]   = useState(null);   // {source, hit, persons, ...} | null
@@ -42,24 +58,10 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
   useEffect(() => {
     let cancelled = false;
     skipTrace.status()
-      .then((s) => { if (!cancelled) setStatus(s); })
+      .then((s) => { if (!cancelled) setStatus(normStatus(s)); })
       .catch(() => { /* show idle state with no remaining count */ });
-    skipTrace.cached(pin)
-      .then((r) => {
-        if (cancelled) return;
-        if (r && r.cached) {
-          // Reshape into the same form runTrace() produces, so
-          // ResultsDisplay handles both identically.
-          setResult({
-            source:       'cache',
-            hit:          r.hit,
-            persons:      r.persons,
-            retrieved_at: r.retrieved_at,
-            expires_at:   r.expires_at,
-          });
-        }
-      })
-      .catch(() => { /* no cache; agent will see idle button */ });
+    // Demo: skip the mount-time cache auto-render so the agent gets
+    // the explicit "Find owner contact info" click every time.
     return () => { cancelled = true; };
   }, [pin]);
 
@@ -75,9 +77,9 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
     setLoading(true);
     try {
       const r = await skipTrace.lookup(pin, { force_refresh });
-      setResult(r);
+      setResult(normResult(r));
       // Refresh status so monthly remaining updates after a fresh trace.
-      skipTrace.status().then(setStatus).catch(() => {});
+      skipTrace.status().then((s) => setStatus(normStatus(s))).catch(() => {});
       // Tell the parent dossier so it can refresh the history line.
       onAfterTrace && onAfterTrace();
     } catch (e) {
@@ -120,7 +122,7 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
     // Refresh status so the UI reflects the ack, then run the trace
     // the agent was about to run.
     skipTrace.status().then((s) => {
-      setStatus(s);
+      setStatus(normStatus(s));
       runTrace();
     }).catch(() => {
       // Status refresh failed but ack succeeded — run anyway.
@@ -132,7 +134,9 @@ export default function SkipTracePanel({ pin, onAfterTrace }) {
   // from the server; show "unlimited" rather than a count.
   let monthlyText = null;
   if (status) {
-    if (status.is_operator || status.monthly_cap == null) {
+    if (status.credits_remaining != null && status.monthly_cap == null) {
+      monthlyText = `${status.credits_remaining} credits remaining · compliance acknowledged`;
+    } else if (status.is_operator || status.monthly_cap == null) {
       monthlyText = 'Unlimited skip-traces (operator)';
     } else {
       monthlyText = `${status.monthly_remaining} of ${status.monthly_cap} skip-traces left this month`;
@@ -403,6 +407,13 @@ function PersonCard({ person, isHouseholdFallback, isWebResearch }) {
               </a>
             </div>
           ))}
+        </div>
+      )}
+
+      {person.note && (
+        <div style={{ fontSize: 11, marginTop: 8,
+          color: 'rgba(244,241,236,.38)', fontFamily: 'var(--font-sans)' }}>
+          {person.note}
         </div>
       )}
     </div>
