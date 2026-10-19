@@ -2,12 +2,6 @@ import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { Routes, Route, Navigate } from 'react-router-dom';
 
 import HomePage            from './pages/HomePage.jsx';
-import HomeOverture        from './pages/HomeOverture.jsx';
-import WelcomePage         from './pages/WelcomePage.jsx';
-import V5Shell             from './pages/V5Shell.jsx';
-import V5Territories       from './pages/V5Territories.jsx';
-import V5Network           from './pages/V5Network.jsx';
-import V5Briefing          from './pages/V5Briefing.jsx';
 import LoginPage           from './pages/LoginPage.jsx';
 import SignupPage          from './pages/SignupPage.jsx';
 import ForgotPasswordPage  from './pages/ForgotPasswordPage.jsx';
@@ -55,9 +49,7 @@ export default function App() {
     <ErrorBoundary>
     <Routes>
       {/* Public marketing + auth */}
-      <Route path="/"                element={<HomeOverture       />} />
-      <Route path="/welcome"         element={<WelcomePage        />} />
-      <Route path="/classic-home"    element={<HomePage           />} />
+      <Route path="/"                element={<HomePage           />} />
       <Route path="/login"           element={<LoginPage          />} />
       <Route path="/signup"          element={<SignupPage         />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
@@ -65,19 +57,75 @@ export default function App() {
       <Route path="/privacy"         element={<PrivacyPage        />} />
       <Route path="/terms"           element={<TermsPage          />} />
 
-      {/* Authenticated app — the V5 shell and every surface inside it
-          sit behind AuthGate: real Supabase sessions only. */}
-      <Route element={<AuthGate><V5Shell/></AuthGate>}>
-        <Route path="/territories"   element={<V5Territories/>} />
-        <Route path="/zip/:zip"      element={<V5Briefing/>} />
-        <Route path="/my-leads"      element={<MyLeadsPage/>} />
-        <Route path="/letters"       element={<LettersPage/>} />
-        <Route path="/profile"       element={<ProfilePage/>} />
-        <Route path="/profile/voice" element={<VoiceOnboardingPage/>} />
-        <Route path="/network"       element={<V5Network/>} />
-        <Route path="/network/classic" element={<NetworkPage/>} />
-        <Route path="/network/join"  element={<NetworkJoinPage/>} />
-      </Route>
+      {/* Authenticated app surfaces */}
+      <Route
+        path="/territories"
+        element={
+          <AuthGate>
+            <AuthenticatedTerritories />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/zip/:zip"
+        element={
+          <AuthGate>
+            <AuthenticatedBriefing />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/my-leads"
+        element={
+          <AuthGate>
+            <MyLeadsPage />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/letters"
+        element={
+          <AuthGate>
+            <LettersPage />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <AuthGate>
+            <ProfilePage />
+          </AuthGate>
+        }
+      />
+      <Route
+        path="/profile/voice"
+        element={
+          <AuthGate>
+            <VoiceOnboardingPage />
+          </AuthGate>
+        }
+      />
+
+      {/* Buyer Network — DARK LAUNCH. Direct URL only, no nav links.
+          Server allowlist gates it; non-allowlisted users bounce home. */}
+      <Route
+        path="/network"
+        element={
+          <AuthGate>
+            <NetworkPage />
+          </AuthGate>
+        }
+      />
+
+      <Route
+        path="/network/join"
+        element={
+          <AuthGate>
+            <NetworkJoinPage />
+          </AuthGate>
+        }
+      />
 
       {/* Legacy alias */}
       <Route path="/coverage" element={<Navigate to="/territories" replace />} />
@@ -90,3 +138,16 @@ export default function App() {
 }
 
 
+// Thin wrappers that pull profile + signOut from context and pass
+// them to the page as props. Pages are kept prop-driven (rather
+// than calling useAuth themselves) so they can be reused in
+// non-authenticated contexts later (e.g. an admin preview tool).
+function AuthenticatedTerritories() {
+  const { profile, signOut } = useAuth();
+  return <TerritoriesPage agent={profile} onSignOut={signOut} />;
+}
+
+function AuthenticatedBriefing() {
+  const { profile, signOut } = useAuth();
+  return <BriefingPage agent={profile} onSignOut={signOut} />;
+}

@@ -106,7 +106,7 @@ export default function SignupPage() {
         {!authLoading && !isConfigured && (
           <div style={warnStyle}>
             Authentication isn&rsquo;t configured in this environment.
-            Contact the Overture team at{' '}
+            Contact the SellerSignal team at{' '}
             <a href="mailto:hello@sellersignal.co" style={{ color: 'inherit' }}>
               hello@sellersignal.co
             </a>.

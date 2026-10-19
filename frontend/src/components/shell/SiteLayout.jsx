@@ -1,7 +1,7 @@
 import SiteHeader from './SiteHeader.jsx';
 import SiteFooter from './SiteFooter.jsx';
 
-// SiteLayout — wraps a page with the Overture header and
+// SiteLayout — wraps a page with the SellerSignal header and
 // (optionally) footer. Designed to be rendered around <Outlet />
 // at the route level OR around individual page bodies.
 //
@@ -38,7 +38,7 @@ export default function SiteLayout({
       display: 'flex',
       flexDirection: 'column',
     }}>
-      {!(typeof window!=='undefined' && window.__OVERTURE_DEMO__) && <SiteHeader agent={agent} onSignOut={onSignOut} mode={mode} />}
+      <SiteHeader agent={agent} onSignOut={onSignOut} mode={mode} />
 
       <main style={{
         flex: 1,

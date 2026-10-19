@@ -77,8 +77,6 @@ async function _fetchConfig() {
 }
 
 async function _doInit() {
-  // DEMO BUILD ONLY: no Supabase in the gated demo.
-  if (typeof window !== 'undefined' && window.__OVERTURE_DEMO__) return null;
   // 1. Cached config path — instant init for repeat visits.
   const cached = _safeLocalStorageGet(CONFIG_CACHE_KEY);
   if (cached) {
@@ -231,7 +229,6 @@ export async function getCurrentSession() {
 
 // Bearer token for backend API calls. Returns null when signed out.
 export async function getAccessToken() {
-  if (typeof window !== 'undefined' && window.__OVERTURE_DEMO__) return 'demo';
   const session = await getCurrentSession();
   return session?.access_token || null;
 }

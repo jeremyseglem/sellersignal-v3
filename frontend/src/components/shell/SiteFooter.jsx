@@ -44,7 +44,7 @@ export default function SiteFooter() {
           color: 'var(--text-tertiary)',
           marginTop: 8,
         }}>
-          &copy; {new Date().getFullYear()} Overture. Territory intelligence
+          &copy; {new Date().getFullYear()} SellerSignal. Territory intelligence
           for luxury real estate.
         </div>
       </div>

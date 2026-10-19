@@ -12,7 +12,7 @@ const AUTH_REQUIRED = import.meta.env.VITE_AUTH_REQUIRED === 'true';
 
 // SiteHeader — dark navigation bar present on every authenticated page.
 //
-// Left: Overture logo (light tone, links to /territories — the home
+// Left: SellerSignal logo (light tone, links to /territories — the home
 // page for signed-in agents). Right: nav links + agent identity area.
 //
 // Auth state is opt-in via the `agent` prop: when null/undefined, the
@@ -67,7 +67,7 @@ export default function SiteHeader({ agent, onSignOut, mode = 'auto' }) {
         <Link
           to={resolvedMode === 'authenticated' ? '/territories' : '/'}
           style={{ textDecoration: 'none' }}
-          aria-label="Overture home"
+          aria-label="SellerSignal home"
         >
           <Logo tone="light" size="default" />
         </Link>
@@ -241,9 +241,6 @@ function AuthenticatedNav({ agent, isActive, onSignOut }) {
       <Link to="/my-leads" style={navBtnStyle('ghost', isActive('/my-leads'))}>
         My Leads
       </Link>
-      <Link to="/network" style={navBtnStyle('ghost', isActive('/network'))}>
-        Network
-      </Link>
       <Link to="/letters" style={navBtnStyle('ghost', isActive('/letters'))}>
         Letters
       </Link>
@@ -290,13 +287,6 @@ function AuthenticatedMobileMenu({ agent, isActive, onSignOut }) {
         role="menuitem"
       >
         My Leads
-      </Link>
-      <Link
-        to="/network"
-        className={`${styles.mobileSheetItem} ${isActive('/network') ? styles.mobileSheetItemActive : ''}`}
-        role="menuitem"
-      >
-        Network
       </Link>
       <Link
         to="/letters"

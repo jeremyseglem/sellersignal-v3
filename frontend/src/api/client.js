@@ -7,7 +7,7 @@
 
 import { getAccessToken } from '../lib/supabase.js';
 
-const API_BASE = (typeof window !== 'undefined' && window.__OVERTURE_DEMO__) ? '/overture-api' : '/api';
+const API_BASE = '/api';
 
 async function request(path, options = {}) {
   const { headers: optHeaders, ...rest } = options;

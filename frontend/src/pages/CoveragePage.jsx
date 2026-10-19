@@ -44,7 +44,7 @@ export default function CoveragePage() {
           letterSpacing: '-0.02em',
           color: 'var(--text)',
         }}>
-          Overture
+          SellerSignal
         </h1>
         <p style={{
           fontFamily: 'var(--font-serif)',

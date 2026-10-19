@@ -64,7 +64,7 @@ export default function TCPAComplianceModal({ onAcked, onCancel }) {
           <div style={bulletStyle}>
             <strong style={bulletLabelStyle}>DNC.</strong> You must
             scrub your call lists against the National Do Not Call
-            Registry. Overture flags DNC-listed numbers in the
+            Registry. SellerSignal flags DNC-listed numbers in the
             results, but you remain responsible for verifying and
             honoring the registry, including state-specific DNC lists
             and any internal request to not be contacted.
@@ -81,7 +81,7 @@ export default function TCPAComplianceModal({ onAcked, onCancel }) {
           </div>
           <div style={bulletStyle}>
             <strong style={bulletLabelStyle}>Your responsibility.</strong>{' '}
-            Overture provides data; you are responsible for
+            SellerSignal provides data; you are responsible for
             compliant use. Consult a lawyer if you&rsquo;re unsure
             whether your outreach plan complies with all applicable
             laws.

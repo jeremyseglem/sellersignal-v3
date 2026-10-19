@@ -17,7 +17,7 @@ initUiVersion();
 // useSearchParams during its initial render.
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter basename={import.meta.env.BASE_URL}>
+    <BrowserRouter>
       <AuthProvider>
         <App />
       </AuthProvider>

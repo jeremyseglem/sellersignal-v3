@@ -1,4 +1,4 @@
-// Overture logo component.
+// SellerSignal logo component.
 //
 // Composition: a circular "signal" mark (3 ascending bars inside a thin
 // circle, evoking sound-wave / chart) followed by the wordmark in DM
@@ -47,7 +47,7 @@ export default function Logo({ size = 'default', tone = 'light', as = 'span' }) 
         // the wordmark optically aligns with the mark's center.
         marginTop: 1,
       }}>
-        Overture
+        SellerSignal
       </span>
     </Wrapper>
   );
