@@ -67,6 +67,25 @@ log = logging.getLogger("billing")
 # Falls back to the production domain if not set.
 SITE_URL = os.environ.get("PUBLIC_SITE_URL", "https://sellersignal.co")
 
+# Front doors allowed to receive Stripe redirects. The Overture gateway
+# proxies /api/* here and sets Origin to its own public host, so checkout
+# started on overture.homes must land back on overture.homes — not on
+# whatever single domain SITE_URL names.
+_ALLOWED_ORIGINS = {
+    "https://sellersignal.co", "https://www.sellersignal.co",
+    "https://overture.homes", "https://www.overture.homes",
+}
+
+
+def _site_url(request: Optional[Request]) -> str:
+    """The origin redirect URLs should use: the request's own front door
+    when it is one of ours, else the configured SITE_URL."""
+    try:
+        origin = (request.headers.get("origin") or "").rstrip("/") if request else ""
+    except Exception:
+        origin = ""
+    return origin if origin in _ALLOWED_ORIGINS else SITE_URL
+
 
 # ── Models ───────────────────────────────────────────────────────────
 
@@ -144,6 +163,7 @@ def _zip_is_claimed(zip_code: str) -> Optional[dict]:
 @router.post("/create-checkout")
 async def create_checkout(
     body: CreateCheckoutBody,
+    request: Request,
     authorization: Optional[str] = Header(None),
 ):
     user = _user_from_authorization(authorization)
@@ -210,8 +230,8 @@ async def create_checkout(
             customer_id=customer_id,
             user_id=user.id,
             zip_code=zip_code,
-            success_url=f"{SITE_URL}{success_path}",
-            cancel_url=f"{SITE_URL}{cancel_path}",
+            success_url=f"{_site_url(request)}{success_path}",
+            cancel_url=f"{_site_url(request)}{cancel_path}",
         )
     except stripe.error.StripeError as e:
         log.exception("Stripe checkout creation failed for user %s", user.id)
@@ -288,6 +308,7 @@ async def stripe_webhook(request: Request):
 @router.post("/portal-link")
 async def portal_link(
     body: PortalLinkBody,
+    request: Request,
     authorization: Optional[str] = Header(None),
 ):
     user = _user_from_authorization(authorization)
@@ -305,7 +326,7 @@ async def portal_link(
     try:
         url = stripe_service.create_portal_session(
             customer_id=customer_id,
-            return_url=f"{SITE_URL}{return_path}",
+            return_url=f"{_site_url(request)}{return_path}",
         )
     except stripe.error.StripeError as e:
         log.exception("Portal session creation failed for user %s", user.id)
