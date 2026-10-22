@@ -4897,3 +4897,39 @@ async def resync_coverage_counts(
         'report': [x for x in report if x['drift'] != 0],
         'clean_count': len([x for x in report if x['drift'] == 0]),
     }
+
+
+# ── Fabric export (read-only, for hindcast analysis) ─────────────────
+# Hindcasts join MLS Sold exports against the parcel fabric. The map
+# API that the Gallatin hindcast used is now (correctly) JWT-gated, so
+# analysis needs an admin-gated, paginated, read-only dump instead.
+# MLS data NEVER flows in through this — it's export only.
+@router.get("/export-fabric/{zip_code}", dependencies=[Depends(require_admin)])
+async def export_fabric(
+    zip_code: str,
+    table: str = Query("parcels", description="parcels | matches | signals"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(5000, ge=1, le=5000),
+):
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+    if table == "parcels":
+        q = (supa.table('parcels_v3')
+             .select('pin, address, unit, zip_code, owner_name, band, '
+                     'archetype, tenure_years')
+             .eq('zip_code', zip_code))
+    elif table == "matches":
+        q = (supa.table('raw_signal_matches_v3')
+             .select('*')
+             .eq('zip_code', zip_code))
+    elif table == "signals":
+        q = (supa.table('raw_signals_v3')
+             .select('*')
+             .eq('zip_code', zip_code))
+    else:
+        raise HTTPException(400, "table must be parcels | matches | signals")
+    res = q.range(offset, offset + limit - 1).execute()
+    rows = res.data or []
+    return {"zip_code": zip_code, "table": table, "offset": offset,
+            "count": len(rows), "rows": rows}
