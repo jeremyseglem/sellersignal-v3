@@ -4832,3 +4832,68 @@ def canon_batch_ingest(
                     "rows_failed": failed,
                     "note": ("Idempotent — re-run on transient failures. "
                              "ZIP is Contact-Now-ready once rows_failed=0.")}
+
+
+# ── Coverage-count resync ────────────────────────────────────────────
+# zip_coverage_v3.parcel_count is written at seeding time and goes stale
+# when a ZIP is later backfilled or re-ingested: the territory cards
+# (which read coverage) then disagree with the briefing header (which
+# counts the live fabric). Found 2026-10-22 by Brian on 98012 — card
+# said 10,196 homes, briefing said 22,740; Snohomish ZIPs were 2-6x
+# understated. The fabric count is the truth: every row is classified
+# and address-filtered, same rule the briefing applies.
+#
+# Dry-run by default (write=0). write=1 updates every drifted row.
+# One exact-count query per ZIP (~290 live ZIPs, ~60-90s total).
+@router.post("/resync-coverage-counts", dependencies=[Depends(require_admin)])
+async def resync_coverage_counts(
+    write: int = Query(0, description="1 = apply updates; 0 = report only"),
+    zip_code: Optional[str] = Query(None, description="Limit to one ZIP"),
+):
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+
+    q = supa.table('zip_coverage_v3').select('zip_code, parcel_count, status')
+    if zip_code:
+        q = q.eq('zip_code', zip_code)
+    cov_rows = q.execute().data or []
+
+    report = []
+    drifted = 0
+    for r in cov_rows:
+        z = r['zip_code']
+        # Same rule as the briefing front-door: a parcel counts only if
+        # it has a usable address (addressless rows are ghost parcels).
+        res = (supa.table('parcels_v3')
+               .select('pin', count='exact')
+               .eq('zip_code', z)
+               .not_.is_('address', 'null')
+               .neq('address', '')
+               .limit(1)
+               .execute())
+        actual = res.count or 0
+        recorded = r.get('parcel_count')
+        changed = recorded != actual
+        if changed:
+            drifted += 1
+            if write:
+                supa.table('zip_coverage_v3').update(
+                    {'parcel_count': actual}).eq('zip_code', z).execute()
+        report.append({
+            'zip_code': z,
+            'recorded': recorded,
+            'actual': actual,
+            'drift': actual - (recorded or 0),
+            'updated': bool(changed and write),
+        })
+
+    report.sort(key=lambda x: abs(x['drift']), reverse=True)
+    return {
+        'write': bool(write),
+        'zips_checked': len(report),
+        'zips_drifted': drifted,
+        # Full list is long; lead with the drifted rows.
+        'report': [x for x in report if x['drift'] != 0],
+        'clean_count': len([x for x in report if x['drift'] == 0]),
+    }
