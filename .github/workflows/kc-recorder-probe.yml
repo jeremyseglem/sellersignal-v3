@@ -160,61 +160,30 @@ jobs:
                   from datetime import date, timedelta
                   end = date.today(); begin = end - timedelta(days=7)
                   fmt = lambda d: d.strftime("%m/%d/%Y")
-                  # tick the DEATH CERTIFICATE type. v2 learned the dt-
-                  # checkboxes live in a collapsed "select document type"
-                  # picker (check raised: Element is not visible), so open
-                  # every such opener and try the tick after each; then
-                  # JS-force the checkbox + the hidden id list regardless.
-                  ticked = False
-                  openers = page.locator("a:has-text('select document type'), "
-                                         "button:has-text('select document type'), "
-                                         "span:has-text('select document type')")
-                  for oi in range(min(openers.count(), 4)):
-                      try:
-                          openers.nth(oi).click(timeout=4000)
-                          time.sleep(2)
-                          el = page.locator("#dt-DocumentType-60").first
-                          if el.count() > 0 and el.is_visible():
-                              el.check(timeout=4000); ticked = True
-                              print(f"ticked via opener #{oi}"); break
-                      except Exception as e:
-                          print(f"opener #{oi} raised: {e}")
+                  # v4 artifacts decoded the whole flow: the picker modal
+                  # commits via the page's own
+                  # UpdateDocumentTypeListFromModal('DocumentType'), and the
+                  # submit is #submit-DocumentType (form documentTypeSearchForm,
+                  # url 'DocumentTypeSearch'). Drive the page functions
+                  # directly — no clicking through six parallel modals.
+                  # Also log search-ish network traffic: the raw AJAX
+                  # endpoint is the harvester's future direct path.
+                  page.on("request", lambda r: print("REQ", r.method, r.url[:180])
+                          if ("earch" in r.url or "Document" in r.url) and "static" not in r.url else None)
                   try:
                       page.evaluate("""() => {
                           const cb = document.getElementById('dt-DocumentType-60');
                           if (cb) { cb.checked = true;
-                              cb.dispatchEvent(new Event('click', {bubbles:true}));
                               cb.dispatchEvent(new Event('change', {bubbles:true})); }
-                          const hid = document.getElementById('documentTypeIds-DocumentType');
-                          if (hid) { hid.value = '60';
-                              hid.dispatchEvent(new Event('change', {bubbles:true})); }
+                          if (typeof UpdateDocumentTypeListFromModal === 'function')
+                              UpdateDocumentTypeListFromModal('DocumentType');
                       }""")
-                      print("JS-forced dt-DocumentType-60 + documentTypeIds-DocumentType=60")
+                      print("committed type 60 via UpdateDocumentTypeListFromModal")
+                      time.sleep(2)
+                      print("documentTypeIds now:", page.evaluate(
+                          "() => (document.getElementById('documentTypeIds-DocumentType')||{}).value"))
                   except Exception as e:
-                      print(f"JS force raised: {e}")
-                  # v3 screenshot: the picker is a MODAL ('Document Types')
-                  # with Select/Close buttons; the tick holds but the modal
-                  # stays open and swallows the search click. Commit it.
-                  for sel in ["button:has-text('Select')", "a:has-text('Select')",
-                              "input[value='Select']"]:
-                      try:
-                          el = page.locator(sel).first
-                          if el.count() > 0 and el.is_visible():
-                              el.click(timeout=5000)
-                              print(f"clicked modal Select: {sel}")
-                              time.sleep(2); break
-                      except Exception as e:
-                          print(f"modal Select {sel} raised: {e}")
-                  for sel in ["button:has-text('Close')", ".modal a:has-text('×')",
-                              "button.close"]:
-                      try:
-                          el = page.locator(sel).first
-                          if el.count() > 0 and el.is_visible():
-                              el.click(timeout=3000)
-                              print(f"clicked modal Close: {sel}")
-                              time.sleep(1); break
-                      except Exception:
-                          continue
+                      print(f"modal commit raised: {e}")
                   for fid, val in (("#beginDate-DocumentType", fmt(begin)),
                                    ("#endDate-DocumentType", fmt(end))):
                       try:
@@ -225,18 +194,11 @@ jobs:
                       except Exception as e:
                           print(f"fill {fid} raised: {e}")
                   dump(page, "05_search_filled")
-                  for sel in ["#submit-DocumentType", "button#searchButton-DocumentType",
-                              "input[id*='submit'][id*='DocumentType']",
-                              "a[id*='submit'][id*='DocumentType']",
-                              "button:has-text('Search')", "input[value='Search']"]:
-                      try:
-                          el = page.locator(sel).first
-                          if el.count() > 0 and el.is_visible():
-                              el.click(timeout=8000)
-                              print(f"clicked search control: {sel}")
-                              break
-                      except Exception as e:
-                          print(f"search click {sel} raised: {e}")
+                  try:
+                      page.evaluate("() => document.getElementById('submit-DocumentType').click()")
+                      print("fired #submit-DocumentType via JS")
+                  except Exception as e:
+                      print(f"submit fire raised: {e}")
                   try: page.wait_for_load_state("networkidle", timeout=45000)
                   except Exception: pass
                   time.sleep(6)
