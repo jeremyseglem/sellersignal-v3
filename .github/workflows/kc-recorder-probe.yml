@@ -192,6 +192,29 @@ jobs:
                       print("JS-forced dt-DocumentType-60 + documentTypeIds-DocumentType=60")
                   except Exception as e:
                       print(f"JS force raised: {e}")
+                  # v3 screenshot: the picker is a MODAL ('Document Types')
+                  # with Select/Close buttons; the tick holds but the modal
+                  # stays open and swallows the search click. Commit it.
+                  for sel in ["button:has-text('Select')", "a:has-text('Select')",
+                              "input[value='Select']"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=5000)
+                              print(f"clicked modal Select: {sel}")
+                              time.sleep(2); break
+                      except Exception as e:
+                          print(f"modal Select {sel} raised: {e}")
+                  for sel in ["button:has-text('Close')", ".modal a:has-text('×')",
+                              "button.close"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=3000)
+                              print(f"clicked modal Close: {sel}")
+                              time.sleep(1); break
+                      except Exception:
+                          continue
                   for fid, val in (("#beginDate-DocumentType", fmt(begin)),
                                    ("#endDate-DocumentType", fmt(end))):
                       try:
