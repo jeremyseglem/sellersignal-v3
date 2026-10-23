@@ -61,9 +61,19 @@ ZIP_FILTER: Optional[str] = _ZIP_FILTER_RAW or None
 
 MAX_BACKOFF_SECS = 1800
 
+# Boot-time kill switch (2026-10-23). The pause endpoint only flips
+# in-process state, which a crash/redeploy resets — during the KC OOM
+# loop that meant the task resumed 30s after every restart and re-OOMed
+# the container. REMATCH_AUTOFILL_ENABLED=0 in Railway env disables the
+# task across restarts without a code change; the resume/trigger
+# endpoints can still re-enable a live process.
+ENABLED_AT_BOOT = os.environ.get(
+    "REMATCH_AUTOFILL_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+
 # ── Shared state ──────────────────────────────────────────────────────────
 state: dict = {
-    "enabled":              True,
+    "enabled":              ENABLED_AT_BOOT,
     "started_at":           None,
     "last_tick_at":         None,
     "last_tick_result":     None,
@@ -282,6 +292,18 @@ async def rematch_autofill_loop() -> None:
                     await _trigger_coverage_refresh()
                 except Exception as e:
                     log.warning(f"coverage-counts refresh failed: {e}")
+
+            # Memory hygiene (2026-10-23): a tick allocates and frees one
+            # owners_db per ZIP swept; glibc keeps the freed arenas in
+            # RSS, so hours of ticks ratcheted the container into Railway's
+            # OOM killer. Collect, then hand the freed pages back to the OS.
+            import gc
+            gc.collect()
+            try:
+                import ctypes
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass  # non-glibc platform — trim is best-effort
 
             # Active or idle sleep based on whether the queue is drained.
             sleep_for = IDLE_INTERVAL if unmatched_after == 0 else TICK_INTERVAL

@@ -205,10 +205,18 @@ def _load_owners_db(
     # Filter out gov-owned parcels — they can't be seller signals
     parcels = [p for p in parcels if not _is_government_parcel(p)]
 
-    # owner_canonical (for each pin, the parsed owner entities)
-    pins = [p['pin'] for p in parcels]
-    canonical_by_pin = _load_canonical_for_pins(supa, pins)
-
+    # owner_canonical NOT loaded (memory/OOM fix 2026-10-23): the
+    # 'canonicalized' field was filled from owner_canonical_v3 (full
+    # select('*') rows incl. JSONB co_owners, chunked 100 pins/request —
+    # ~230 extra HTTP round trips for a 23k-parcel ZIP) but NOTHING reads
+    # it: every dispatcher matches on the owner_name string via
+    # name_match(), and _process_one only consults zip_code/market_key
+    # (verified: the only reference to 'canonicalized' in the backend is
+    # this assignment). During the KC backfill drain this dead load was
+    # most of the per-tick memory churn and tick time — the RSS ratchet
+    # that OOM-crashed Railway. Key kept (None) to preserve the legacy
+    # owners_db shape. If a future matcher needs parsed names, reinstate
+    # _load_canonical_for_pins with an explicit column list, not '*'.
     owners_db: dict = {}
     use_codes: dict = {}
     for p in parcels:
@@ -216,7 +224,7 @@ def _load_owners_db(
         owners_db[pin] = {
             'owner_name':     (p.get('owner_name') or '').upper(),
             'co_owner_name':  '',  # parcels_v3 doesn't split co-owner separately
-            'canonicalized':  canonical_by_pin.get(pin),
+            'canonicalized':  None,  # see note above — never consumed
             # zip_code preserved here so per-source-type dispatchers can
             # consult it for rollout allowlists. Used by tax_delinquency
             # to confine matches to enabled ZIPs even when the matcher
