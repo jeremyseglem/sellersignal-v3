@@ -4914,19 +4914,26 @@ async def export_fabric(
     supa = get_supabase_client()
     if not supa:
         raise HTTPException(503, "Database unavailable")
+    # Column lists match schema/001 + 006 exactly — never invent fields.
+    # matches/signals have no zip_code: they join through pins, so those
+    # tables export globally (ordered by id) and callers filter by pin.
     if table == "parcels":
         q = (supa.table('parcels_v3')
-             .select('pin, address, unit, zip_code, owner_name, band, '
-                     'archetype, tenure_years')
-             .eq('zip_code', zip_code))
+             .select('pin, address, zip_code, owner_name, owner_type, '
+                     'band, signal_family, tenure_years, total_value, '
+                     'last_transfer_date, is_absentee')
+             .eq('zip_code', zip_code).order('pin'))
     elif table == "matches":
         q = (supa.table('raw_signal_matches_v3')
-             .select('*')
-             .eq('zip_code', zip_code))
+             .select('id, raw_signal_id, pin, match_strength, '
+                     'match_method, match_review_status, matched_at')
+             .order('id'))
     elif table == "signals":
         q = (supa.table('raw_signals_v3')
-             .select('*')
-             .eq('zip_code', zip_code))
+             .select('id, source_type, signal_type, trust_level, '
+                     'party_names, event_date, jurisdiction, '
+                     'document_ref, matched_at, match_count, harvested_at')
+             .order('id'))
     else:
         raise HTTPException(400, "table must be parcels | matches | signals")
     res = q.range(offset, offset + limit - 1).execute()
