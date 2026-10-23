@@ -2738,6 +2738,56 @@ def qc_snapshot(x_admin_key: Optional[str] = Header(None)):
     }
 
 
+@router.get("/workflow-runs")
+def workflow_runs(x_admin_key: Optional[str] = Header(None)):
+    """Latest GitHub Actions run per workflow, mirrored for agents that
+    have no GitHub access (the ZIP Warden's daily check #3 — its first
+    report flagged this gap). Requires GITHUB_PAT in env (actions:read
+    on jeremyseglem/sellersignal-v3 is enough); without it, returns
+    configured: false so callers report the check as not runnable
+    instead of guessing."""
+    _require_admin(x_admin_key)
+    pat = os.environ.get("GITHUB_PAT", "").strip()
+    if not pat:
+        return {"configured": False,
+                "note": "GITHUB_PAT not set in env — workflow check not runnable"}
+    import httpx
+    out = []
+    try:
+        with httpx.Client(timeout=30, headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+        }) as c:
+            wfs = c.get("https://api.github.com/repos/jeremyseglem/"
+                        "sellersignal-v3/actions/workflows?per_page=50")
+            wfs.raise_for_status()
+            for wf in wfs.json().get("workflows", []):
+                runs = c.get(f"https://api.github.com/repos/jeremyseglem/"
+                             f"sellersignal-v3/actions/workflows/{wf['id']}"
+                             f"/runs?per_page=1")
+                if runs.status_code != 200:
+                    out.append({"workflow": wf.get("name"),
+                                "path": wf.get("path"), "error": runs.status_code})
+                    continue
+                wr = runs.json().get("workflow_runs", [])
+                r0 = wr[0] if wr else None
+                out.append({
+                    "workflow":   wf.get("name"),
+                    "path":       wf.get("path"),
+                    "state":      wf.get("state"),
+                    "last_run":   None if not r0 else {
+                        "status":     r0.get("status"),
+                        "conclusion": r0.get("conclusion"),
+                        "created_at": r0.get("created_at"),
+                        "event":      r0.get("event"),
+                    },
+                })
+    except Exception as e:
+        return {"configured": True,
+                "error": f"{type(e).__name__}: {str(e)[:200]}", "workflows": out}
+    return {"configured": True, "workflows": out}
+
+
 @router.get("/thread-dump")
 def thread_dump(x_admin_key: Optional[str] = Header(None)):
     """Stack trace of every live thread (admin). Diagnostic for wedged

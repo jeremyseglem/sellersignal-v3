@@ -141,18 +141,43 @@ def run_harvest(
         stats["upserted_new"] += new
         stats["upserted_dup"] += dup
 
-    # Run matcher if requested
+    # Run matcher if requested — but ONE matcher, ONE process. The ZIP
+    # Warden's first report (2026-10-23) caught 10 concurrent harvest
+    # workflows each running this inline pass (unscoped: _load_owners_db
+    # over the whole fabric, per thread) on top of the rematch background
+    # task — saturating CPU/DB, stalling every background worker
+    # (ReadTimeouts across four tasks), and reproducing the morning's
+    # OOM memory shape. When the rematch task owns matching, harvest
+    # runs hand their signals to it (wake + defer, drained within ~60s)
+    # instead of matching inline. Inline remains the fallback when the
+    # task is disabled (EREAL/REMATCH env kill-switch deployments).
     if match_after and not dry_run:
+        deferred = False
         try:
-            stats["match_stats"] = matcher.process_unmatched(
-                supa,
-                zip_filter=zip_filter,
-                batch_size=match_batch_size,
-                max_batches=50,
-            )
-        except Exception as e:
-            log.exception("Matcher failed")
-            stats["errors"].append(f"Match error: {e}")
+            from backend.tasks.rematch_autofill import state as _rm_state
+            if _rm_state.get("enabled"):
+                _rm_state["wake_requested"] = True
+                _rm_state["backoff_until"] = None
+                stats["match_stats"] = {
+                    "deferred_to": "rematch_autofill",
+                    "note": ("inline matching skipped — the background "
+                             "matcher owns matching (one matcher, one "
+                             "process); woken to drain this harvest"),
+                }
+                deferred = True
+        except Exception:
+            deferred = False   # task module unavailable — match inline
+        if not deferred:
+            try:
+                stats["match_stats"] = matcher.process_unmatched(
+                    supa,
+                    zip_filter=zip_filter,
+                    batch_size=match_batch_size,
+                    max_batches=50,
+                )
+            except Exception as e:
+                log.exception("Matcher failed")
+                stats["errors"].append(f"Match error: {e}")
 
     return stats
 

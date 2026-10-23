@@ -1,0 +1,135 @@
+name: Snohomish Aumentum Probe (manual diagnostic)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only.
+# The SCOPI tenure scraper went to 100% errors (ZIP Warden first report,
+# 2026-10-23); root cause: snoco.org/proptax now 301s to the county's
+# new assessor site — the per-parcel app moved to Aumentum at
+# wa-snohomish.publicaccessnow.com (PropertyInformation/PropertySearch
+# .aspx + SalesSearch.aspx; the feed audit verified SalesSearch offers
+# CSV export up to 800 rows, no captcha, no login). This probe captures:
+# the property-search form, ONE parcel detail page (sales-history
+# section especially — does it carry deed type / sale code?), and the
+# SalesSearch form + a one-week result page. The tenure-scraper rebuild
+# and the Snohomish transfer feed both get built from these artifacts.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Probe Aumentum under Chromium
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import json, pathlib, time
+
+          OUT = pathlib.Path("snoprobe"); OUT.mkdir(exist_ok=True)
+          BASE = "https://wa-snohomish.publicaccessnow.com"
+
+          def dump(page, name):
+              (OUT / f"{name}.html").write_text(page.content())
+              page.screenshot(path=str(OUT / f"{name}.png"), full_page=True)
+              print(f"[dump] {name}: url={page.url[:120]} title={page.title()[:80]!r}")
+
+          def forms(page, label):
+              out = page.evaluate("""() => Array.from(document.querySelectorAll('form')).map(f => ({
+                  id: f.id||null, action: f.getAttribute('action'),
+                  fields: Array.from(f.querySelectorAll('input,select')).map(el => ({
+                      tag: el.tagName, name: el.getAttribute('name'), type: el.getAttribute('type'),
+                      id: el.id||null,
+                      options: el.tagName==='SELECT' ? Array.from(el.options).slice(0,40).map(o=>o.text.trim().slice(0,40)) : undefined
+                  })).slice(0,60)}))""")
+              print(f"=== forms on {label} ==="); print(json.dumps(out, indent=1)[:9000])
+              (OUT / f"forms_{label}.json").write_text(json.dumps(out, indent=1))
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True)
+              ctx = br.new_context(viewport={"width": 1440, "height": 900})
+              page = ctx.new_page()
+
+              # 1. Property search form
+              try:
+                  page.goto(f"{BASE}/PropertyInformation/PropertySearch.aspx",
+                            wait_until="networkidle", timeout=90000)
+              except Exception as e:
+                  print("goto propsearch raised:", e)
+              time.sleep(4)
+              dump(page, "01_propsearch"); forms(page, "propsearch")
+
+              # 2. Search a known Snohomish parcel from our 98290 fabric
+              # (14-digit pins; try the parcel-number field by common names)
+              PIN = "00372600203300"   # placeholder format probe — any hit works
+              filled = False
+              for sel in ["input[id*='Parcel']", "input[name*='Parcel']",
+                          "input[id*='parcel']", "input[type='text']"]:
+                  try:
+                      el = page.locator(sel).first
+                      if el.count() > 0 and el.is_visible():
+                          el.fill(PIN, timeout=5000)
+                          print(f"filled {sel} = {PIN}"); filled = True; break
+                  except Exception as e:
+                      print(f"fill {sel} raised: {e}")
+              if filled:
+                  for sel in ["input[type='submit']", "button:has-text('Search')",
+                              "a:has-text('Search')"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=6000)
+                              print(f"clicked {sel}")
+                              try: page.wait_for_load_state("networkidle", timeout=45000)
+                              except Exception: pass
+                              time.sleep(4); break
+                      except Exception as e:
+                          print(f"{sel} raised: {e}")
+                  dump(page, "02_search_result")
+                  # click through to a detail page if results listed
+                  for sel in ["table a", "a[href*='PropertyInformation']"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=6000)
+                              try: page.wait_for_load_state("networkidle", timeout=45000)
+                              except Exception: pass
+                              time.sleep(4)
+                              dump(page, "03_parcel_detail")
+                              break
+                      except Exception:
+                          continue
+                  # capture any sales-history tables on the detail page
+                  tbl = page.evaluate("""() => Array.from(document.querySelectorAll('table')).map(t => ({
+                      id: t.id||null, rows: t.rows.length,
+                      headers: Array.from(t.querySelectorAll('th')).map(h=>h.innerText.trim()).slice(0,15),
+                      firstRow: t.rows.length>1 ? Array.from(t.rows[1].cells).map(c=>c.innerText.trim().slice(0,40)) : null}))""")
+                  (OUT / "detail_tables.json").write_text(json.dumps(tbl, indent=1))
+                  print("=== detail tables ==="); print(json.dumps(tbl, indent=1)[:6000])
+
+              # 3. Sales search form (the transfer-feed candidate)
+              try:
+                  page.goto(f"{BASE}/SalesSearch.aspx", wait_until="networkidle",
+                            timeout=90000)
+              except Exception as e:
+                  print("goto salessearch raised:", e)
+              time.sleep(4)
+              dump(page, "04_salessearch"); forms(page, "salessearch")
+              br.close()
+          PYEOF
+          python probe.py
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: snohomish-aumentum-probe
+          path: snoprobe/
+          if-no-files-found: ignore
