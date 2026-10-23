@@ -427,12 +427,20 @@ def _load_canonical_for_pins(supa, pins: list[str]) -> dict:
 
 
 def _fetch_unmatched_batch(
-    supa, batch_size: int, source_types: Optional[list] = None
+    supa, batch_size: int, source_types: Optional[list] = None,
+    offset: int = 0,
 ) -> list[dict]:
     """Pull next batch of raw_signals with matched_at IS NULL.
 
     source_types: restrict to these sources (market-scoped mode). Must
     correspond to the markets loaded in owners_db — see process_unmatched.
+
+    offset: page within the still-NULL set. Callers that collect several
+    batches BEFORE flipping matched_at (the streamed path defers marks
+    until every ZIP is swept) must advance this — re-querying at offset 0
+    returns the same rows, the dupe guard discards them, and the tick
+    silently caps at one batch (observed in prod 2026-10-23: 100
+    signals/tick against a 7k backlog, whatever MAX_BATCHES said).
     """
     q = (supa.table('raw_signals_v3')
          .select('*')
@@ -440,7 +448,7 @@ def _fetch_unmatched_batch(
     if source_types:
         q = q.in_('source_type', sorted(source_types))
     rows = (q.order('harvested_at', desc=False)
-            .limit(batch_size)
+            .range(offset, offset + batch_size - 1)
             .execute()).data or []
     return rows
 
@@ -497,19 +505,19 @@ def _process_unmatched_streamed(supa, market_keys, batch_size, max_batches,
         stats["errors"].append(f"No ZIPs for markets {market_keys}")
         return stats
 
-    # Fetch the unmatched signals for this scope, once.
+    # Fetch the unmatched signals for this scope, once. Marks are
+    # deferred, so page by offset — see _fetch_unmatched_batch.
     all_rows = []
-    for _ in range(max_batches):
-        rows = _fetch_unmatched_batch(supa, batch_size, source_types)
+    for i in range(max_batches):
+        rows = _fetch_unmatched_batch(supa, batch_size, source_types,
+                                      offset=i * batch_size)
         if not rows:
             break
-        # exclude ones already collected (fetch re-reads NULL matched_at,
-        # which we haven't flipped yet — so guard against dupes by id)
         have = {r["id"] for r in all_rows}
         new = [r for r in rows if r["id"] not in have]
-        if not new:
-            break
         all_rows.extend(new)
+        if len(rows) < batch_size:
+            break
     if not all_rows:
         return stats
 

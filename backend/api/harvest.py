@@ -2449,6 +2449,24 @@ def rematch_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
     return {"message": "Wake requested — task re-scans within ~20s."}
 
 
+@router.get("/thread-dump")
+def thread_dump(x_admin_key: Optional[str] = Header(None)):
+    """Stack trace of every live thread (admin). Diagnostic for wedged
+    background work: the rematch task repeatedly completed 2 ticks after
+    boot then hung mid-tick with no error (2026-10-23) — this shows the
+    exact frame each thread is stuck in, since Railway gives us no shell.
+    Read-only; safe to call on a live box."""
+    _require_admin(x_admin_key)
+    import sys
+    import threading
+    import traceback
+    names = {t.ident: t.name for t in threading.enumerate()}
+    out = {}
+    for ident, frame in sys._current_frames().items():
+        out[f"{names.get(ident, '?')} ({ident})"] = traceback.format_stack(frame)
+    return {"threads": out, "count": len(out)}
+
+
 @router.post("/rematch-autofill-resume")
 def rematch_autofill_resume(x_admin_key: Optional[str] = Header(None)):
     """Resume the rematch autofill task and clear any backoff window."""
