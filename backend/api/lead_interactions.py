@@ -219,3 +219,66 @@ async def status_by_zip(
         'zip_code': zip_code,
         'statuses': statuses,
     }
+
+
+# ── Conversion funnel (Step 2 instrumentation, 2026-10-22) ───────────
+# Read-only rollup of the interaction ladder per ZIP. Stages map onto
+# the EXISTING event vocabulary (DB CHECK constraint unchanged):
+#   contacted  = mailed | called | voicemail
+#   responded  = got_response
+#   appointment= listing_discussion   (the in-person/valuation stage)
+#   signed     = closed
+# A pin counts at its FURTHEST stage. This is the number the strategy
+# doc's conversion lab reports on: flagged -> contacted -> responded ->
+# appointment -> signed.
+_FUNNEL_STAGES = [
+    ('contacted',   {'mailed', 'called', 'voicemail'}),
+    ('responded',   {'got_response'}),
+    ('appointment', {'listing_discussion'}),
+    ('signed',      {'closed'}),
+]
+
+
+@router.get("/funnel/{zip_code}")
+async def conversion_funnel(
+    zip_code: str,
+    authorization: Optional[str] = Header(None),
+):
+    user = user_from_authorization(authorization)
+    # Same access rule as briefings: operators see all, agents their ZIP.
+    from backend.api.territory import require_zip_access
+    require_zip_access(user, zip_code)
+    supa = get_supabase_client()
+    if not supa:
+        raise HTTPException(503, "Database unavailable")
+    rows, off = [], 0
+    while True:
+        res = (supa.table('lead_interactions_v3')
+               .select('pin, event_type')
+               .eq('zip_code', zip_code)
+               .range(off, off + 999).execute())
+        batch = res.data or []
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+        off += 1000
+    furthest: dict[str, int] = {}
+    for r in rows:
+        for i, (_, kinds) in enumerate(_FUNNEL_STAGES):
+            if r['event_type'] in kinds:
+                furthest[r['pin']] = max(furthest.get(r['pin'], -1), i)
+    counts = {name: 0 for name, _ in _FUNNEL_STAGES}
+    for stage_i in furthest.values():
+        # A pin at stage N has passed every earlier stage too.
+        for i in range(stage_i + 1):
+            counts[_FUNNEL_STAGES[i][0]] += 1
+    out = {'zip_code': zip_code, 'pins_touched': len(furthest), 'stages': []}
+    prev = None
+    for name, _ in _FUNNEL_STAGES:
+        n = counts[name]
+        out['stages'].append({
+            'stage': name, 'pins': n,
+            'rate_from_prev': (round(n / prev, 3) if prev else None),
+        })
+        prev = n if n else prev
+    return out

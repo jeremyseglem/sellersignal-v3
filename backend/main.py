@@ -28,6 +28,7 @@ from backend.api import (
     territory,
     onboard,
     lead_interactions,
+    attorneys,
     lead_organization,
     skip_trace,
     zip_polygons,
@@ -223,6 +224,7 @@ app.include_router(profile.router,        prefix="/api/profile",     tags=["prof
 app.include_router(agent_voice.router,    prefix="/api/agent",       tags=["agent"])
 app.include_router(territory.router,      prefix="/api/agent",       tags=["agent"])
 app.include_router(lead_interactions.router, prefix="/api/lead-interactions", tags=["lead-interactions"])
+app.include_router(attorneys.router,         prefix="/api/agent",             tags=["attorneys"])
 app.include_router(lead_organization.router, prefix="/api",                  tags=["lead-organization"])
 app.include_router(skip_trace.router,        prefix="/api",                  tags=["skip-trace"])
 app.include_router(letters.router,           prefix="/api/letters",          tags=["letters"])
