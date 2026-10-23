@@ -160,16 +160,38 @@ jobs:
                   from datetime import date, timedelta
                   end = date.today(); begin = end - timedelta(days=7)
                   fmt = lambda d: d.strftime("%m/%d/%Y")
-                  # tick the DEATH CERTIFICATE type
+                  # tick the DEATH CERTIFICATE type. v2 learned the dt-
+                  # checkboxes live in a collapsed "select document type"
+                  # picker (check raised: Element is not visible), so open
+                  # every such opener and try the tick after each; then
+                  # JS-force the checkbox + the hidden id list regardless.
                   ticked = False
-                  for sel in ["#dt-DocumentType-60", "input[id='dt-DocumentType-60']"]:
+                  openers = page.locator("a:has-text('select document type'), "
+                                         "button:has-text('select document type'), "
+                                         "span:has-text('select document type')")
+                  for oi in range(min(openers.count(), 4)):
                       try:
-                          el = page.locator(sel).first
-                          if el.count() > 0:
-                              el.check(timeout=5000, force=True); ticked = True
-                              print("ticked DEATH CERTIFICATE checkbox"); break
+                          openers.nth(oi).click(timeout=4000)
+                          time.sleep(2)
+                          el = page.locator("#dt-DocumentType-60").first
+                          if el.count() > 0 and el.is_visible():
+                              el.check(timeout=4000); ticked = True
+                              print(f"ticked via opener #{oi}"); break
                       except Exception as e:
-                          print(f"tick {sel} raised: {e}")
+                          print(f"opener #{oi} raised: {e}")
+                  try:
+                      page.evaluate("""() => {
+                          const cb = document.getElementById('dt-DocumentType-60');
+                          if (cb) { cb.checked = true;
+                              cb.dispatchEvent(new Event('click', {bubbles:true}));
+                              cb.dispatchEvent(new Event('change', {bubbles:true})); }
+                          const hid = document.getElementById('documentTypeIds-DocumentType');
+                          if (hid) { hid.value = '60';
+                              hid.dispatchEvent(new Event('change', {bubbles:true})); }
+                      }""")
+                      print("JS-forced dt-DocumentType-60 + documentTypeIds-DocumentType=60")
+                  except Exception as e:
+                      print(f"JS force raised: {e}")
                   for fid, val in (("#beginDate-DocumentType", fmt(begin)),
                                    ("#endDate-DocumentType", fmt(end))):
                       try:
