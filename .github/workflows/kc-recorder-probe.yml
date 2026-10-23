@@ -1,0 +1,179 @@
+name: KC Recorder Probe (manual diagnostic — safe to ignore failures)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only, writes nothing.
+# King County recorded documents live on Landmark Web Edition at
+# recordsearch.kingcounty.gov/LandmarkWeb (confirmed via the Recorder's
+# Office records-search page, 2026-10-23). Search needs no login (accounts
+# are only for ordering copies); doc-type + recording-date search, parcel
+# searches cover 1997+, documents online since 1991-08-01.
+#
+# WHY: the death-x-trust compound (validated 2026-10-23: trust-titled
+# sales show death signals at 2.8x the base rate even on a starved obit
+# feed; post-death trust sales median $2.2M). Trusts bypass probate, so
+# the court harvester never sees them — but the successor trustee records
+# an AFFIDAVIT (death of trustee) and later a TRUSTEE'S DEED with the
+# recorder. Quit-claim deeds between spouses likewise confirm divorces at
+# the recorder before/without the court docket. This probe captures the
+# portal's disclaimer flow, search forms, the FULL document-type option
+# list, result-row structure, and one detail page. The harvester parser
+# gets built from these artifacts — never invent field names.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Raw reachability
+        continue-on-error: true
+        run: |
+          curl -sv -m 25 "https://recordsearch.kingcounty.gov/LandmarkWeb" -o /tmp/raw.html 2>&1 | grep -E "Connected to|HTTP/|subject:|error" | head -10 || true
+          echo "--- raw bytes: $(wc -c < /tmp/raw.html 2>/dev/null || echo 0)"
+          head -c 600 /tmp/raw.html 2>/dev/null || true
+      - name: Probe LandmarkWeb under real Chromium
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import time, json, pathlib
+
+          BASE = "https://recordsearch.kingcounty.gov/LandmarkWeb"
+          OUT = pathlib.Path("kcprobe"); OUT.mkdir(exist_ok=True)
+
+          def dump(page, name):
+              (OUT / f"{name}.html").write_text(page.content())
+              page.screenshot(path=str(OUT / f"{name}.png"), full_page=True)
+              print(f"[dump] {name}: url={page.url[:120]} title={page.title()[:80]!r}")
+
+          def links(page, label, n=60):
+              out = page.evaluate("""() => Array.from(document.querySelectorAll('a,input[type=button],input[type=submit],button'))
+                  .map(a => ({tag: a.tagName, href: a.getAttribute('href'), onclick: (a.getAttribute('onclick')||'').slice(0,80),
+                              id: a.id||null, text: (a.innerText||a.value||'').trim().slice(0,60)}))
+                  .filter(l => l.text || l.href)""")
+              print(f"=== clickables on {label} ({len(out)}) ===")
+              for l in out[:n]: print(json.dumps(l))
+              return out
+
+          def forms(page, label, max_opts=400):
+              out = page.evaluate("""(maxOpts) => Array.from(document.querySelectorAll('form')).map(f => ({
+                  name: f.getAttribute('name'), id: f.id||null, action: f.getAttribute('action'), method: f.getAttribute('method'),
+                  fields: Array.from(f.querySelectorAll('input,select,textarea')).map(el => ({
+                      tag: el.tagName, name: el.getAttribute('name'), type: el.getAttribute('type'),
+                      id: el.id||null, value: (el.value||'').slice(0,40),
+                      options: el.tagName==='SELECT' ? Array.from(el.options).slice(0,maxOpts).map(o=>o.value+' | '+o.text.trim().slice(0,60)) : undefined
+                  })).slice(0,120)}))""", max_opts)
+              print(f"=== forms on {label} ===")
+              print(json.dumps(out, indent=1)[:30000])
+              (OUT / f"forms_{label}.json").write_text(json.dumps(out, indent=1))
+              return out
+
+          def accept_disclaimers(page):
+              # Landmark installs typically gate on an I Accept / I Agree /
+              # Accept button or link before search is usable.
+              for sel in ["button:has-text('Accept')", "a:has-text('Accept')",
+                          "input[value*='Accept']", "button:has-text('Agree')",
+                          "a:has-text('Agree')", "input[value*='Agree']",
+                          "a:has-text('I acknowledge')", "button:has-text('OK')"]:
+                  try:
+                      el = page.locator(sel).first
+                      if el.count() > 0 and el.is_visible():
+                          el.click(timeout=5000)
+                          print(f"clicked disclaimer control: {sel}")
+                          time.sleep(3)
+                          return True
+                  except Exception:
+                      continue
+              return False
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True,
+                  args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+                  viewport={"width": 1440, "height": 900}, locale="en-US",
+                  ignore_https_errors=True)
+              page = ctx.new_page()
+              try:
+                  page.goto(BASE, wait_until="domcontentloaded", timeout=90000)
+              except Exception as e:
+                  print("goto raised:", e)
+              time.sleep(5)
+              dump(page, "01_landing")
+              links(page, "landing"); forms(page, "landing")
+              if accept_disclaimers(page):
+                  dump(page, "02_post_disclaimer")
+                  links(page, "post-disclaimer"); forms(page, "post-disclaimer")
+
+              # Landmark search entry points: a search criteria page with
+              # tabs/sections (document type, name, recording date, parcel).
+              # Try the common index route plus whatever nav the landing has.
+              tried = set()
+              for path in ("/search/index?theme=.blue&section=searchCriteriaDocuments",
+                           "/search/index",
+                           "/Search/Index",
+                           "/searchCriteriaDocuments",
+                           "/search"):
+                  url = BASE + path
+                  if url in tried: continue
+                  tried.add(url)
+                  try:
+                      page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                      time.sleep(4)
+                      accept_disclaimers(page)
+                      t = page.title() or ''
+                      b = page.evaluate("() => (document.body && document.body.innerText || '').slice(0,200)")
+                      print(f"try {path}: title={t!r} body[:120]={b[:120]!r}")
+                      if len(b) > 50 and 'error' not in t.lower():
+                          slug = path.strip('/').replace('/','_').replace('?','_')[:40]
+                          dump(page, f"03_{slug}")
+                          links(page, path); forms(page, path)
+                          # The doc-type SELECT (or autocomplete) is the prize:
+                          # capture every option so the harvester filters on
+                          # real type codes (AFFIDAVIT / TRUSTEES DEED / QUIT
+                          # CLAIM etc.) instead of guessed ones.
+                          break
+                  except Exception as e:
+                      print(f"{path} raised: {e}")
+
+              # Also capture whatever the landing nav itself offers: click
+              # anything search-ish once and dump the result.
+              try:
+                  page.goto(BASE, wait_until="domcontentloaded", timeout=60000)
+                  time.sleep(4)
+                  accept_disclaimers(page)
+                  for sel in ["a:has-text('Search')", "button:has-text('Search')",
+                              "a:has-text('Document')", "a:has-text('Official Records')"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=8000)
+                              print(f"clicked nav control: {sel}")
+                              try: page.wait_for_load_state("domcontentloaded")
+                              except Exception: pass
+                              time.sleep(5)
+                              dump(page, "04_nav_search")
+                              links(page, "nav-search"); forms(page, "nav-search")
+                              break
+                      except Exception:
+                          continue
+              except Exception as e:
+                  print("nav exploration raised:", e)
+              br.close()
+          PYEOF
+          python probe.py
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: kc-recorder-probe
+          path: kcprobe/
+          if-no-files-found: ignore
