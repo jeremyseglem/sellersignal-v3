@@ -1,0 +1,93 @@
+name: Denver transfer-event harvest (daily)
+
+# Pulls recent rows from Denver's open "Real Property Sales and
+# Transfers" ArcGIS dataset (fields verified 2026-10-23; ~daily refresh,
+# no login) and posts them to /api/harvest/ingest-transfers, which
+# filters to covered fabric (5 CO_DENVER ZIPs), upserts
+# sales_history_v3, and runs the transfer-event detector (trust
+# distributions/retitles by grantor-grantee direction; QC divorce-side;
+# WD arms-length retirement; unknown codes quarantined pending the
+# assessor's legend). RECEPTION_DATE is dirty in the source — recency
+# keys off RECEPTION_NUM's year prefix (e.g. 2026xxxxxx).
+
+on:
+  workflow_dispatch:
+    inputs:
+      since_year:
+        description: "Earliest reception-number year to pull (backfill)"
+        default: ""
+  schedule:
+    - cron: "40 11 * * *"   # daily 11:40 UTC
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Pull + ingest
+        env:
+          SS_ADMIN_KEY: ${{ secrets.SS_ADMIN_KEY }}
+          SINCE_YEAR: ${{ github.event.inputs.since_year }}
+        run: |
+          pip install requests
+          cat > run.py << 'PYEOF'
+          import os, time, datetime
+          import requests
+
+          FS = ("https://services1.arcgis.com/zdB7qR0BtYrg0Xpl/arcgis/rest/"
+                "services/ODC_real_property_sales_and_transfers/FeatureServer/51/query")
+          API = "https://sellersignal.co/api/harvest/ingest-transfers"
+          KEY = os.environ["SS_ADMIN_KEY"]
+
+          year_now = datetime.date.today().year
+          since = int(os.environ.get("SINCE_YEAR") or 0) or year_now
+          # scheduled runs: current year only; manual backfill via input.
+          where = f"RECEPTION_NUM >= {since * 1000000}"
+
+          offset, total_in, total_up, unknown = 0, 0, 0, {}
+          while True:
+              r = requests.get(FS, params={
+                  "where": where,
+                  "outFields": "PARID,RECEPTION_NUM,INSTRUMENT,SALE_YEAR,"
+                               "SALE_MONTHDAY,SALE_PRICE,GRANTOR,GRANTEE",
+                  "orderByFields": "RECEPTION_NUM ASC",
+                  "resultOffset": offset, "resultRecordCount": 1000,
+                  "f": "json"}, timeout=60)
+              r.raise_for_status()
+              feats = r.json().get("features", [])
+              if not feats:
+                  break
+              rows = [{
+                  "parid":         a.get("PARID"),
+                  "reception_num": a.get("RECEPTION_NUM"),
+                  "instrument":    a.get("INSTRUMENT"),
+                  "sale_year":     a.get("SALE_YEAR"),
+                  "sale_monthday": a.get("SALE_MONTHDAY"),
+                  "sale_price":    a.get("SALE_PRICE"),
+                  "grantor":       a.get("GRANTOR"),
+                  "grantee":       a.get("GRANTEE"),
+              } for a in (f["attributes"] for f in feats)]
+              total_in += len(rows)
+              resp = requests.post(API, json={"market_key": "CO_DENVER",
+                                              "rows": rows},
+                                   headers={"X-Admin-Key": KEY}, timeout=300)
+              resp.raise_for_status()
+              body = resp.json()
+              total_up += body.get("sales_upserted", 0)
+              for k, v in (body.get("unknown_instruments") or {}).items():
+                  unknown[k] = unknown.get(k, 0) + v
+              det = body.get("detect") or {}
+              if det.get("signals") or det.get("retired_pins"):
+                  print(f"detect @offset {offset}: {det}")
+              offset += len(feats)
+              if len(feats) < 1000:
+                  break
+              time.sleep(1)
+          print(f"DONE rows_pulled={total_in} sales_upserted={total_up} "
+                f"unknown_instruments={unknown}")
+          PYEOF
+          python run.py

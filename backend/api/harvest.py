@@ -12,12 +12,13 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import re
 import time
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Body, HTTPException, Header
 from pydantic import BaseModel, Field
 
 from backend.harvesters.orchestrator import run_harvest, HARVESTERS
@@ -2515,6 +2516,129 @@ def transfer_detect(
         finally:
             EA.EVENT_WINDOW_D = old_window
     return {"zips": len(results), "results": results}
+
+
+@router.post("/ingest-transfers")
+def ingest_transfers(
+    payload: dict = Body(...),
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Bulk-ingest county transfer rows (open-data feeds) into
+    sales_history_v3, then run the eReal transfer-event detector on the
+    touched pins. First consumer: Denver's open 'Real Property Sales
+    and Transfers' ArcGIS dataset (fields verified 2026-10-23: PARID,
+    RECEPTION_NUM, INSTRUMENT 2-letter code, SALE_YEAR/SALE_MONTHDAY,
+    SALE_PRICE, GRANTOR, GRANTEE; RECEPTION_DATE is dirty — ignored).
+
+    Body: {"market_key": "CO_DENVER",
+           "rows": [{"parid": ..., "reception_num": ..., "instrument":
+                     ..., "sale_year": ..., "sale_monthday": ...,
+                     "sale_price": ..., "grantor": ..., "grantee": ...}]}
+
+    Pin normalization: Denver PARIDs are numeric (leading zero lost);
+    our parcels_v3 pins are 13-char zero-padded — verified join on
+    0131301007000 == PARID 131301007000. Rows whose pin is not in
+    parcels_v3 are skipped (we only carry covered fabric).
+
+    Instrument codes, two-tier honesty policy: codes with confirmed
+    meanings are translated to instrument text the detector's
+    vocabulary understands (WD/TD per the Colorado Assessors'
+    Reference Library glossary; QC universal convention, corroborated
+    by observed $0-$10 prices). UNKNOWN codes are stored raw and
+    counted in the response ('unknown_instruments') but never classified
+    — the estate-side codes (PR/PB/DC/EX...) wait for the assessor's
+    legend. Trust-direction detection (TRUST/TTEE in grantor/grantee)
+    needs no code legend and runs on everything.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    market = (payload.get("market_key") or "").strip()
+    rows = payload.get("rows") or []
+    if market != "CO_DENVER":
+        raise HTTPException(400, "Only CO_DENVER is wired so far")
+    if not rows or len(rows) > 2000:
+        raise HTTPException(400, "rows must be 1..2000 per call")
+
+    CONFIRMED = {
+        "WD": ("Warranty Deed (WD)", True),      # ARL glossary
+        "TD": ("Treasurers Deed (TD)", False),   # ARL glossary; tax deed
+        "QC": ("Quit Claim Deed (QC)", False),   # universal convention
+    }
+
+    from datetime import date as _date
+
+    def _pin(parid) -> str:
+        s = re.sub(r"[^0-9]", "", str(parid or ""))
+        return s.zfill(13) if s else ""
+
+    def _sale_date(y, md):
+        try:
+            y = int(y); md = int(md)
+            m, d = md // 100, md % 100
+            return _date(y, m, d).isoformat()
+        except Exception:
+            return None
+
+    pins = sorted({_pin(r.get("parid")) for r in rows if _pin(r.get("parid"))})
+    known: set = set()
+    for i in range(0, len(pins), 400):
+        chunk = pins[i:i + 400]
+        res = (supa.table("parcels_v3").select("pin")
+               .in_("pin", chunk).execute()).data or []
+        known.update(r["pin"] for r in res)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    out_rows, unknown_counts = [], {}
+    for r in rows:
+        pin = _pin(r.get("parid"))
+        rec = str(r.get("reception_num") or "").strip()
+        if not pin or pin not in known or not rec:
+            continue
+        code = (str(r.get("instrument") or "")).strip().upper()
+        conf = CONFIRMED.get(code)
+        price = r.get("sale_price")
+        try:
+            price = int(price) if price is not None else None
+        except Exception:
+            price = None
+        if conf:
+            instrument_text = conf[0]
+            arms = bool(conf[1] and price and price > 1000)
+        else:
+            instrument_text = code or None
+            arms = None   # unknown semantics — never drives retirement
+            if code:
+                unknown_counts[code] = unknown_counts.get(code, 0) + 1
+        out_rows.append({
+            "pin":              pin,
+            "recording_number": rec,
+            "excise_number":    None,
+            "sale_date":        _sale_date(r.get("sale_year"), r.get("sale_monthday")),
+            "sale_price":       price,
+            "seller_name":      (r.get("grantor") or "")[:200] or None,
+            "buyer_name":       (r.get("grantee") or "")[:200] or None,
+            "instrument":       instrument_text,
+            "sale_reason":      None,
+            "is_arms_length":   arms,
+            "source_fetched_at": now_iso,
+        })
+
+    upserted = 0
+    for i in range(0, len(out_rows), 200):
+        batch = out_rows[i:i + 200]
+        (supa.table("sales_history_v3")
+         .upsert(batch, on_conflict="pin,recording_number").execute())
+        upserted += len(batch)
+
+    from backend.tasks.ereal_autofill import detect_transfers
+    touched = sorted({r["pin"] for r in out_rows})
+    det = detect_transfers(supa, touched) if touched else {}
+
+    return {"market_key": market, "rows_in": len(rows),
+            "pins_in_fabric": len(known), "sales_upserted": upserted,
+            "unknown_instruments": unknown_counts, "detect": det}
 
 
 @router.get("/thread-dump")
