@@ -2641,6 +2641,103 @@ def ingest_transfers(
             "unknown_instruments": unknown_counts, "detect": det}
 
 
+@router.get("/qc-snapshot")
+def qc_snapshot(x_admin_key: Optional[str] = Header(None)):
+    """One-call health snapshot for the QC agent (charter: oversee ZIP
+    performance so neither founder babysits data quality; 2026-10-23).
+
+    Returns, per signal source: row count, newest event_date, newest
+    harvested_at, and days-since-harvest — the dead-feed detector (the
+    KC court harvester was silently dark 2026-04-23→10-22 and cost a
+    95% estate miss; that failure mode is now a number on a page). Plus
+    background-task states (rematch + eReal sweep), live-ZIP counts per
+    market, and 7-day match/retirement tallies. Read-only.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    now = datetime.now(timezone.utc)
+
+    # Per-source freshness. Distinct source list first (cheap), then one
+    # newest-row query per source — bounded by the number of sources.
+    sources: dict = {}
+    src_rows = (supa.table('raw_signals_v3')
+                .select('source_type')
+                .order('id', desc=True).limit(1000).execute()).data or []
+    recent_sources = sorted({r['source_type'] for r in src_rows})
+    # include historically known sources even if quiet lately — quiet IS
+    # the finding. Pull a slow full-distinct only via the matcher map +
+    # recents union.
+    from backend.harvesters.matcher import SOURCE_MARKET_SCOPE
+    all_sources = sorted(set(recent_sources) | set(SOURCE_MARKET_SCOPE))
+    for s in all_sources:
+        newest = (supa.table('raw_signals_v3')
+                  .select('event_date, harvested_at')
+                  .eq('source_type', s)
+                  .order('harvested_at', desc=True)
+                  .limit(1).execute()).data or []
+        if not newest:
+            sources[s] = {"rows": 0, "newest_harvested": None,
+                          "days_since_harvest": None}
+            continue
+        h = newest[0].get('harvested_at')
+        days = None
+        if h:
+            try:
+                days = round((now - datetime.fromisoformat(
+                    h.replace('Z', '+00:00'))).total_seconds() / 86400, 1)
+            except Exception:
+                days = None
+        cnt = (supa.table('raw_signals_v3').select('id', count='exact')
+               .eq('source_type', s).limit(1).execute()).count
+        sources[s] = {"rows": cnt,
+                      "newest_event": newest[0].get('event_date'),
+                      "newest_harvested": h,
+                      "days_since_harvest": days}
+
+    # Background tasks
+    from backend.tasks.rematch_autofill import state as rematch_state
+    from backend.tasks.ereal_autofill import state as ereal_state
+
+    # Live-ZIP counts per market
+    cov = (supa.table('zip_coverage_v3')
+           .select('market_key').execute()).data or []
+    markets: dict = {}
+    for r in cov:
+        mk = r.get('market_key') or '?'
+        markets[mk] = markets.get(mk, 0) + 1
+
+    # 7-day tallies
+    week_ago = (now - timedelta(days=7)).isoformat()
+    new_matches = (supa.table('raw_signal_matches_v3')
+                   .select('id', count='exact')
+                   .gte('matched_at', week_ago).limit(1).execute()).count
+    retired_week = (supa.table('raw_signal_matches_v3')
+                    .select('id', count='exact')
+                    .like('match_review_status', 'retired%')
+                    .gte('matched_at', week_ago).limit(1).execute()).count
+
+    return {
+        "as_of": now.isoformat(),
+        "sources": sources,
+        "tasks": {
+            "rematch_autofill": {k: rematch_state.get(k) for k in
+                                 ("enabled", "started_at", "last_tick_at",
+                                  "total_ticks", "signals_remaining",
+                                  "consecutive_errors", "last_error")},
+            "ereal_autofill": {k: ereal_state.get(k) for k in
+                               ("enabled", "started_at", "last_tick_at",
+                                "total_ticks", "total_fetched",
+                                "total_signals", "total_retired",
+                                "consecutive_errors", "last_error")},
+        },
+        "markets": markets,
+        "last_7_days": {"matches_created": new_matches,
+                        "retired_marked": retired_week},
+    }
+
+
 @router.get("/thread-dump")
 def thread_dump(x_admin_key: Optional[str] = Header(None)):
     """Stack trace of every live thread (admin). Diagnostic for wedged
