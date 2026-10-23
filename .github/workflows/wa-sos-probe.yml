@@ -1,0 +1,106 @@
+name: WA SOS Corporations Extract Probe (manual diagnostic)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only.
+# WA Secretary of State publishes a FREE nightly bulk extract of the
+# corporations database (status incl. Dissolved / Administratively
+# Dissolved + dissolution dates + governing persons) — the investor-exit
+# (llc_dissolution) signal feed, already a contemplated source_type in
+# schema/006. The legacy URL (apps.sos.wa.gov/corps/AllData.aspx) now
+# 404s behind Azure Front Door and the current sos.wa.gov page renders
+# its body via JS. This probe loads the page under real Chromium,
+# enumerates the actual extract file URLs, HEADs their sizes, downloads
+# ONE file's first bytes to capture the real field layout, and uploads
+# artifacts. The harvester gets built from these — never guessed names.
+#
+# Terms noted on the product page: data is informational only; lists of
+# individuals may not be provided to customers for commercial purposes
+# (RCW 42.56.070(8)) — we consume entity status as a signal input, and
+# any customer-facing use carries the informational statement.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Probe extract page under Chromium
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import json, pathlib, time, re
+          import requests as rq
+
+          OUT = pathlib.Path("sosprobe"); OUT.mkdir(exist_ok=True)
+          PAGES = [
+            "https://www.sos.wa.gov/corporations-charities/business-entities/corporations-data-extract-download",
+            "https://ccfs.sos.wa.gov/",
+          ]
+          found = set()
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True)
+              ctx = br.new_context(viewport={"width":1400,"height":900})
+              page = ctx.new_page()
+              page.on("request", lambda r: found.add(r.url)
+                      if re.search(r"\.zip|extract|download", r.url, re.I) else None)
+              for i, url in enumerate(PAGES):
+                  try:
+                      page.goto(url, wait_until="networkidle", timeout=90000)
+                  except Exception as e:
+                      print(f"goto {url} raised: {e}")
+                  time.sleep(5)
+                  (OUT / f"{i}_page.html").write_text(page.content())
+                  page.screenshot(path=str(OUT / f"{i}_page.png"), full_page=True)
+                  links = page.evaluate("""() => Array.from(document.querySelectorAll('a'))
+                      .map(a => ({href: a.href, text: (a.innerText||'').trim().slice(0,80)}))
+                      .filter(l => /zip|extract|download|data/i.test(l.href + ' ' + l.text))""")
+                  print(f"=== {url} candidate links ===")
+                  for l in links: print(json.dumps(l)); found.add(l["href"])
+              br.close()
+
+          # HEAD every candidate that looks like a file; GET first 4KB of zips
+          report = []
+          for u in sorted(found):
+              if not u.startswith("http"): continue
+              try:
+                  h = rq.head(u, timeout=30, allow_redirects=True,
+                              headers={"User-Agent": "Mozilla/5.0"})
+                  entry = {"url": u, "status": h.status_code,
+                           "type": h.headers.get("Content-Type"),
+                           "length": h.headers.get("Content-Length")}
+                  report.append(entry)
+                  print(json.dumps(entry))
+              except Exception as e:
+                  print(f"HEAD {u} raised: {type(e).__name__}")
+          (OUT / "candidates.json").write_text(json.dumps(report, indent=1))
+
+          zips = [r for r in report if (r.get("type") or "").find("zip") >= 0
+                  or r["url"].lower().endswith(".zip")]
+          for z in zips[:2]:
+              try:
+                  g = rq.get(z["url"], timeout=120, stream=True,
+                             headers={"User-Agent": "Mozilla/5.0"})
+                  head = next(g.iter_content(65536))
+                  (OUT / "sample.zip.part").write_bytes(head)
+                  print(f"sampled {z['url']}: {len(head)} bytes, starts {head[:4]!r}")
+                  break
+              except Exception as e:
+                  print(f"sample {z['url']} raised: {e}")
+          PYEOF
+          python probe.py
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: wa-sos-probe
+          path: sosprobe/
+          if-no-files-found: ignore

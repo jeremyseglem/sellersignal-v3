@@ -92,6 +92,13 @@ state: dict = {
         "batch_size":       BATCH_SIZE,
         "max_batches":      MAX_BATCHES,
         "zip_filter":       ZIP_FILTER,
+        # Visibility for per-signal rollout gates (2026-10-23): 2,665 of
+        # 2,676 KC tax_delinquency signals carry match_count=0 and the
+        # prime suspect is this env allowlist still pinned to its
+        # Phase-1 pilot ZIPs — but the Railway token is dead, so the
+        # status endpoint is the only way to read the live value.
+        "tax_delinquency_enabled_zips":
+            os.environ.get("TAX_DELINQUENCY_ENABLED_ZIPS", "").strip() or None,
     },
 }
 
