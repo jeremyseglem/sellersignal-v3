@@ -73,6 +73,15 @@ async def lifespan(app: FastAPI):
     from backend.tasks.rematch_autofill import rematch_autofill_loop
     rematch_autofill_task = asyncio.create_task(rematch_autofill_loop())
 
+    # eReal sweep + transfer-event detector (2026-10-23) — keeps KC
+    # sales_history_v3 fresh on a ZIP rotation (trust-held parcels on a
+    # tighter TTL) and turns new non-arms-length transfers into signals
+    # (estate_transfer / trust_distribution / divorce_transfer /
+    # trust_retitle) plus retires leads on arms-length sales. The
+    # bootstrap replacement for the CAPTCHA-gated KC recorder portal.
+    from backend.tasks.ereal_autofill import ereal_autofill_loop
+    ereal_autofill_task = asyncio.create_task(ereal_autofill_loop())
+
     # Snohomish SCOPI tenure autofill — fills last_transfer_date for
     # 98290 parcels missing tenure data. Required because the bulk
     # Snohomish Sales Excel only goes back 5 years, so ~74% of

@@ -80,11 +80,26 @@ _PRESSURE_TABLE = {
     ("divorce",         "weak"): 2,
     ("tax_foreclosure", "weak"): 2,
     ("tax_delinquency", "weak"): 2,
+
+    # Assessor transfer events (eReal sweep, 2026-10-23). All matched by
+    # PARCEL IDENTITY (strength always strict). estate_transfer and
+    # trust_distribution are post-death title movements — the estate or
+    # trust is actively administering; the market sale typically
+    # follows within months (Seattle hindcasts: estates 24-59x).
+    # divorce_transfer is a settlement already executed (one spouse may
+    # keep the home) and trust_retitle is an estate-planning event (the
+    # trust_young precursor, ~2x) — both cultivate, neither urgent.
+    ("estate_transfer",    "strict"): 3,
+    ("trust_distribution", "strict"): 3,
+    ("divorce_transfer",   "strict"): 2,
+    ("trust_retitle",      "strict"): 2,
 }
 
 # Signal families that are "life events" vs "financial". Feeds the
 # has_life_event / has_financial flags on the investigation shape.
-_LIFE_EVENT_SIGNALS = {"probate", "obituary", "divorce"}
+_LIFE_EVENT_SIGNALS = {"probate", "obituary", "divorce",
+                       "estate_transfer", "trust_distribution",
+                       "divorce_transfer"}
 _FINANCIAL_SIGNALS  = {"tax_foreclosure", "tax_delinquency"}
 
 # Signals older than this (days since event_date, freshest signal on the

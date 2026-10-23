@@ -2449,6 +2449,74 @@ def rematch_autofill_trigger(x_admin_key: Optional[str] = Header(None)):
     return {"message": "Wake requested — task re-scans within ~20s."}
 
 
+@router.get("/ereal-autofill-status")
+def ereal_autofill_status(x_admin_key: Optional[str] = Header(None)):
+    """State of the eReal sweep + transfer-event detector task."""
+    _require_admin(x_admin_key)
+    from backend.tasks.ereal_autofill import state
+    return dict(state)
+
+
+@router.post("/ereal-autofill-pause")
+def ereal_autofill_pause(x_admin_key: Optional[str] = Header(None)):
+    """Pause the eReal sweep (in-process; a restart re-enables unless
+    EREAL_AUTOFILL_ENABLED=0 is set in env)."""
+    _require_admin(x_admin_key)
+    from backend.tasks.ereal_autofill import state
+    state["enabled"] = False
+    return {"enabled": False}
+
+
+@router.post("/ereal-autofill-resume")
+def ereal_autofill_resume(x_admin_key: Optional[str] = Header(None)):
+    """Resume the eReal sweep and clear any backoff."""
+    _require_admin(x_admin_key)
+    from backend.tasks.ereal_autofill import state
+    state["enabled"] = True
+    state["backoff_until"] = None
+    state["consecutive_errors"] = 0
+    state["wake_requested"] = True
+    return {"enabled": True}
+
+
+@router.post("/transfer-detect")
+def transfer_detect(
+    x_admin_key: Optional[str] = Header(None),
+    zip_code: Optional[str] = None,
+    days: int = 365,
+):
+    """Re-derive assessor transfer signals/matches from sales_history_v3
+    for one ZIP (or, with no zip, every WA_KING ZIP — slow). Idempotent.
+    The self-heal after a destructive full /rematch, and the initial
+    backfill once the sweep has populated sales for a ZIP."""
+    _require_admin(x_admin_key)
+    from backend.tasks import ereal_autofill as EA
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    zips = [zip_code] if zip_code else EA._kc_zips(supa)
+    results = {}
+    for z in zips[:40]:
+        pins = []
+        page = 0
+        while True:
+            rows = (supa.table('parcels_v3').select('pin')
+                    .eq('zip_code', z)
+                    .range(page * 1000, page * 1000 + 999)
+                    .execute()).data or []
+            pins.extend(r['pin'] for r in rows)
+            if len(rows) < 1000 or page > 40:
+                break
+            page += 1
+        old_window = EA.EVENT_WINDOW_D
+        try:
+            EA.EVENT_WINDOW_D = max(1, min(days, 3650))
+            results[z] = EA.detect_transfers(supa, pins)
+        finally:
+            EA.EVENT_WINDOW_D = old_window
+    return {"zips": len(results), "results": results}
+
+
 @router.get("/thread-dump")
 def thread_dump(x_admin_key: Optional[str] = Header(None)):
     """Stack trace of every live thread (admin). Diagnostic for wedged

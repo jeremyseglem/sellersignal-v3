@@ -466,6 +466,7 @@ def _fetch_unmatched_batch(
 # behavior for any source added without updating this map. Update this
 # map when a new harvester ships.
 SOURCE_MARKET_SCOPE: dict = {
+    'kc_assessor':          {'WA_KING'},   # eReal transfer events — matched by parcel identity at detect time; listed for scope hygiene only
     'kc_superior_court':    {'WA_KING'},
     'kc_treasury':          {'WA_KING'},
     'wa_state_courts':      {'WA_SNOHOMISH'},   # Snohomish daily reports

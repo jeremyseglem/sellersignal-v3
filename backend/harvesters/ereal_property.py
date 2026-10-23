@@ -343,9 +343,31 @@ def run_batch(
         if len(candidates) >= limit:
             break
 
+    agg = _fetch_pins(supa, candidates, sleep_between_s)
+    agg['zip_code'] = zip_code
+    agg['candidates_found'] = len(candidates)
+    agg['duration_s'] = round(time.time() - started, 1)
+    return agg
+
+
+def run_pins(
+    supa,
+    pins: list[str],
+    sleep_between_s: float = INTER_REQUEST_SLEEP_S,
+) -> dict:
+    """Fetch + upsert an explicit pin list (no TTL check — the caller
+    already decided these need refreshing). Used by the eReal sweep's
+    priority tier (trust-held parcels). Same politeness as run_batch."""
+    agg = _fetch_pins(supa, pins, sleep_between_s)
+    agg['candidates_found'] = len(pins)
+    return agg
+
+
+def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
+    """Shared fetch/upsert core for run_batch and run_pins. Returns the
+    aggregate stats dict including 'fetched_pins' (successfully parsed
+    pins — the transfer detector's input)."""
     agg = {
-        'zip_code':         zip_code,
-        'candidates_found': len(candidates),
         'fetched':          0,
         'parsed_ok':        0,
         'parse_errors':     0,
@@ -353,6 +375,7 @@ def run_batch(
         'sales_upserted':   0,
         'parcels_updated':  0,
         'sample_errors':    [],
+        'fetched_pins':     [],
         'duration_s':       0.0,
     }
 
@@ -389,6 +412,7 @@ def run_batch(
                 pass
         else:
             agg['parsed_ok'] += 1
+            agg['fetched_pins'].append(pin)
             upsert_stats = upsert_parsed(supa, pin, res['parsed'])
             if upsert_stats['parcel_updated']:
                 agg['parcels_updated'] += 1
@@ -403,5 +427,4 @@ def run_batch(
         if i + 1 < len(candidates):
             time.sleep(sleep_between_s)
 
-    agg['duration_s'] = round(time.time() - started, 1)
     return agg
