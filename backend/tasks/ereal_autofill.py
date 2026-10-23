@@ -116,6 +116,21 @@ def _classify_transfer(sale: dict) -> Optional[str]:
         return "estate_transfer"
     if "DIVORCE" in reason:
         return "divorce_transfer"
+    # Denver instrument-code promotions (2026-10-23 code-cracking pass —
+    # evidence in claude/TRANSFER_FEED_MATRIX.md). The ingest endpoint
+    # translates confirmed codes to these texts; eReal's KC vocabulary
+    # never contains them, so these branches are Denver-only in practice.
+    if "PERSONAL REPRESENTATIVE" in instr:
+        # PR deed: the estate's representative conveying title — the
+        # same post-death class as reason='Estate Settlement'.
+        return "estate_transfer"
+    if "DEATH CERTIFICATE" in instr:
+        # Recorded death certificate terminating a joint tenancy: title
+        # passes to the surviving owner(s). A death event on the parcel
+        # with NO estate/probate footprint — the quietest death signal
+        # there is. Sampled 120/120 at $0 consideration, survivor
+        # patterns throughout.
+        return "survivorship_death"
     trust_sell = ("TRUST" in seller) or ("TTEE" in seller)
     trust_buy  = ("TRUST" in buyer) or ("TTEE" in buyer)
     trusty_instr = ("TRUSTEE" in instr) or ("TRUST" in reason)
@@ -135,11 +150,17 @@ def _event_cutoff() -> str:
     return (date.today() - timedelta(days=EVENT_WINDOW_D)).isoformat()
 
 
-def detect_transfers(supa, pins: list[str]) -> dict:
+def detect_transfers(supa, pins: list[str],
+                     jurisdiction: str = "WA_KING") -> dict:
     """Derive signals/matches/retirements from sales_history_v3 for the
     given pins. Idempotent (dedup on (source_type, document_ref) and
     (raw_signal_id, pin)). Returns counters. Callable standalone from
-    the admin resync endpoint."""
+    the admin resync endpoint.
+
+    jurisdiction: market_key stamped on the signals — the eReal sweep's
+    pins are WA_KING (default); the Denver ingest passes CO_DENVER.
+    (Signals written before 2026-10-23 evening carried WA_KING for
+    Denver pins too; the backfill re-run upserts them corrected.)"""
     out = {"pins": len(pins), "sales_seen": 0, "signals": 0,
            "retired_pins": 0, "by_type": {}, "errors": 0}
     if not pins:
@@ -187,6 +208,27 @@ def detect_transfers(supa, pins: list[str]) -> dict:
                     log.warning(f"ereal_detect: retire {pin} failed: {e}")
                     out["errors"] += 1
                 continue   # a sold home needs no new transfer signals
+            # Public Trustee's Deed = Colorado foreclosure completed:
+            # title moved to the lender/winning bidder, the owner our
+            # leads pointed at is gone. Retire, distinct status so the
+            # Warden can count foreclosure retirements separately.
+            if "PUBLIC TRUSTEE" in (newest.get("instrument") or "").upper():
+                try:
+                    res = (supa.table("raw_signal_matches_v3")
+                           .update({"match_review_status": "retired_foreclosure",
+                                    "match_review_reason":
+                                        f"public trustee deed {newest.get('sale_date')} "
+                                        f"rec {newest.get('recording_number')} "
+                                        f"(foreclosure complete)"})
+                           .eq("pin", pin)
+                           .is_("match_review_status", "null")
+                           .execute())
+                    if res.data:
+                        out["retired_pins"] += 1
+                except Exception as e:
+                    log.warning(f"ereal_detect: PT retire {pin} failed: {e}")
+                    out["errors"] += 1
+                continue   # a foreclosed home needs no seller signals
             for s in sales:
                 stype = _classify_transfer(s)
                 if not stype:
@@ -203,7 +245,7 @@ def detect_transfers(supa, pins: list[str]) -> dict:
                     "trust_level":  "high",     # authoritative county record
                     "party_names":  parties,
                     "event_date":   s.get("sale_date"),
-                    "jurisdiction": "WA_KING",
+                    "jurisdiction": jurisdiction,
                     "property_hint": {"parcel_id": pin},
                     "document_ref": doc_ref,
                     "raw_data":     {"sale": s, "detector": "ereal_sweep_v1"},

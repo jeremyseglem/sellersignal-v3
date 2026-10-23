@@ -2562,9 +2562,26 @@ def ingest_transfers(
         raise HTTPException(400, "rows must be 1..2000 per call")
 
     CONFIRMED = {
+        # (instrument text, arms-length-capable-when-priced)
+        # Promotions 2026-10-23: CO's statutory deed taxonomy + sample
+        # evidence per code (120 recent rows each; details in
+        # claude/TRANSFER_FEED_MATRIX.md "Denver code-cracking").
         "WD": ("Warranty Deed (WD)", True),      # ARL glossary
         "TD": ("Treasurers Deed (TD)", False),   # ARL glossary; tax deed
         "QC": ("Quit Claim Deed (QC)", False),   # universal convention
+        "SW": ("Special Warranty Deed (SW)", True),   # CO statutory deed
+        "BS": ("Bargain and Sale Deed (BS)", False),  # CO statutory deed;
+                                                      # samples: trust retitles
+        "PR": ("Personal Representative Deed (PR)", False),  # CO probate
+                                                      # code instrument
+        "DC": ("Death Certificate (DC)", False),      # terminates joint
+                                                      # tenancy; 120/120 $0
+        "PT": ("Public Trustee Deed (PT)", False),    # CO foreclosure deed;
+                                                      # samples: owner->servicer $0
+        # Still quarantined (pattern ambiguous or administrative):
+        # GW (priced sales, no authoritative name), TR/TT (trust-shaped
+        # but could be deed-of-trust coding), PS/DL/PL (same-entity $0
+        # administrative), BG/CD/AF/CS/DD/BF/SC/DS/SF/AD and the rest.
     }
 
     from datetime import date as _date
@@ -2634,7 +2651,8 @@ def ingest_transfers(
 
     from backend.tasks.ereal_autofill import detect_transfers
     touched = sorted({r["pin"] for r in out_rows})
-    det = detect_transfers(supa, touched) if touched else {}
+    det = (detect_transfers(supa, touched, jurisdiction=market)
+           if touched else {})
 
     return {"market_key": market, "rows_in": len(rows),
             "pins_in_fabric": len(known), "sales_upserted": upserted,

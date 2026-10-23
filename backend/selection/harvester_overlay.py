@@ -93,13 +93,18 @@ _PRESSURE_TABLE = {
     ("trust_distribution", "strict"): 3,
     ("divorce_transfer",   "strict"): 2,
     ("trust_retitle",      "strict"): 2,
+    # Recorded death certificate terminating a joint tenancy (Denver DC
+    # instrument, promoted 2026-10-23): a death on the parcel with no
+    # probate footprint. Survivors hold long horizons — pressure 2
+    # (build_now) until a hindcast earns it more, not call-now.
+    ("survivorship_death", "strict"): 2,
 }
 
 # Signal families that are "life events" vs "financial". Feeds the
 # has_life_event / has_financial flags on the investigation shape.
 _LIFE_EVENT_SIGNALS = {"probate", "obituary", "divorce",
                        "estate_transfer", "trust_distribution",
-                       "divorce_transfer"}
+                       "divorce_transfer", "survivorship_death"}
 _FINANCIAL_SIGNALS  = {"tax_foreclosure", "tax_delinquency"}
 
 # Signals older than this (days since event_date, freshest signal on the
