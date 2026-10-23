@@ -144,6 +144,83 @@ jobs:
                   except Exception as e:
                       print(f"{path} raised: {e}")
 
+              # v2 (same dispatch, after the forms capture above): run ONE
+              # sample search so the RESULT ROWS and a detail page get
+              # captured — the last artifacts the parser build needs.
+              # Captured form facts from run 39976687150: per-type
+              # checkboxes dt-DocumentType-<id> (60 = DEATH CERTIFICATE),
+              # date inputs beginDate-DocumentType / endDate-DocumentType,
+              # hidden documentTypeIds-DocumentType. Everything guarded —
+              # a miss still dumps whatever page we are on.
+              try:
+                  page.goto(BASE + "/search/index?theme=.blue&section=searchCriteriaDocuments",
+                            wait_until="domcontentloaded", timeout=60000)
+                  time.sleep(4)
+                  accept_disclaimers(page)
+                  from datetime import date, timedelta
+                  end = date.today(); begin = end - timedelta(days=7)
+                  fmt = lambda d: d.strftime("%m/%d/%Y")
+                  # tick the DEATH CERTIFICATE type
+                  ticked = False
+                  for sel in ["#dt-DocumentType-60", "input[id='dt-DocumentType-60']"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0:
+                              el.check(timeout=5000, force=True); ticked = True
+                              print("ticked DEATH CERTIFICATE checkbox"); break
+                      except Exception as e:
+                          print(f"tick {sel} raised: {e}")
+                  for fid, val in (("#beginDate-DocumentType", fmt(begin)),
+                                   ("#endDate-DocumentType", fmt(end))):
+                      try:
+                          el = page.locator(fid).first
+                          if el.count() > 0:
+                              el.fill(val, timeout=5000, force=True)
+                              print(f"filled {fid} = {val}")
+                      except Exception as e:
+                          print(f"fill {fid} raised: {e}")
+                  dump(page, "05_search_filled")
+                  for sel in ["#submit-DocumentType", "button#searchButton-DocumentType",
+                              "input[id*='submit'][id*='DocumentType']",
+                              "a[id*='submit'][id*='DocumentType']",
+                              "button:has-text('Search')", "input[value='Search']"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=8000)
+                              print(f"clicked search control: {sel}")
+                              break
+                      except Exception as e:
+                          print(f"search click {sel} raised: {e}")
+                  try: page.wait_for_load_state("networkidle", timeout=45000)
+                  except Exception: pass
+                  time.sleep(6)
+                  dump(page, "06_results")
+                  # result table structure
+                  tbl = page.evaluate("""() => Array.from(document.querySelectorAll('table')).map(t => ({
+                      id: t.id||null, cls: t.className||null, rows: t.rows.length,
+                      headers: Array.from(t.querySelectorAll('th')).map(h=>h.innerText.trim()).slice(0,20),
+                      firstRow: t.rows.length>1 ? Array.from(t.rows[1].cells).map(c=>c.innerText.trim().slice(0,60)) : null
+                  }))""")
+                  print("=== result tables ==="); print(json.dumps(tbl, indent=1)[:12000])
+                  (OUT / "result_tables.json").write_text(json.dumps(tbl, indent=1))
+                  # open the first row's detail link if any
+                  for sel in ["table a[href*='document']", "table a[id*='detail']",
+                              "td a", "a[href*='Detail']"]:
+                      try:
+                          el = page.locator(sel).first
+                          if el.count() > 0 and el.is_visible():
+                              el.click(timeout=8000)
+                              try: page.wait_for_load_state("networkidle", timeout=30000)
+                              except Exception: pass
+                              time.sleep(5)
+                              dump(page, "07_detail")
+                              break
+                      except Exception as e:
+                          print(f"detail click {sel} raised: {e}")
+              except Exception as e:
+                  print("sample search raised:", e)
+
               # Also capture whatever the landing nav itself offers: click
               # anything search-ish once and dump the result.
               try:
