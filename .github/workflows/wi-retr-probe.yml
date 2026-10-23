@@ -1,0 +1,124 @@
+name: WI RETR Probe (manual diagnostic)
+
+# DIAGNOSTIC ONLY. Manual dispatch, read-only.
+# COURSE-CORRECTION from the 2026-10-23 feed audit: Milwaukee MPROP
+# (ranked #2) only covers CITY of Milwaukee taxkeys — our WI_MILWAUKEE
+# market is actually Door County / Madison / North Shore / Lake Country
+# ZIPs with address-composite pins, so MPROP serves ~none of our
+# fabric. The right instrument is the STATEWIDE Wisconsin DOR Real
+# Estate Transfer Return (RETR) data: the published field dictionary
+# (revenue.wi.gov/SLFReportsHistSales/RETRmlist.pdf, fetched 2026-10-23)
+# documents grantor type (incl. LLC/trust), grantor-grantee FAMILY
+# relationship flag, transfer type (sale/gift/exchange/land-contract),
+# value, fee, and the full transfer-exemption taxonomy — a statewide
+# reason legend, richer than Denver's. Access is the "RETR Historic"
+# app behind tap.revenue.wi.gov (JS/cookie app; login/captcha status
+# unknown). This probe captures the app's entry, any search form
+# (county/date), a sample search for Door County, result structure,
+# and any export/download controls.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Probe RETR Historic under Chromium
+        run: |
+          cat > probe.py << 'PYEOF'
+          from playwright.sync_api import sync_playwright
+          import json, pathlib, time
+
+          OUT = pathlib.Path("retrprobe"); OUT.mkdir(exist_ok=True)
+          URL = "https://tap.revenue.wi.gov/mta/?Check=1&Link=RETRHistoric"
+
+          def dump(page, name):
+              (OUT / f"{name}.html").write_text(page.content())
+              page.screenshot(path=str(OUT / f"{name}.png"), full_page=True)
+              print(f"[dump] {name}: url={page.url[:120]} title={page.title()[:80]!r}")
+
+          def controls(page, label):
+              out = page.evaluate("""() => Array.from(document.querySelectorAll(
+                  'a,button,input,select,label'))
+                  .map(e => ({tag: e.tagName, id: e.id||null, type: e.getAttribute('type'),
+                              text: (e.innerText||e.value||e.getAttribute('placeholder')||'').trim().slice(0,60)}))
+                  .filter(c => c.text || c.id)""")
+              print(f"=== controls on {label} ({len(out)}) ===")
+              for c in out[:80]: print(json.dumps(c))
+              (OUT / f"controls_{label}.json").write_text(json.dumps(out, indent=1))
+              return out
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True)
+              ctx = br.new_context(viewport={"width": 1440, "height": 900})
+              page = ctx.new_page()
+              page.on("request", lambda r: print("REQ", r.method, r.url[:160])
+                      if "tap.revenue" in r.url and ("Retr" in r.url or "RETR" in r.url
+                          or "search" in r.url.lower()) else None)
+              try:
+                  page.goto(URL, wait_until="networkidle", timeout=90000)
+              except Exception as e:
+                  print("goto raised:", e)
+              time.sleep(6)
+              dump(page, "01_entry"); controls(page, "entry")
+              body = page.evaluate("() => (document.body && document.body.innerText || '').slice(0,1200)")
+              print("BODY[:1200]:", body)
+              # Try obvious next steps: county select, date fields, search btn
+              for sel in ["select", "input[type='text']"]:
+                  try:
+                      n = page.locator(sel).count()
+                      print(f"{sel}: {n} present")
+                  except Exception:
+                      pass
+              # If a county dropdown exists, pick Door and search recent window
+              try:
+                  sels = page.locator("select")
+                  for i in range(min(sels.count(), 4)):
+                      opts = sels.nth(i).evaluate("el => Array.from(el.options).map(o=>o.text.trim()).slice(0,80)")
+                      print(f"select #{i} options[:12]: {opts[:12]}")
+                      if any('Door' in o for o in opts):
+                          sels.nth(i).select_option(label="Door")
+                          print("selected Door county")
+                          break
+              except Exception as e:
+                  print("county select raised:", e)
+              for sel in ["button:has-text('Search')", "input[value='Search']",
+                          "a:has-text('Search')", "button:has-text('Submit')"]:
+                  try:
+                      el = page.locator(sel).first
+                      if el.count() > 0 and el.is_visible():
+                          el.click(timeout=6000)
+                          print(f"clicked {sel}")
+                          try: page.wait_for_load_state("networkidle", timeout=45000)
+                          except Exception: pass
+                          time.sleep(5)
+                          break
+                  except Exception as e:
+                      print(f"{sel} raised: {e}")
+              dump(page, "02_after_search"); controls(page, "after_search")
+              tbl = page.evaluate("""() => Array.from(document.querySelectorAll('table')).map(t => ({
+                  id: t.id||null, rows: t.rows.length,
+                  headers: Array.from(t.querySelectorAll('th')).map(h=>h.innerText.trim()).slice(0,20),
+                  firstRow: t.rows.length>1 ? Array.from(t.rows[1].cells).map(c=>c.innerText.trim().slice(0,50)) : null}))""")
+              print("=== tables ==="); print(json.dumps(tbl, indent=1)[:8000])
+              (OUT / "tables.json").write_text(json.dumps(tbl, indent=1))
+              br.close()
+          PYEOF
+          python probe.py
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: wi-retr-probe
+          path: retrprobe/
+          if-no-files-found: ignore
