@@ -128,13 +128,21 @@ def _count_pending(supa) -> Optional[int]:
 
 
 def _fetch_pending_pins(supa, limit: int) -> list[str]:
-    """Get the next batch of parcel PINs to scrape."""
+    """Get the next batch of parcel PINs to scrape.
+
+    No ORDER BY on purpose (2026-10-25): with `.order("pin")` Postgres
+    walked the pin index from the low end past every already-stamped
+    parcel until it found `limit` pending ones, so each batch got slower
+    as the drain progressed — after 10 ticks of the Aumentum repair the
+    query hit Supabase's statement timeout (57014) every attempt and the
+    task stalled at 241 remaining. Any pending parcel will do: successes
+    and no-sales get stamped, failures stay pending and are retried.
+    """
     r = (supa.table("parcels_v3")
          .select("pin")
          .eq("market_key", MARKET_KEY)
          .is_("last_transfer_date", "null")
          .is_("tenure_checked_at", "null")
-         .order("pin")
          .limit(limit)
          .execute())
     return [row["pin"] for row in (r.data or [])]
