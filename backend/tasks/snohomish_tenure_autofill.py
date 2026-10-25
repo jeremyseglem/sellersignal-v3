@@ -1,6 +1,6 @@
 """
-Snohomish SCOPI tenure autofill — fills last_transfer_date for parcels
-missing tenure data by scraping the per-parcel detail page.
+Snohomish tenure autofill — fills last_transfer_date for parcels
+missing tenure data from the county's per-parcel transfer history.
 
 Why this exists:
   The Snohomish bulk Sales Excel only goes back 5 years. About 74% of
@@ -9,9 +9,13 @@ Why this exists:
   never surface as Tier-2 leads — even though most are individual-owned
   homes held for >5 years (the actionable long-tenure cohort).
 
-  SCOPI's per-parcel detail page exposes the full Sales History,
-  going back decades. This task scrapes it for parcels missing tenure
-  and writes the most-recent sale date back to parcels_v3.
+  The per-parcel Transfer History (full history, going back decades)
+  lived on SCOPI until the county moved it to Aumentum
+  (wa-snohomish.publicaccessnow.com) — see
+  backend/harvesters/snohomish_aumentum.py for the API this task now
+  reads (2026-10-25 repair; the SCOPI_* env names are kept so no env
+  change is needed). Each tick starts with a canary fetch so a portal
+  change fails the tick visibly instead of stamping parcels "no sales".
 
   Same architectural pattern as rematch_autofill: in-process loop, no
   HTTP loopback, paginates through work in bounded ticks so Railway's
@@ -52,7 +56,7 @@ TICK_INTERVAL = int(os.environ.get("SCOPI_AUTOFILL_TICK_SECONDS", "30"))
 # How long between idle polls (when the queue is drained).
 IDLE_INTERVAL = int(os.environ.get("SCOPI_AUTOFILL_IDLE_SECONDS", "3600"))
 
-# Parcels per tick. SCOPI is a sturdy old ASP.NET site, but we still
+# Parcels per tick. Aumentum answers one JSON call per parcel; we still
 # rate-limit politely. 50 parcels × 0.5s politeness = ~25s scraping
 # time per tick, well under the 30s tick interval.
 BATCH_SIZE = int(os.environ.get("SCOPI_AUTOFILL_BATCH_SIZE", "50"))
@@ -164,8 +168,8 @@ def _run_tick(supa) -> dict:
     Runs synchronously (httpx.Client is sync); the outer loop awaits
     asyncio.to_thread on this so it doesn't block the event loop.
     """
-    from backend.harvesters.snohomish_scopi import (
-        fetch_parcel_sales, make_client,
+    from backend.harvesters.snohomish_aumentum import (
+        fetch_parcel_sales, make_client, verify_portal,
     )
 
     pins = _fetch_pending_pins(supa, BATCH_SIZE)
@@ -175,12 +179,30 @@ def _run_tick(supa) -> dict:
 
     started = time.time()
     with_sales = no_sales = errors = 0
+    first_error: Optional[str] = None
     client = make_client()
     try:
+        # Canary first: if the portal no longer returns the known
+        # parcel's transfer rows, count the whole batch as errored and
+        # write nothing — the status endpoint then shows the reason.
+        portal_error = verify_portal(client)
+        if portal_error:
+            log.warning("[scopi-autofill] portal check failed: %s", portal_error)
+            return {
+                "processed":   len(pins),
+                "with_sales":  0,
+                "no_sales":    0,
+                "errors":      len(pins),
+                "elapsed_s":   round(time.time() - started, 1),
+                "error":       portal_error,
+            }
+
         for i, pin in enumerate(pins):
             res = fetch_parcel_sales(client, pin)
             if not res.success:
                 errors += 1
+                if first_error is None:
+                    first_error = f"{pin}: {res.error}"
                 # Don't stamp tenure_checked_at on failure — let the
                 # parcel be retried on a later tick.
             else:
@@ -196,13 +218,18 @@ def _run_tick(supa) -> dict:
     finally:
         client.close()
 
-    return {
+    result = {
         "processed":   len(pins),
         "with_sales":  with_sales,
         "no_sales":    no_sales,
         "errors":      errors,
         "elapsed_s":   round(time.time() - started, 1),
     }
+    if first_error is not None:
+        # Surface the first per-parcel error so an all-errors tick is
+        # diagnosable from /snohomish-tenure-autofill-status.
+        result["error"] = first_error
+    return result
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────
@@ -265,7 +292,10 @@ async def snohomish_tenure_autofill_loop() -> None:
                 backoff = min(IDLE_INTERVAL,
                               TICK_INTERVAL * (2 ** _state["consecutive_errors"]))
                 _state["backoff_until"] = datetime.now(timezone.utc).isoformat()
-                _state["last_error"] = f"all {result['errors']} parcels errored this tick"
+                _state["last_error"] = (
+                    f"all {result['errors']} parcels errored this tick"
+                    + (f" — {result['error']}" if result.get("error") else "")
+                )
                 _state["last_error_at"] = _state["last_tick_at"]
                 log.warning("[scopi-autofill] all-errors tick, backing off %ds",
                             backoff)

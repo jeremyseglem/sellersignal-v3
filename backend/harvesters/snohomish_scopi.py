@@ -1,5 +1,11 @@
 """
-Snohomish County SCOPI (Property Account Summary) scraper.
+Snohomish County SCOPI (Property Account Summary) scraper — DEAD SOURCE.
+
+2026-10-25: https://www.snoco.org/proptax/ now 302s to the county's
+Assessor landing page and the per-parcel app lives on Aumentum. The
+tenure autofill task reads backend/harvesters/snohomish_aumentum.py
+instead; this module is kept only for reference and is no longer
+imported anywhere.
 
 The Snohomish bulk Sales Excel publishes only a 5-year window. About
 74% of 98290 parcels have no sale in that window — meaning their
