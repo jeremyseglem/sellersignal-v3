@@ -242,7 +242,26 @@ def _ui_drive_search(page, begin: date, end: date):
             time.sleep(1)
         except Exception:
             pass
-    btn = page.query_selector("button[aria-label='Search']")
+    # Submit button. The neumo platform dropped the aria-label on the Search
+    # button around 2026-09-27 (probe 2026-10-25: Dallas/Collin/Greenwich all
+    # render <button type="submit">Search</button>, no aria-label). Keep the
+    # legacy selector first, then fall back to the submit button by text.
+    # `submitted` MUST be initialised here: before 2026-10-25 it was only
+    # assigned inside the `if btn:` branch, so a missing button raised
+    # UnboundLocalError instead of the intended UI_DRIVE error — and the
+    # runners counted that as a per-chunk error while the workflow stayed
+    # green (the Collin/Greenwich silent-zero the Warden caught).
+    submitted = False
+    btn = None
+    for sel in ("button[aria-label='Search']",
+                "button[type='submit']:text-is('Search')",
+                "button:text-is('Search')"):
+        try:
+            btn = page.query_selector(sel)
+        except Exception:
+            btn = None
+        if btn:
+            break
     if btn:
         try:
             btn.click(timeout=8000)

@@ -207,6 +207,15 @@ def main():
 
     print(f"[greenwich_recorder] grid_rows={total_grid_rows} estate_instruments={estate_rows} "
           f"resolved={resolved} errors={err}")
+    # Silent-zero guard (2026-10-25): when every chunk errored and the grid
+    # yielded nothing, fail the job so GitHub shows red and the Warden's
+    # /api/harvest/workflow-runs check catches it. Collin + Greenwich sat
+    # at 0 rows for 27 days (Sep 27 → Oct 24) behind green runs because
+    # per-chunk exceptions were only counted, never surfaced.
+    if err and total_grid_rows == 0:
+        print(f"[greenwich_recorder] FAIL: {err} chunk error(s) and 0 grid rows — "
+              "portal/parser break, not a quiet day")
+        sys.exit(2)
     if WRITE:
         print(f"[greenwich_recorder] WROTE {wrote} signals to {TABLE} (flushed per chunk)")
     else:
