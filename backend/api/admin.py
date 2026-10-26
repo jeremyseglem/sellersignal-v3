@@ -1930,6 +1930,8 @@ KC_ZIP_TO_CITY = {
     "98177": "Seattle",
     "98116": "Seattle",
     "98144": "Seattle",
+    # 2026-10-26 ZIP builder (claude/ZIP_BUILD_QUEUE.md Approved #1)
+    "98059": "Renton",
 }
 
 # Snohomish County ZIPs. Phase 1 — only 98290 (Snohomish/Lake Stevens area).
