@@ -34,14 +34,28 @@ surface, which this module does not yet call: raw_data.case_id is
 persisted on every signal specifically so a future detail-enrichment
 pass can fetch fiduciaries without re-discovering cases.
 
-Districts covering live CT_FAIRFIELD territories (extend as CT grows —
-and note this is intentionally config, not a hidden allowlist; the
-harvester logs which districts it sweeps on every run):
+Districts covering live CT territories (extend as CT grows — and note
+this is intentionally config, not a hidden allowlist; the harvester logs
+which districts it sweeps on every run). Town -> court comes from the
+live court locator (https://www.ctprobate.gov/court-locator, "Cities /
+Towns" per court, read 2026-10-26); the PD codes are the districtNum
+values on the case-lookup form the same day.
 
     PD54  Greenwich Probate Court            06830/06831/06870/06878/06807
     PD52  Darien - New Canaan Probate Court  06820 (pending) / 06840
     PD50  Westport Probate Court             06880 / 06883 (Weston)
     PD51  Norwalk - Wilton Probate Court     06897 (+ Norwalk/Rowayton later)
+    PD49  Fairfield Probate Court            06824 / 06825 (town of Fairfield;
+                                             06890 Southport is in the town)
+    PD46  Trumbull Probate Court             06612 (Easton)
+    PD45  Northern Fairfield County          06877 (Ridgefield)
+    PD24  Litchfield Hills Probate Court     06757 Kent / 06759 Litchfield /
+                                             06069 Sharon / 06039+06068
+                                             Lakeville (town of Salisbury)
+
+Added 2026-10-26 (Harvester engineer, Warden Y8 "06824/06825 zero probate"):
+PD49/PD46/PD45/PD24 — the live CT footprint had 9 ZIPs outside the
+original four-district sweep.
 """
 
 import logging
@@ -64,6 +78,11 @@ DISTRICTS = {
     "PD52": "Darien - New Canaan",
     "PD50": "Westport (incl. Weston)",
     "PD51": "Norwalk - Wilton",
+    # 2026-10-26: the rest of the live CT footprint (see module docstring)
+    "PD49": "Fairfield",
+    "PD46": "Trumbull (incl. Easton)",
+    "PD45": "Northern Fairfield County (incl. Ridgefield)",
+    "PD24": "Litchfield Hills (Kent / Litchfield / Salisbury / Sharon)",
 }
 
 # caseTypeCode values on the public form. We harvest Decedent's Estate
@@ -101,10 +120,13 @@ def _fetch_slice(session: requests.Session, district: str,
 
 
 def sweep_district(session: requests.Session, district: str,
-                   prefix: str = "", depth: int = 0) -> Iterator[dict]:
+                   prefix: str = "", depth: int = 0,
+                   stats: "Optional[HarvestStats]" = None) -> Iterator[dict]:
     """
     Yield every case row in `district` by recursive prefix sweep.
     A slice at exactly ROW_CAP is assumed truncated and split deeper.
+    Failed slices are logged, counted on `stats.slice_errors` when a
+    stats object is given, and skipped.
     """
     for letter in ALPHABET:
         p = prefix + letter
@@ -113,12 +135,17 @@ def sweep_district(session: requests.Session, district: str,
         except Exception as e:
             log.warning(f"ct_probate: slice {district}/{p} failed: "
                         f"{type(e).__name__}: {e}")
+            if stats is not None:
+                stats.slice_errors += 1
+                stats.last_slice_error = f"{district}/{p}: {type(e).__name__}: {e}"
             continue
+        if stats is not None:
+            stats.slices_ok += 1
         time.sleep(POLITE_DELAY)
         if len(rows) >= ROW_CAP and depth < MAX_PREFIX_DEPTH:
             log.info(f"ct_probate: {district}/{p} hit the {ROW_CAP} cap — "
                      f"splitting deeper")
-            yield from sweep_district(session, district, p, depth + 1)
+            yield from sweep_district(session, district, p, depth + 1, stats)
         else:
             if len(rows) >= ROW_CAP:
                 log.error(f"ct_probate: {district}/{p} STILL capped at "
@@ -141,6 +168,9 @@ class HarvestStats:
     rows_seen: int = 0
     in_window: int = 0
     signals_built: int = 0
+    slices_ok: int = 0
+    slice_errors: int = 0
+    last_slice_error: Optional[str] = None
 
 
 class CTProbateCourtsHarvester:
@@ -169,7 +199,7 @@ class CTProbateCourtsHarvester:
         self.stats.districts = len(DISTRICTS)
 
         for district in sorted(DISTRICTS):
-            for row in sweep_district(session, district):
+            for row in sweep_district(session, district, stats=self.stats):
                 self.stats.rows_seen += 1
 
                 filed = _parse_date_filed(row.get("dateFiled"))
@@ -227,4 +257,19 @@ class CTProbateCourtsHarvester:
 
         log.info(f"ct_probate: done — rows_seen={self.stats.rows_seen} "
                  f"in_window={self.stats.in_window} "
-                 f"signals={self.stats.signals_built}")
+                 f"signals={self.stats.signals_built} "
+                 f"slices_ok={self.stats.slices_ok} "
+                 f"slice_errors={self.stats.slice_errors}")
+
+        # Silent-zero guard (the in-process analogue of the recorder
+        # runners' non-zero exit, eddb913): if every slice errored and
+        # nothing was read, raise so run_harvest records the failure in
+        # stats["errors"] and the autofill task's last_error — instead of
+        # a green tick with harvested=0. Rows already yielded are
+        # unaffected (the raise happens after the sweep).
+        if self.stats.rows_seen == 0 and self.stats.slice_errors > 0 \
+                and self.stats.slices_ok == 0:
+            raise RuntimeError(
+                f"ct_probate: all {self.stats.slice_errors} slices failed, "
+                f"0 rows read — portal/service change? last: "
+                f"{self.stats.last_slice_error}")

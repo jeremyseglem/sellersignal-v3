@@ -42,7 +42,11 @@ log = logging.getLogger(__name__)
 # ── Configuration (tunable via env) ───────────────────────────────────────
 TICK_INTERVAL      = int(os.environ.get("CTPROBATE_AUTOFILL_TICK_SECONDS", "86400"))   # 24h
 CTPROBATE_SINCE_DAYS     = int(os.environ.get("CTPROBATE_AUTOFILL_SINCE_DAYS",   "10"))
-CTPROBATE_RUN_TIMEOUT    = int(os.environ.get("CTPROBATE_AUTOFILL_RUN_TIMEOUT",  "600"))    # 10min
+# 2026-10-26: the sweep grew from 4 to 8 districts (ct_probate_courts.DISTRICTS);
+# one district = 26+ service calls at ~5 s each measured from the cloud
+# container (~150 s/district), so a full tick can exceed the old 10-min
+# client timeout. Default raised to 30 min; the env override is unchanged.
+CTPROBATE_RUN_TIMEOUT    = int(os.environ.get("CTPROBATE_AUTOFILL_RUN_TIMEOUT",  "1800"))   # 30min
 CTPROBATE_STARTUP_DELAY  = int(os.environ.get("CTPROBATE_AUTOFILL_STARTUP_DELAY", "90"))
 
 # ZIP scoping for the matcher phase. Like the obit autofill: empty string
