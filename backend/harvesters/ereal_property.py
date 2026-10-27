@@ -247,7 +247,10 @@ def upsert_parsed(supa, pin: str, parsed: dict) -> dict:
             meta_row, on_conflict='pin'
         ).execute()
     except Exception as e:
-        # Meta-table failures are not critical — logged only
+        # Meta-table failures are not critical for the row data, but they
+        # leave fetched_at unset — report them so the sweep can skip the
+        # pin for the rest of its pass instead of re-fetching it forever.
+        stats['meta_error'] = f"parcel_ereal_meta_v3 upsert: {type(e).__name__}: {str(e)[:150]}"
         log.warning(f"[ereal.upsert {pin}] meta upsert failed: {e}")
 
     return stats
@@ -262,9 +265,19 @@ def run_batch(
     ttl_days: int = 30,
     force: bool = False,
     sleep_between_s: float = INTER_REQUEST_SLEEP_S,
+    exclude_pins: Optional[set] = None,
 ) -> dict:
     """
     Fetch up to `limit` parcels in the given ZIP that need refreshing.
+
+    `exclude_pins`: pins the caller already attempted in this rotation
+    pass. A pin that is still TTL-due after being attempted (fetch
+    error, DB write error — upsert_parsed writes fetched_at=None on any
+    write error — or a meta row the lookup can't see) is skipped and
+    counted in `repeat_due`, so one bad parcel cannot hold a ZIP open
+    forever. The 2026-10-26/27 stall: one 98006 parcel re-fetched every
+    180 s tick for ~21 h, cursor never advanced. Skipped pins retry on
+    the next pass.
 
     "Needs refreshing" means: parcel_ereal_meta_v3.fetched_at is NULL
     OR older than ttl_days ago. Pass force=True to bypass the TTL check
@@ -332,20 +345,26 @@ def run_batch(
             meta_by_pin[r['pin']] = r
 
     candidates: list[str] = []
+    repeat_due: list[str] = []
     for pin in all_pins:
         m = meta_by_pin.get(pin)
-        if force:
-            candidates.append(pin)
-        elif not m or not m.get('fetched_at'):
-            candidates.append(pin)
-        elif m['fetched_at'] < cutoff_iso:
-            candidates.append(pin)
+        due = (force
+               or not m or not m.get('fetched_at')
+               or m['fetched_at'] < cutoff_iso)
+        if not due:
+            continue
+        if exclude_pins and pin in exclude_pins:
+            repeat_due.append(pin)
+            continue
+        candidates.append(pin)
         if len(candidates) >= limit:
             break
 
     agg = _fetch_pins(supa, candidates, sleep_between_s)
     agg['zip_code'] = zip_code
     agg['candidates_found'] = len(candidates)
+    agg['repeat_due'] = len(repeat_due)
+    agg['repeat_due_sample'] = repeat_due[:3]
     agg['duration_s'] = round(time.time() - started, 1)
     return agg
 
@@ -376,6 +395,11 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
         'parcels_updated':  0,
         'sample_errors':    [],
         'fetched_pins':     [],
+        # pins whose fetch failed OR whose parse succeeded but a DB write
+        # failed (fetched_at stays NULL for those) — the caller skips them
+        # for the rest of the rotation pass.
+        'failed_pins':      [],
+        'write_errors':     0,
         'duration_s':       0.0,
     }
 
@@ -385,6 +409,7 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
         agg['fetched'] += 1
 
         if not res['ok']:
+            agg['failed_pins'].append(pin)
             if res.get('status') is None or (res['status'] or 0) >= 400:
                 agg['http_errors'] += 1
             else:
@@ -417,10 +442,14 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
             if upsert_stats['parcel_updated']:
                 agg['parcels_updated'] += 1
             agg['sales_upserted'] += upsert_stats['sales_upserted']
-            if upsert_stats.get('error') and len(agg['sample_errors']) < 5:
+            write_err = upsert_stats.get('error') or upsert_stats.get('meta_error')
+            if write_err:
+                agg['failed_pins'].append(pin)
+                agg['write_errors'] += 1
+            if write_err and len(agg['sample_errors']) < 5:
                 agg['sample_errors'].append({
                     'pin':   pin,
-                    'error': upsert_stats['error'],
+                    'error': write_err,
                 })
 
         # Rate limit between parcels — skip on the last iteration
