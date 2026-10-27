@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 
@@ -87,6 +88,8 @@ state: dict = {
     "zip_cursor":           0,
     "phase":                None,   # 'priority' | 'general'
     "wake_requested":       False,
+    "total_write_errors":   0,
+    "total_repeat_due_skipped": 0,
     "config": {
         "tick_interval":    TICK_INTERVAL,
         "batch_parcels":    BATCH_PARCELS,
@@ -95,6 +98,15 @@ state: dict = {
         "event_window_days": EVENT_WINDOW_D,
     },
 }
+
+
+# Pins already attempted in the current rotation pass, per ZIP (only the
+# ZIP under the cursor is held). A pin is fetched at most once per pass,
+# so the cursor always advances even when a parcel stays TTL-due after
+# its fetch (2026-10-26/27: 98006, ~21 h, the same parcel re-fetched
+# every tick). Kept out of `state` so the status endpoint shows counts,
+# not pin lists. Reset on ZIP advance and on process restart.
+_attempted_this_pass: dict[str, set] = {}
 
 
 # ── Transfer classification ───────────────────────────────────────────
@@ -279,7 +291,8 @@ def detect_transfers(supa, pins: list[str],
 
 # ── Priority-pin selection ────────────────────────────────────────────
 
-def _priority_pins(supa, zip_code: str, limit: int) -> list[str]:
+def _priority_pins(supa, zip_code: str, limit: int,
+                   exclude: Optional[set] = None) -> list[str]:
     """Trust-held parcels in the ZIP whose eReal snapshot is older than
     the priority TTL (or never fetched). Signal-matched parcels ride the
     general sweep; trusts are the tier that catches quiet estates."""
@@ -309,6 +322,8 @@ def _priority_pins(supa, zip_code: str, limit: int) -> list[str]:
                 .execute()).data or []
         seen = {m["pin"]: m.get("fetched_at") for m in meta}
         for p in chunk:
+            if exclude and p in exclude:
+                continue
             f = seen.get(p)
             if not f or f < cutoff:
                 stale.append(p)
@@ -323,6 +338,24 @@ def _kc_zips(supa) -> list[str]:
             .eq("market_key", "WA_KING")
             .execute()).data or []
     return sorted(r["zip_code"] for r in rows)
+
+
+def _safe_errors(sample: Optional[list]) -> list[dict]:
+    """Pin + error code/message only, for the status endpoint. PostgREST
+    errors are dict-strings whose 'details' can echo the failing row
+    (owner names) — keep code + message, drop everything else."""
+    out: list[dict] = []
+    for e in (sample or [])[:3]:
+        raw = str(e.get("error") or "")
+        code = re.search(r"'code':\s*'([^']*)'", raw)
+        msg = re.search(r"'message':\s*'([^']*)'", raw)
+        if code or msg:
+            text = f"{code.group(1) if code else '?'}: {msg.group(1) if msg else ''}"
+        else:
+            text = raw.split("Failing row")[0]
+        out.append({"pin": e.get("pin"), "status": e.get("status"),
+                    "error": text[:160]})
+    return out
 
 
 # ── Main loop ─────────────────────────────────────────────────────────
@@ -368,11 +401,12 @@ async def ereal_autofill_loop() -> None:
                     continue
 
             zip_code = state["zip_rotation"][state["zip_cursor"]]
+            attempted = _attempted_this_pass.setdefault(zip_code, set())
 
             # Phase 1: priority (trust-held, tighter TTL) via run_pins;
             # phase 2: the general TTL sweep for the same ZIP.
             pr_pins = await asyncio.to_thread(
-                _priority_pins, supa, zip_code, BATCH_PARCELS)
+                _priority_pins, supa, zip_code, BATCH_PARCELS, attempted)
             if pr_pins:
                 state["phase"] = "priority"
                 batch = await asyncio.to_thread(
@@ -380,10 +414,19 @@ async def ereal_autofill_loop() -> None:
             else:
                 state["phase"] = "general"
                 batch = await asyncio.to_thread(
-                    E.run_batch, supa, zip_code, BATCH_PARCELS, GENERAL_TTL_D)
+                    E.run_batch, supa, zip_code, BATCH_PARCELS, GENERAL_TTL_D,
+                    False, E.INTER_REQUEST_SLEEP_S, attempted)
                 if batch.get("candidates_found", 0) == 0:
-                    # ZIP fully fresh — move the rotation along.
+                    # ZIP fully fresh, or only pins already attempted this
+                    # pass are still due — move the rotation along; those
+                    # get retried on the next pass.
+                    state["total_repeat_due_skipped"] += batch.get("repeat_due", 0)
+                    _attempted_this_pass.pop(zip_code, None)
                     state["zip_cursor"] += 1
+
+            if len(attempted) < 100_000:   # largest KC ZIP is ~25k parcels
+                attempted.update(batch.get("fetched_pins") or [])
+                attempted.update(batch.get("failed_pins") or [])
 
             fetched_pins = batch.get("fetched_pins") or []
             det = await asyncio.to_thread(detect_transfers, supa, fetched_pins)
@@ -395,10 +438,17 @@ async def ereal_autofill_loop() -> None:
                 "parsed_ok": batch.get("parsed_ok", 0),
                 "http_errors": batch.get("http_errors", 0),
                 "sales_upserted": batch.get("sales_upserted", 0),
+                "write_errors": batch.get("write_errors", 0),
+                "failed_pins": len(batch.get("failed_pins") or []),
+                "repeat_due": batch.get("repeat_due", 0),
+                "repeat_due_sample": batch.get("repeat_due_sample", []),
+                "attempted_this_pass": len(attempted),
+                "sample_errors": _safe_errors(batch.get("sample_errors")),
                 "detect": det,
             }
             state["total_ticks"]         += 1
             state["total_fetched"]       += batch.get("fetched", 0)
+            state["total_write_errors"]  += batch.get("write_errors", 0)
             state["total_sales_upserted"] += batch.get("sales_upserted", 0)
             state["total_signals"]       += det.get("signals", 0)
             state["total_retired"]       += det.get("retired_pins", 0)
