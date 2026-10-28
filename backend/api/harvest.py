@@ -4331,6 +4331,14 @@ def harvest_rematch_reset(
     }
 
 
+# PostgREST or-filter selecting match rows that are NOT retired. Used by
+# /rematch-reset-scoped so its match-delete never touches retired rows.
+_NOT_RETIRED_FILTER = (
+    "match_review_status.is.null,"
+    "match_review_status.not.like.retired*"
+)
+
+
 @router.post("/rematch-reset-scoped")
 def harvest_rematch_reset_scoped(
     source_type: str,
@@ -4350,8 +4358,22 @@ def harvest_rematch_reset_scoped(
     Resetting just those (~183 signals) lets the matcher reprocess them
     without disturbing KC signals that don't need re-matching.
 
-    Same UPDATE pattern as the global reset, just with two extra .eq()
-    filters. Same pagination + safety cap. Idempotent.
+    NOT the same as the global /rematch-reset: that one only nulls
+    matched_at and deletes nothing. This one ALSO deletes the scope's
+    existing match rows before resetting (so a matcher change that no
+    longer produces a match does not leave the stale row live) — EXCEPT
+    retired rows (match_review_status LIKE 'retired%': retired_sold_assessor,
+    retired_ownership_change, retired_foreclosure, retired_sold, ...).
+    Those record that the lead is dead and are kept, so a reset + rematch
+    can never bring a sold/retired lead back. The matcher's re-insert
+    upserts on (raw_signal_id, pin) with a payload that carries no
+    match_review_status, so it cannot clear the retirement either.
+
+    Incident 2026-10-26/27: before this guard, a KC reset (21,523 signals)
+    deleted the 10-23 sweep's retired rows and the rematch re-created them
+    as live matches; 669 parcels were re-retired by hand on 10-27.
+
+    Same pagination + safety cap as the global reset. Idempotent.
 
     Pass ?confirm=true to actually execute. Returns 410 with usage if
     source_type or signal_type is missing.
@@ -4403,9 +4425,16 @@ def harvest_rematch_reset_scoped(
             # county-resolution precision fix invalidated 4 surname-
             # coincidence strict matches on tx_topics_citations signals —
             # resetting matched_at alone would have left them live.
+            #
+            # Retired rows are NEVER deleted (repair #7, 2026-10-28): the
+            # filter keeps every row whose match_review_status starts with
+            # 'retired'. NULL needs its own branch — in SQL, NULL NOT LIKE x
+            # is NULL (not true), so not.like alone would skip un-reviewed
+            # rows and leave stale matches behind.
             (supa.table('raw_signal_matches_v3')
              .delete()
              .in_('raw_signal_id', ids)
+             .or_(_NOT_RETIRED_FILTER)
              .execute())
         except Exception as e:
             log.warning(f"rematch-reset-scoped match-delete batch failed: {e}")
