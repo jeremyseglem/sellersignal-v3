@@ -79,6 +79,15 @@ def daterange_chunks(begin, end, chunk_days):
         cur = chunk_end + timedelta(days=1)
 
 
+def _has_weekday(begin, end) -> bool:
+    cur = begin
+    while cur <= end:
+        if cur.weekday() < 5:
+            return True
+        cur += timedelta(days=1)
+    return False
+
+
 def _resolve_rows(idx, rows):
     """County-wide resolution for ONE batch of signal rows (mutates in place).
     Returns the number of rows that resolved to >=1 parcel. No-op if idx is
@@ -141,6 +150,7 @@ def main():
         sys.exit(1)
 
     total_grid_rows, estate_rows, err, wrote, resolved = 0, 0, 0, 0, 0
+    zero_weekday_chunks = []  # chunks holding a Mon–Fri date that read 0 rows
     dry_samples = []
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True,
@@ -173,6 +183,8 @@ def main():
                     dry_samples.extend(chunk_rows[:5 - len(dry_samples)])
                 print(f"  {cstart}..{cend}: {grid_rows} grid rows, {len(chunk_rows)} estate "
                       f"(flushed; wrote_total={wrote})")
+                if grid_rows == 0 and _has_weekday(cstart, cend):
+                    zero_weekday_chunks.append(f"{cstart}..{cend}")
             except Exception as e:
                 err += 1
                 print(f"  {cstart}..{cend} ERR {type(e).__name__}: {e}")
@@ -189,6 +201,17 @@ def main():
     if err and total_grid_rows == 0:
         print(f"[dallas_recorder] FAIL: {err} chunk error(s) and 0 grid rows — "
               "portal/parser break, not a quiet day")
+        sys.exit(2)
+    if zero_weekday_chunks:
+        print(f"[dallas_recorder] WARN: {len(zero_weekday_chunks)} chunk(s) with a "
+              f"weekday read 0 grid rows: {', '.join(zero_weekday_chunks)}")
+    # Silent-zero guard, no-error form (2026-10-29): the window always spans
+    # weekdays the county has certified (it trails today by LAG_DAYS), so a
+    # whole run with 0 grid rows is a read failure even when no chunk raised.
+    # The 10-27 and 10-28 runs read 0 rows on 8 days with 0 errors, green.
+    if total_grid_rows == 0 and zero_weekday_chunks:
+        print("[dallas_recorder] FAIL: 0 grid rows across a window with weekdays "
+              "and no chunk error — the search returned nothing, not a quiet week")
         sys.exit(2)
     if WRITE:
         print(f"[dallas_recorder] WROTE {wrote} signals to {TABLE} (flushed per chunk)")
