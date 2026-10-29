@@ -1,0 +1,44 @@
+name: KC sales history load (public sales file)
+
+# Harvester queue #10 (2026-10-29): loads point-in-time seller/buyer
+# history for every live WA_KING fabric parcel from King County's public
+# Real Property Sales file into sales_history_v3 — insert-only, deduped
+# per (pin, recording_number), never touching eReal rows or eReal meta,
+# never running transfer-detect. Manual only: DRY RUN by default; a
+# write run (write=1) and any transfer-detect pass afterwards are
+# separate founder go's. Runs on GitHub, not in the Railway process:
+# the file is ~650 MB extracted (the 2026-10-23 OOM lesson).
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "1 = insert rows; anything else = dry run (counts only)"
+        default: "0"
+      since:
+        description: "Earliest DocumentDate to load (YYYY-MM-DD)"
+        default: "2015-01-01"
+      zips:
+        description: "Comma-separated ZIPs (blank = every live WA_KING ZIP)"
+        default: ""
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Load
+        env:
+          SS_ADMIN_KEY: ${{ secrets.SS_ADMIN_KEY }}
+          WRITE: ${{ github.event.inputs.write }}
+          SINCE: ${{ github.event.inputs.since }}
+          ZIPS: ${{ github.event.inputs.zips }}
+          KC_DATA: /tmp/kc-data
+        run: |
+          pip install requests
+          python scripts/run_kc_sales_history.py

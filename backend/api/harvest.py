@@ -2659,6 +2659,118 @@ def ingest_transfers(
             "unknown_instruments": unknown_counts, "detect": det}
 
 
+# ── KC public sales file -> sales_history_v3 (Harvester queue #10) ────
+
+_SALES_HISTORY_FIELDS = ("pin", "recording_number", "excise_number",
+                         "sale_date", "sale_price", "seller_name",
+                         "buyer_name", "instrument", "sale_reason")
+
+
+@router.post("/ingest-sales-history")
+def ingest_sales_history(
+    payload: dict = Body(...),
+    x_admin_key: Optional[str] = Header(None),
+):
+    """Insert recorded transfers from the King County Assessor's public
+    sales file (EXTR_RPSale.csv, parsed by
+    backend/harvesters/kc_sales_file.py in scripts/run_kc_sales_history.py)
+    into sales_history_v3. Built for Harvester queue #10: point-in-time
+    seller (grantor) history for the filing-date matcher.
+
+    Body: {"market_key": "WA_KING", "dry_run": true|false,
+           "rows": [{pin, recording_number, excise_number, sale_date,
+                     sale_price, seller_name, buyer_name, instrument,
+                     sale_reason}, ...]}   (1..2000 rows)
+
+    Guarantees (the ticket's rules):
+      * INSERT-ONLY. A (pin, recording_number) already in
+        sales_history_v3 — e.g. an eReal-sourced row — is never
+        modified: existing keys are read first and skipped, and the
+        write is ON CONFLICT DO NOTHING (ignore_duplicates) for any race.
+      * Deduped per (pin, recording_number) within the call before the
+        write (one upsert carrying a key twice fails with Postgres 21000
+        — queue #5).
+      * Rows for pins not in parcels_v3 are skipped and counted (FK).
+      * is_arms_length is computed here with the eReal parser's own
+        classifier, from the instrument/reason text.
+      * Never touches parcel_ereal_meta_v3 and never runs the transfer
+        detector: a transfer-detect pass after a load is a separate
+        founder go (POST /api/harvest/transfer-detect).
+      * dry_run (default TRUE) reads only and returns the same counts.
+    """
+    _require_admin(x_admin_key)
+    supa = get_supabase_client()
+    if supa is None:
+        raise HTTPException(503, "Supabase not configured")
+    market = (payload.get("market_key") or "").strip()
+    if market != "WA_KING":
+        raise HTTPException(400, "Only WA_KING is wired (KC public sales file)")
+    rows = payload.get("rows") or []
+    if not rows or len(rows) > 2000:
+        raise HTTPException(400, "rows must be 1..2000 per call")
+    dry_run = payload.get("dry_run", True) is not False
+
+    from backend.harvesters.kc_sales_file import dedupe_rows
+    from backend.harvesters.ereal_property_parser import _classify_arms_length
+
+    clean = []
+    for r in rows:
+        pin = str(r.get("pin") or "").strip()
+        rec = str(r.get("recording_number") or "").strip()
+        if not pin or not rec:
+            continue
+        row = {k: r.get(k) for k in _SALES_HISTORY_FIELDS}
+        row["pin"], row["recording_number"] = pin, rec
+        row["is_arms_length"] = _classify_arms_length(
+            row.get("instrument") or "", row.get("sale_reason") or "")
+        clean.append(row)
+    deduped, dup_in_batch = dedupe_rows(clean)
+
+    pins = sorted({r["pin"] for r in deduped})
+    zip_of: dict = {}
+    existing: set = set()
+    for i in range(0, len(pins), 300):
+        chunk = pins[i:i + 300]
+        for p in (supa.table("parcels_v3").select("pin, zip_code")
+                  .in_("pin", chunk).execute()).data or []:
+            zip_of[p["pin"]] = p.get("zip_code")
+        for s in (supa.table("sales_history_v3")
+                  .select("pin, recording_number")
+                  .in_("pin", chunk).execute()).data or []:
+            existing.add((s["pin"], s["recording_number"]))
+
+    new_rows, by_zip = [], {}
+    not_in_fabric = already = 0
+    for r in deduped:
+        if r["pin"] not in zip_of:
+            not_in_fabric += 1
+            continue
+        if (r["pin"], r["recording_number"]) in existing:
+            already += 1
+            continue
+        new_rows.append(r)
+        z = zip_of[r["pin"]] or "?"
+        by_zip[z] = by_zip.get(z, 0) + 1
+
+    inserted = 0
+    if not dry_run:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for i in range(0, len(new_rows), 500):
+            batch = [dict(r, source_fetched_at=now_iso)
+                     for r in new_rows[i:i + 500]]
+            (supa.table("sales_history_v3")
+             .upsert(batch, on_conflict="pin,recording_number",
+                     ignore_duplicates=True)
+             .execute())
+            inserted += len(batch)
+
+    return {"market_key": market, "dry_run": dry_run,
+            "rows_in": len(rows), "dup_in_batch": dup_in_batch,
+            "not_in_fabric": not_in_fabric, "already_present": already,
+            "new_rows": len(new_rows), "inserted": inserted,
+            "new_by_zip": by_zip}
+
+
 @router.get("/qc-snapshot")
 def qc_snapshot(x_admin_key: Optional[str] = Header(None)):
     """One-call health snapshot for the QC agent (charter: oversee ZIP
