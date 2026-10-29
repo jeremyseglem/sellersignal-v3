@@ -46,6 +46,11 @@ import requests
 
 BUCKET = "fabric-snapshots"
 PAGE = 1000
+MIN_PAGE = 100
+
+
+class StatementTimeout(RuntimeError):
+    """PostgREST 57014: the page query hit the DB statement timeout."""
 
 PARCEL_COLUMNS = [
     "pin", "zip_code", "market_key",
@@ -80,8 +85,8 @@ class Client:
                 r = self.s.get(f"{self.url}{path}", params=params,
                                headers={**self.h, **(headers or {})},
                                timeout=120)
-                if r.status_code < 500:
-                    return r
+                if r.status_code < 500 or "57014" in r.text:
+                    return r   # 57014 is not retried as-is: caller shrinks the page
                 last = f"HTTP {r.status_code}: {r.text[:200]}"
             except requests.RequestException as e:
                 last = str(e)
@@ -90,6 +95,8 @@ class Client:
 
     def rows(self, table, params):
         r = self._get(f"/rest/v1/{table}", params=params)
+        if r.status_code == 500 and "57014" in r.text:
+            raise StatementTimeout(f"{table}: 57014 statement timeout at limit={params.get('limit')}")
         if r.status_code != 200:
             raise RuntimeError(f"{table}: HTTP {r.status_code} {r.text[:300]}")
         return r.json()
@@ -112,29 +119,40 @@ class Client:
             "order": "zip_code"})
         return [(r["zip_code"], r["market_key"]) for r in out]
 
-    def parcels(self, zip_code, cols):
-        last = ""
+    def _paged(self, table, base, key, cast, start):
+        """Keyset pages; on a 57014 timeout halve the page (down to
+        MIN_PAGE) and retry the same page. The 2026-10-29 dry run hit 57014
+        on parcels_v3 after 86 ZIPs at limit=1000 (the analyst's notes say
+        limit 300 works where 1000 times out)."""
+        last, page = start, PAGE
         while True:
-            p = {"select": ",".join(cols), "zip_code": f"eq.{zip_code}",
-                 "order": "pin", "limit": str(PAGE)}
-            if last:
-                p["pin"] = f"gt.{last}"
-            batch = self.rows("parcels_v3", p)
+            p = dict(base)
+            p["order"] = key
+            p["limit"] = str(page)
+            if last is not None:
+                p[key] = f"gt.{last}"
+            try:
+                batch = self.rows(table, p)
+            except StatementTimeout:
+                if page <= MIN_PAGE:
+                    raise
+                page = max(MIN_PAGE, page // 2)
+                print(f"[snapshot] {table}: 57014, page -> {page}", flush=True)
+                time.sleep(2)
+                continue
             yield from batch
-            if len(batch) < PAGE:
+            if len(batch) < page:
                 return
-            last = batch[-1]["pin"]
+            last = cast(batch[-1][key])
+
+    def parcels(self, zip_code, cols):
+        yield from self._paged("parcels_v3",
+                               {"select": ",".join(cols), "zip_code": f"eq.{zip_code}"},
+                               "pin", str, None)
 
     def matches(self, cols):
-        last = 0
-        while True:
-            batch = self.rows("raw_signal_matches_v3", {
-                "select": ",".join(cols), "id": f"gt.{last}",
-                "order": "id", "limit": str(PAGE)})
-            yield from batch
-            if len(batch) < PAGE:
-                return
-            last = batch[-1]["id"]
+        yield from self._paged("raw_signal_matches_v3",
+                               {"select": ",".join(cols)}, "id", int, 0)
 
     # ---- storage ----
     def object_exists(self, path):

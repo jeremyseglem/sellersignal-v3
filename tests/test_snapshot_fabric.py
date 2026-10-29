@@ -76,6 +76,10 @@ class FakeSession:
         self.calls.append(("GET", path, dict(params or {})))
         if path.startswith("/rest/v1/"):
             table = path.split("/")[-1]
+            if (getattr(self, "timeout_zip", None) and table == "parcels_v3"
+                    and params.get("zip_code") == f"eq.{self.timeout_zip}"
+                    and int(params.get("limit", 0)) > 300):
+                return Resp(500, {"code": "57014", "message": "canceling statement due to statement timeout"})
             rows = self.tables[table]
             if params.get("select") == "*" and table in self.live_cols:
                 rows = [{c: r.get(c) for c in self.live_cols[table]} for r in rows]
@@ -174,6 +178,23 @@ p, m, c = mk()
 fs = FakeSession(p, m, c)
 man = S.run(S.Client("https://x.supabase.co", "k", fs), "2026-11-01", dry_run=True, zips_filter={"98002"})
 t("filter respected", (man["zips"], man["parcels_total"]), (1, 3))
+
+print("57014 adaptive page size")
+p, m, c = mk()
+fs = FakeSession(p, m, c)
+fs.timeout_zip = "98001"
+man = S.run(S.Client("https://x.supabase.co", "k", fs), "2026-11-01", dry_run=True)
+t("timeout ZIP still fully read at a smaller page", man["parcels_total"], 2503)
+lims = sorted({int(cl[2]["limit"]) for cl in fs.calls if cl[0] == "GET" and cl[2].get("zip_code") == "eq.98001"})
+t("page shrank 1000 -> 500 -> 250", lims, [250, 500, 1000])
+fs2 = FakeSession(p, m, c); fs2.timeout_zip = "98001"
+S.MIN_PAGE, old = 500, S.MIN_PAGE
+try:
+    S.run(S.Client("https://x.supabase.co", "k", fs2), "2026-11-01", dry_run=True)
+    t("gives up at MIN_PAGE", "no error", "error")
+except S.StatementTimeout:
+    t("gives up at MIN_PAGE", True, True)
+S.MIN_PAGE = old
 
 print(f"\n{PASSES} passed, {FAILS} failed")
 sys.exit(1 if FAILS else 0)
