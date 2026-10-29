@@ -1,0 +1,51 @@
+name: Fabric Snapshot (monthly, frozen)
+
+# Monthly point-in-time copy of parcels_v3 (per live ZIP) and
+# raw_signal_matches_v3 into the PRIVATE Supabase Storage bucket
+# `fabric-snapshots`. The training history for the sale-probability engine:
+# the live tables keep only the current owner, so history nobody snapshots
+# is history nobody can get back. Read-only on the database; snapshots are
+# immutable (a label whose manifest exists is never overwritten).
+# Founder go: Jeremy 2026-10-29. Script: scripts/snapshot_fabric.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = counts only (default), 0 = write the snapshot"
+        required: false
+        default: "1"
+      zips:
+        description: "comma list of ZIPs (default: all live)"
+        required: false
+        default: ""
+      label:
+        description: "snapshot label (default: today's UTC date)"
+        required: false
+        default: ""
+  schedule:
+    # 1st of each month, 09:17 UTC (off-peak; before the morning agents).
+    - cron: "17 9 1 * *"
+
+concurrency:
+  group: fabric-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests==2.32.3
+      - name: Snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DRY_RUN: ${{ github.event_name == 'schedule' && '0' || github.event.inputs.dry_run }}
+          ZIPS: ${{ github.event.inputs.zips }}
+          SNAPSHOT_LABEL: ${{ github.event.inputs.label }}
+        run: python scripts/snapshot_fabric.py
