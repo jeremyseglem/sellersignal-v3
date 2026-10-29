@@ -189,11 +189,10 @@ lims = sorted({int(cl[2]["limit"]) for cl in fs.calls if cl[0] == "GET" and cl[2
 t("page shrank 1000 -> 500 -> 250", lims, [250, 500, 1000])
 fs2 = FakeSession(p, m, c); fs2.timeout_zip = "98001"
 S.MIN_PAGE, old = 500, S.MIN_PAGE
-try:
-    S.run(S.Client("https://x.supabase.co", "k", fs2), "2026-11-01", dry_run=True)
-    t("gives up at MIN_PAGE", "no error", "error")
-except S.StatementTimeout:
-    t("gives up at MIN_PAGE", True, True)
+man2 = S.run(S.Client("https://x.supabase.co", "k", fs2), "2026-11-01", dry_run=True)
+t("a ZIP still timing out at MIN_PAGE is recorded, not fatal",
+  ([f["zip_code"] for f in man2["failed_zips"]], man2["partial"], man2["parcels_total"]),
+  (["98001"], True, 3))
 S.MIN_PAGE = old
 
 print(f"\n{PASSES} passed, {FAILS} failed")

@@ -209,8 +209,16 @@ def run(client: Client, label: str, dry_run: bool, zips_filter=None,
 
     files = {}
     by_market = {}
+    failed = []
     for zip_code, market in zips:
-        data, n = to_jsonl_gz(client.parcels(zip_code, pcols))
+        try:
+            data, n = to_jsonl_gz(client.parcels(zip_code, pcols))
+        except StatementTimeout as e:
+            # Recorded, not fatal: one slow ZIP must not cost the month.
+            # Fix is migration 040 (index on parcels_v3(zip_code, pin)).
+            failed.append({"zip_code": zip_code, "market_key": market, "error": str(e)})
+            print(f"[snapshot] {zip_code} {market}: FAILED ({e})", flush=True)
+            continue
         path = f"{label}/parcels/{zip_code}.jsonl.gz"
         files[path] = {"rows": n, "bytes": len(data),
                        "sha256": hashlib.sha256(data).hexdigest(),
@@ -240,6 +248,8 @@ def run(client: Client, label: str, dry_run: bool, zips_filter=None,
         "parcels_total": sum(v["rows"] for k, v in files.items() if "/parcels/" in k),
         "parcels_by_market": by_market,
         "matches_total": n,
+        "failed_zips": failed,
+        "partial": bool(failed),
         "files": files,
     }
     if not dry_run:
@@ -261,7 +271,9 @@ def main():
             os.environ.get("FORCE") == "1")
     print(json.dumps({k: m[k] for k in ("label", "dry_run", "zips",
                                         "parcels_total", "matches_total",
-                                        "parcels_by_market")}, indent=1))
+                                        "parcels_by_market", "failed_zips")}, indent=1))
+    if m["failed_zips"]:
+        sys.exit(2)   # visible red run; the manifest records which ZIPs
 
 
 if __name__ == "__main__":
