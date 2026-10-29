@@ -726,6 +726,55 @@ def _dispatch_divorce(row, owners_db, use_codes):
     return match_divorce_to_parcels([filing], owners_db, use_codes)
 
 
+# ─── Second key for decedent name matches (Signal lab H2) ─────────────
+#
+# name_match() accepts any two shared tokens, so a shared surname plus a
+# shared middle name ('Robert LEE SMITH' vs 'Mary LEE SMITH') or a shared
+# middle initial is a match, and the surname gate marks it strict whenever
+# the surname is not on the common list. Backtested on King County
+# (claude/SIGNAL_LAB.md, 2026-10-29 Run 2): on 7,225 recorded market sales
+# vs 1.06M placebo parcel-dates, strict probate matches on today's owners
+# went from 1.70x chance (41% above-chance precision) to 4.49x (78%), with
+# no estate sale lost from the strict set (7/48 -> 7/48).
+#
+# Rule (keep = True): both names in 'First [Middle…] Last' order —
+#   - the first given-name tokens must be equal; and
+#   - if both names carry a middle token, their first letters must agree.
+# Trust-formatted or entity owner names keep the old floor (token order is
+# unreliable there). Names with fewer than two tokens keep the old floor.
+#
+# Only for sources whose filing AND fabric owner names are both
+# 'First M Last' and were backtested. MT cadastral and comma-form names
+# are surname-first and must not use this rule without their own test.
+_SECOND_KEY_SOURCES = frozenset({"kc_superior_court"})
+
+_SECOND_KEY_ENTITY_RE = _re_hoa.compile(
+    r"\b(LLC|INC|CORP|TRUST|TRST|TR|TRT|TTEE|TTEES|BANK|CITY|COUNTY|STATE|"
+    r"ASSOC|ASSN|PARTNERS|LP|LLP|CO|COMPANY|CHURCH|HOMES|PROPERTIES|"
+    r"INVESTMENTS|HOLDINGS|FUND|GROUP|DEVELOPMENT|SCHOOL|UNIVERSITY)\b")
+
+
+def _second_key_ok(filing_name: str, owner_name: str) -> bool:
+    """True when the pair passes the second key (or the key does not apply)."""
+    from backend.scoring.match_review import (
+        _ordered_tokens as _mr_tokens, _is_trust_formatted,
+    )
+    if _is_trust_formatted(filing_name or "", owner_name or ""):
+        return True
+    if _SECOND_KEY_ENTITY_RE.search((owner_name or "").upper()):
+        return True
+    a = _mr_tokens(filing_name or "")
+    b = _mr_tokens(owner_name or "")
+    if len(a) < 2 or len(b) < 2:
+        return True
+    if a[0] != b[0]:
+        return False
+    a_mid, b_mid = a[1:-1], b[1:-1]
+    if a_mid and b_mid and a_mid[0][0] != b_mid[0][0]:
+        return False
+    return True
+
+
 def _dispatch_probate(row, owners_db, use_codes):
     """
     Probate / obituary matching.
@@ -848,6 +897,17 @@ def _dispatch_probate(row, owners_db, use_codes):
             continue
 
         if name_match(decedent_raw, owner_name):
+            # Second key (Signal lab H2, 2026-10-29): a shared surname plus
+            # one other token is not enough when the first names disagree
+            # or both middle initials are present and differ. Those pairs
+            # stay as matches but are stamped weak (build_now, not
+            # call_now). Scoped to sources whose names were backtested.
+            strength = "strict"
+            hint_extra = {}
+            if (row.get('source_type') in _SECOND_KEY_SOURCES
+                    and not _second_key_ok(decedent_raw, owner_name)):
+                strength = "weak"
+                hint_extra = {"second_key": "failed"}
             candidates.append({
                 "parcel_id":     pin,
                 "signal_family": "probate_pending",
@@ -855,7 +915,8 @@ def _dispatch_probate(row, owners_db, use_codes):
                     "case_number":    row.get('document_ref'),
                     "filing_date":    (row.get('event_date') or ''),
                     "decedent":       decedent_raw,
-                    "match_strength": "strict",
+                    "match_strength": strength,
+                    **hint_extra,
                 },
             })
 
