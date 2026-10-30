@@ -390,6 +390,7 @@ def _run_hydrate(roster: List[str]) -> None:
             batch_count = 0
             total_fetched = 0
             consecutive_zero = 0
+            ereal_status = "complete"
             while batch_count < MAX_BATCHES_PER_ZIP:
                 try:
                     result = run_batch(
@@ -404,6 +405,18 @@ def _run_hydrate(roster: List[str]) -> None:
                     total_fetched += fetched
                     _hydrate_record(zip_code, "ereal_batches", batch_count)
                     _hydrate_record(zip_code, "parcels_fetched", total_fetched)
+
+                    if result.get("rate_limited"):
+                        # The portal served its 1,000-parcels/day cap page
+                        # (ereal_property.ACCESS_LIMIT_MARKERS). Nothing more
+                        # is readable today; the sweep task finishes the ZIP
+                        # under its daily budget.
+                        _hydrate_error(zip_code, "ereal",
+                                       "portal daily access limit reached; "
+                                       f"{total_fetched} parcels requested, "
+                                       "rest left to the eReal sweep")
+                        ereal_status = "rate_limited"
+                        break
 
                     if fetched == 0:
                         consecutive_zero += 1
@@ -423,10 +436,10 @@ def _run_hydrate(roster: List[str]) -> None:
                     if batch_count >= 5 and total_fetched == 0:
                         # If first 5 batches all error and nothing fetched,
                         # something is structurally broken — give up on this ZIP.
-                        _hydrate_record(zip_code, "ereal_status", "failed")
+                        ereal_status = "failed"
                         break
 
-            _hydrate_record(zip_code, "ereal_status", "complete")
+            _hydrate_record(zip_code, "ereal_status", ereal_status)
 
             # Phase 2: reclassify with the now-populated owner data.
             _hydrate_update({"current_phase": "classify"})

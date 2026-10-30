@@ -57,6 +57,17 @@ BATCH_PARCELS   = int(os.environ.get("EREAL_AUTOFILL_BATCH", "60"))
 GENERAL_TTL_D   = int(os.environ.get("EREAL_AUTOFILL_TTL_DAYS", "30"))
 PRIORITY_TTL_D  = int(os.environ.get("EREAL_AUTOFILL_PRIORITY_TTL_DAYS", "7"))
 STARTUP_DELAY   = int(os.environ.get("EREAL_AUTOFILL_STARTUP_DELAY", "120"))
+# The portal caps each client at 1,000 parcels per day (its "Exceed
+# Access Limit" page, observed 2026-10-30 — see ereal_property
+# ACCESS_LIMIT_MARKERS). Stay under it in every trailing 24 h window:
+# a calendar day is itself a 24 h window, so this holds whatever hour
+# the portal resets on. 60 parcels / 180 s had been requesting ~28,800
+# a day and stamping the cap page as a fetched parcel with 0 sales.
+DAILY_BUDGET    = int(os.environ.get("EREAL_AUTOFILL_DAILY_BUDGET", "950"))
+BUDGET_WINDOW_S = 24 * 3600
+# Pause between ZIPs that needed no fetch (TTL-fresh): advance the
+# rotation instead of resting IDLE_INTERVAL on each one (queue #6).
+FRESH_ZIP_ADVANCE_SECONDS = 15
 # How far back a transfer still counts as an event (overlay decays
 # CALL NOW urgency past 365d anyway — see harvester_overlay._STALE_DAYS).
 EVENT_WINDOW_D  = int(os.environ.get("EREAL_TRANSFER_WINDOW_DAYS", "365"))
@@ -90,8 +101,15 @@ state: dict = {
     "wake_requested":       False,
     "total_write_errors":   0,
     "total_repeat_due_skipped": 0,
+    "total_sales_dup_rec":  0,       # same-recording rows dropped before upsert
+    "total_rate_limited":   0,       # ticks that hit the portal's cap page
+    "last_rate_limited_at": None,
+    "pass_fetched":         0,       # parcels requested in the current rotation pass
+    "budget_used_24h":      0,       # parcels requested in the trailing 24 h
     "config": {
         "tick_interval":    TICK_INTERVAL,
+        "idle_interval":    IDLE_INTERVAL,
+        "daily_budget":     DAILY_BUDGET,
         "batch_parcels":    BATCH_PARCELS,
         "general_ttl_days": GENERAL_TTL_D,
         "priority_ttl_days": PRIORITY_TTL_D,
@@ -107,6 +125,26 @@ state: dict = {
 # every tick). Kept out of `state` so the status endpoint shows counts,
 # not pin lists. Reset on ZIP advance and on process restart.
 _attempted_this_pass: dict[str, set] = {}
+
+# Unix timestamps of parcel requests in the trailing budget window (one
+# entry per request, including the request that got the cap page).
+# Bounded by DAILY_BUDGET + one batch; reset on process restart.
+_request_times: list[float] = []
+
+
+def _budget_remaining(now_ts: float) -> int:
+    """Requests still allowed in the trailing 24 h; prunes old entries."""
+    cutoff = now_ts - BUDGET_WINDOW_S
+    while _request_times and _request_times[0] < cutoff:
+        _request_times.pop(0)
+    return max(0, DAILY_BUDGET - len(_request_times))
+
+
+def _budget_resets_in(now_ts: float) -> float:
+    """Seconds until the oldest request leaves the window (≥ 60)."""
+    if not _request_times:
+        return 60.0
+    return max(60.0, _request_times[0] + BUDGET_WINDOW_S - now_ts)
 
 
 # ── Transfer classification ───────────────────────────────────────────
@@ -400,13 +438,27 @@ async def ereal_autofill_loop() -> None:
                     await asyncio.sleep(IDLE_INTERVAL)
                     continue
 
+            # Portal budget: never request more than DAILY_BUDGET parcels
+            # in any trailing 24 h. Out of budget -> wait for the window
+            # to roll, not a tick.
+            now_ts = datetime.now(timezone.utc).timestamp()
+            remaining = _budget_remaining(now_ts)
+            state["budget_used_24h"] = len(_request_times)
+            if remaining <= 0:
+                wait = _budget_resets_in(now_ts)
+                log.info(f"ereal_autofill: daily budget {DAILY_BUDGET} used; "
+                         f"next request in {int(wait)}s")
+                await asyncio.sleep(min(wait, 600))
+                continue
+            batch_size = min(BATCH_PARCELS, remaining)
+
             zip_code = state["zip_rotation"][state["zip_cursor"]]
             attempted = _attempted_this_pass.setdefault(zip_code, set())
 
             # Phase 1: priority (trust-held, tighter TTL) via run_pins;
             # phase 2: the general TTL sweep for the same ZIP.
             pr_pins = await asyncio.to_thread(
-                _priority_pins, supa, zip_code, BATCH_PARCELS, attempted)
+                _priority_pins, supa, zip_code, batch_size, attempted)
             if pr_pins:
                 state["phase"] = "priority"
                 batch = await asyncio.to_thread(
@@ -414,7 +466,7 @@ async def ereal_autofill_loop() -> None:
             else:
                 state["phase"] = "general"
                 batch = await asyncio.to_thread(
-                    E.run_batch, supa, zip_code, BATCH_PARCELS, GENERAL_TTL_D,
+                    E.run_batch, supa, zip_code, batch_size, GENERAL_TTL_D,
                     False, E.INTER_REQUEST_SLEEP_S, attempted)
                 if batch.get("candidates_found", 0) == 0:
                     # ZIP fully fresh, or only pins already attempted this
@@ -423,6 +475,23 @@ async def ereal_autofill_loop() -> None:
                     state["total_repeat_due_skipped"] += batch.get("repeat_due", 0)
                     _attempted_this_pass.pop(zip_code, None)
                     state["zip_cursor"] += 1
+
+            # Every request counts against the budget, the cap page too.
+            n_req = int(batch.get("fetched", 0))
+            _request_times.extend([datetime.now(timezone.utc).timestamp()] * n_req)
+            state["pass_fetched"] += n_req
+            state["budget_used_24h"] = len(_request_times)
+
+            rate_limited = bool(batch.get("rate_limited"))
+            if rate_limited:
+                state["total_rate_limited"] += 1
+                state["last_rate_limited_at"] = datetime.now(timezone.utc).isoformat()
+                # The pin that drew the cap page is the batch's last
+                # failure (the batch stopped there); it is retried after
+                # the reset rather than skipped for the pass.
+                fp = list(batch.get("failed_pins") or [])
+                if fp:
+                    batch["failed_pins"] = fp[:-1]
 
             if len(attempted) < 100_000:   # largest KC ZIP is ~25k parcels
                 attempted.update(batch.get("fetched_pins") or [])
@@ -444,11 +513,16 @@ async def ereal_autofill_loop() -> None:
                 "repeat_due_sample": batch.get("repeat_due_sample", []),
                 "attempted_this_pass": len(attempted),
                 "sample_errors": _safe_errors(batch.get("sample_errors")),
+                "rate_limited": rate_limited,
+                "not_attempted": batch.get("not_attempted", 0),
+                "sales_dup_rec": batch.get("sales_dup_rec", 0),
+                "batch_size": batch_size,
                 "detect": det,
             }
             state["total_ticks"]         += 1
             state["total_fetched"]       += batch.get("fetched", 0)
             state["total_write_errors"]  += batch.get("write_errors", 0)
+            state["total_sales_dup_rec"] += batch.get("sales_dup_rec", 0)
             state["total_sales_upserted"] += batch.get("sales_upserted", 0)
             state["total_signals"]       += det.get("signals", 0)
             state["total_retired"]       += det.get("retired_pins", 0)
@@ -465,10 +539,24 @@ async def ereal_autofill_loop() -> None:
             except Exception:
                 pass
 
-            # Idle when nothing anywhere needed work this pass.
-            nothing = (batch.get("fetched", 0) == 0)
+            # Pacing (queue #6, 2026-10-27 pace note): a TTL-fresh ZIP
+            # advances the rotation after a short pause; the long idle
+            # applies only when a whole pass over the rotation requested
+            # nothing. The cap page means every request today is wasted:
+            # rest IDLE_INTERVAL, then the next batch's first request
+            # tells whether the portal has reset.
+            pass_complete = state["zip_cursor"] >= len(state["zip_rotation"])
+            if rate_limited:
+                target = IDLE_INTERVAL
+            elif pass_complete:
+                target = IDLE_INTERVAL if state["pass_fetched"] == 0 else TICK_INTERVAL
+            elif n_req == 0:
+                target = FRESH_ZIP_ADVANCE_SECONDS
+            else:
+                target = TICK_INTERVAL
+            if pass_complete:
+                state["pass_fetched"] = 0
             slept = 0
-            target = IDLE_INTERVAL if nothing else TICK_INTERVAL
             while slept < target:
                 if state.get("wake_requested"):
                     state["wake_requested"] = False

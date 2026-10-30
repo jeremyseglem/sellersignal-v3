@@ -56,6 +56,26 @@ DEFAULT_USER_AGENT = (
 REQUEST_TIMEOUT_S = 30
 INTER_REQUEST_SLEEP_S = 1.2
 
+# The portal's own daily cap. Observed live 2026-10-30 from Railway via
+# /api/harvest/diag/fetch-text: HTTP 200, 47,736 bytes, <title>...eReal
+# Property - Exceed Access Limit</title>, form id cphContent_FormViewLimit,
+# text "we limit each client's access to <LabelLimitNbr>1000</LabelLimitNbr>
+# parcels per day". It carries no owner, building or SALES HISTORY
+# section, so parse_ereal_detail returns an empty-but-valid dict and,
+# before this guard, upsert_parsed stamped fetched_at with sales_count 0
+# for 30 days (98027 "recent" meta rows: 200/200 fetched_ok with
+# sales_count 0; the same pins parse 1+ sales from another client).
+ACCESS_LIMIT_MARKERS = (
+    "Exceed Access Limit",
+    'id="cphContent_FormViewLimit"',
+)
+ACCESS_LIMIT_ERROR = "access_limit: eReal 'Exceed Access Limit' page (portal cap 1000 parcels/day)"
+
+
+def is_access_limit_page(body: str) -> bool:
+    """True when the body is the portal's daily-cap page, not a detail page."""
+    return any(m in body for m in ACCESS_LIMIT_MARKERS)
+
 
 # ─── Session with retry ───────────────────────────────────────────────
 
@@ -117,6 +137,21 @@ def fetch_one(pin: str, session: Optional[requests.Session] = None) -> dict:
             'error':       f"HTTP {r.status_code}",
         }
 
+    # The daily-cap page is HTTP 200 and parses as an empty detail page.
+    # Report it as a failed fetch so nothing is stamped fetched_at and the
+    # caller can stop the batch (every further request today gets the
+    # same page).
+    if is_access_limit_page(body):
+        return {
+            'pin':          pin,
+            'ok':           False,
+            'status':       r.status_code,
+            'body_length':  len(body),
+            'parsed':       None,
+            'error':        ACCESS_LIMIT_ERROR,
+            'rate_limited': True,
+        }
+
     # Parse errors are non-fatal — the page loaded, we just couldn't
     # extract. Record the body length so the operator can see if the
     # response was unexpectedly short (blocked / rate-limited).
@@ -144,6 +179,44 @@ def fetch_one(pin: str, session: Optional[requests.Session] = None) -> dict:
 
 # ─── Upsert coordinator ───────────────────────────────────────────────
 
+def _row_completeness(row: dict) -> tuple:
+    """Sort key for choosing which of two same-key rows to keep: more
+    non-null fields first, then a price, then the newer sale_date."""
+    filled = sum(1 for k, v in row.items()
+                 if k != 'source_fetched_at' and v not in (None, ''))
+    return (filled, 1 if row.get('sale_price') else 0, row.get('sale_date') or '')
+
+
+def _dedupe_sales_rows(rows: list[dict]) -> tuple[list[dict], int]:
+    """
+    One row per (pin, recording_number) — the table's unique key.
+
+    A single upsert whose payload carries the same key twice fails with
+    Postgres 21000 ("ON CONFLICT DO UPDATE command cannot affect row a
+    second time"), which failed the whole parcel's sales write and left
+    its meta fetched_at NULL (live 2026-10-27: pin 7229350630, 98006).
+    Live 2026-10-30, same parcel: 7 sales on the page, recording number
+    199203100000 on two of them — two distinct 1992 excise numbers,
+    different dates and prices, so these are two sales the key cannot
+    hold both of; the KC sales file loader (kc_sales_file._dedupe) makes
+    the same choice. Keeps the most complete row per key, in page order
+    otherwise; returns (rows, dropped_count).
+    """
+    best: dict[str, dict] = {}
+    order: list[str] = []
+    dropped = 0
+    for r in rows:
+        key = r['recording_number']
+        if key not in best:
+            best[key] = r
+            order.append(key)
+            continue
+        dropped += 1
+        if _row_completeness(r) > _row_completeness(best[key]):
+            best[key] = r
+    return [best[k] for k in order], dropped
+
+
 def upsert_parsed(supa, pin: str, parsed: dict) -> dict:
     """
     Write parsed detail to the three destinations:
@@ -161,6 +234,9 @@ def upsert_parsed(supa, pin: str, parsed: dict) -> dict:
         'parcel_updated':  False,
         'sales_upserted':  0,
         'sales_skipped':   0,
+        # rows dropped because the page listed the same recording_number
+        # twice for this parcel (see _dedupe_sales_rows)
+        'sales_dup_rec':   0,
         'error':           None,
     }
 
@@ -218,6 +294,11 @@ def upsert_parsed(supa, pin: str, parsed: dict) -> dict:
             'is_arms_length':   s.get('is_arms_length'),
             'source_fetched_at': datetime.now(timezone.utc).isoformat(),
         })
+    rows, dropped = _dedupe_sales_rows(rows)
+    stats['sales_dup_rec'] = dropped
+    if dropped:
+        log.info(f"[ereal.upsert {pin}] {dropped} sale row(s) share a recording_number "
+                 f"with another row on the page; kept the most complete row per key")
     if rows:
         try:
             supa.table('sales_history_v3').upsert(
@@ -400,6 +481,11 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
         # for the rest of the rotation pass.
         'failed_pins':      [],
         'write_errors':     0,
+        # the portal answered its daily-cap page: the batch stopped at
+        # this pin and `not_attempted` pins were never requested
+        'rate_limited':     False,
+        'not_attempted':    0,
+        'sales_dup_rec':    0,
         'duration_s':       0.0,
     }
 
@@ -410,7 +496,10 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
 
         if not res['ok']:
             agg['failed_pins'].append(pin)
-            if res.get('status') is None or (res['status'] or 0) >= 400:
+            if res.get('rate_limited'):
+                agg['rate_limited'] = True
+                agg['http_errors'] += 1
+            elif res.get('status') is None or (res['status'] or 0) >= 400:
                 agg['http_errors'] += 1
             else:
                 agg['parse_errors'] += 1
@@ -435,6 +524,15 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
                 }, on_conflict='pin').execute()
             except Exception:
                 pass
+            if res.get('rate_limited'):
+                # Every further request today gets the same page; leave
+                # the rest of the batch un-requested and let the caller
+                # back off. Those pins stay due (no meta row written for
+                # them) and are picked up once the cap resets.
+                agg['not_attempted'] = len(candidates) - (i + 1)
+                log.warning(f"[ereal] access limit page at pin {pin}; "
+                            f"{agg['not_attempted']} candidate(s) not requested")
+                break
         else:
             agg['parsed_ok'] += 1
             agg['fetched_pins'].append(pin)
@@ -442,6 +540,7 @@ def _fetch_pins(supa, candidates: list[str], sleep_between_s: float) -> dict:
             if upsert_stats['parcel_updated']:
                 agg['parcels_updated'] += 1
             agg['sales_upserted'] += upsert_stats['sales_upserted']
+            agg['sales_dup_rec'] += upsert_stats.get('sales_dup_rec', 0)
             write_err = upsert_stats.get('error') or upsert_stats.get('meta_error')
             if write_err:
                 agg['failed_pins'].append(pin)
