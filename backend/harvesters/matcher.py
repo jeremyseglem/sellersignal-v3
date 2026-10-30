@@ -28,10 +28,15 @@ Design (Path B):
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Optional
 
+from backend.harvesters.owner_at_filing import (
+    RETIRED_STATUS as OAF_RETIRED_STATUS,
+    owner_at_filing,
+)
 from backend.ingest.legal_filings import (
     DivorceFiling,
     RecorderDocument,
@@ -104,6 +109,7 @@ def process_unmatched(
         if not rows:
             log.info("No more unmatched raw_signals")
             break
+        _attach_deeds(owners_db, _deeds_for_rows(supa, rows))
 
         for row in rows:
             try:
@@ -523,12 +529,14 @@ def _process_unmatched_streamed(supa, market_keys, batch_size, max_batches,
         return stats
 
     matched_totals = {r["id"]: 0 for r in all_rows}
+    deeds = _deeds_for_rows(supa, all_rows)
     for ZIP in zips:
         try:
             owners_db, use_codes = _load_owners_db(supa, ZIP, market_keys)
         except Exception as e:
             stats["errors"].append({"zip": ZIP, "error": f"load:{str(e)[:120]}"})
             continue
+        _attach_deeds(owners_db, deeds)
         if not owners_db:
             continue
         for row in all_rows:
@@ -647,7 +655,12 @@ def _process_one(
                     c.get("trigger_hint", {}).get("match_strength", "weak"))
                 filtered_candidates.append(c)
                 continue
-            strength = _surname_gate(c["parcel_id"], owners_db, parties)
+            # Owner-on-filing-date matches gate on the grantor they matched,
+            # not on today's owner (who may be the buyer).
+            oaf_name = (c.get("trigger_hint") or {}).get("owner_at_filing")
+            gate_db = ({c["parcel_id"]: {"owner_name": oaf_name}}
+                       if oaf_name else owners_db)
+            strength = _surname_gate(c["parcel_id"], gate_db, parties)
             if strength is None:
                 continue
             gate_strengths[c["parcel_id"]] = strength
@@ -667,21 +680,21 @@ def _process_one(
             return "weak"
         return "strict"
 
-    match_rows = [
-        {
-            "raw_signal_id":  row["id"],
-            "pin":            c["parcel_id"],
-            "match_strength": _combine(
-                c.get("trigger_hint", {}).get("match_strength", "strict"),
-                gate_strengths[c["parcel_id"]],
-            ),
-            "match_method":   f"legacy::{signal_type}",
-        }
-        for c in candidates
-    ]
-    (supa.table('raw_signal_matches_v3')
-     .upsert(match_rows, on_conflict='raw_signal_id,pin')
-     .execute())
+    match_rows, retired_rows = _build_match_rows(
+        row, candidates, gate_strengths, _combine)
+    if match_rows:
+        (supa.table('raw_signal_matches_v3')
+         .upsert(match_rows, on_conflict='raw_signal_id,pin')
+         .execute())
+    if retired_rows:
+        # Catches (sold before the match): insert retired, and never touch
+        # an existing row — ON CONFLICT DO NOTHING keeps any retired row's
+        # own status/reason (PR #5 keeps retired rows through resets).
+        (supa.table('raw_signal_matches_v3')
+         .upsert(retired_rows, on_conflict='raw_signal_id,pin',
+                 ignore_duplicates=True)
+         .execute())
+    match_rows = match_rows + retired_rows
 
     # Mark raw_signal processed. Note: this must happen AFTER the match
     # rows are written, so if match-write fails we don't falsely mark
@@ -691,6 +704,32 @@ def _process_one(
         _mark_matched(supa, row["id"], match_count=len(match_rows))
 
     return len(match_rows)
+
+
+def _build_match_rows(row: dict, candidates: list, gate_strengths: dict,
+                      combine) -> tuple[list, list]:
+    """Split gated candidates into (live rows, retired rows). A candidate
+    whose trigger_hint carries retire_status (owner on the filing date:
+    a market sale followed the filing) becomes a retired row."""
+    live, retired = [], []
+    for c in candidates:
+        hint = c.get("trigger_hint", {}) or {}
+        r = {
+            "raw_signal_id":  row["id"],
+            "pin":            c["parcel_id"],
+            "match_strength": combine(
+                hint.get("match_strength", "strict"),
+                gate_strengths[c["parcel_id"]],
+            ),
+            "match_method":   f"legacy::{row['signal_type']}",
+        }
+        if hint.get("retire_status"):
+            r["match_review_status"] = hint["retire_status"]
+            r["match_review_reason"] = (hint.get("retire_reason") or "")[:300]
+            retired.append(r)
+        else:
+            live.append(r)
+    return live, retired
 
 
 def _mark_matched(supa, raw_signal_id: int, match_count: int):
@@ -773,6 +812,96 @@ def _second_key_ok(filing_name: str, owner_name: str) -> bool:
     if a_mid and b_mid and a_mid[0][0] != b_mid[0][0]:
         return False
     return True
+
+
+# ─── Owner on the filing date (Signal lab H1, 2026-10-30) ─────────────
+# Sources whose filings are matched against the owner of record ON THE
+# FILING DATE (grantor of the first deed after the filing, from
+# sales_history_v3) rather than today's owner. KC only: its deed history
+# was loaded from the county's public sales file (PR #8, 2026-10-29) and
+# the rule was backtested there (claude/SIGNAL_LAB.md). Kill switch:
+# OWNER_AT_FILING_ENABLED=0 restores today's-owner matching.
+_OWNER_AT_FILING_SOURCES = frozenset({"kc_superior_court"})
+_DEED_COLUMNS = ("pin, recording_number, sale_date, sale_price, "
+                 "seller_name, instrument, sale_reason")
+_DEED_CACHE: dict = {"loaded_at": 0.0, "since": None, "by_pin": {}}
+_DEED_CACHE_TTL = 6 * 3600   # sales history moves slowly; one load per 6 h
+
+
+def _owner_at_filing_enabled() -> bool:
+    return os.environ.get("OWNER_AT_FILING_ENABLED", "1").strip() != "0"
+
+
+def _deeds_since(supa, since: str) -> dict:
+    """{pin: [sales_history_v3 rows with sale_date >= since]}, cached.
+
+    Keyset-paged on (pin, recording_number) — never an unordered offset
+    (the 75219 paging lesson) and never a deep OFFSET (57014). The
+    (pin, sale_date) index serves the pin order."""
+    c = _DEED_CACHE
+    now = time.time()
+    if (c["since"] is not None and c["since"] <= since
+            and now - c["loaded_at"] < _DEED_CACHE_TTL):
+        return c["by_pin"]
+    by_pin: dict = {}
+    last_pin = last_rec = None
+    while True:
+        q = (supa.table('sales_history_v3').select(_DEED_COLUMNS)
+             .gte('sale_date', since)
+             .order('pin').order('recording_number')
+             .limit(1000))
+        if last_pin is not None:
+            q = q.or_(f"pin.gt.{last_pin},"
+                      f"and(pin.eq.{last_pin},recording_number.gt.{last_rec})")
+        batch = None
+        for attempt in range(3):
+            try:
+                batch = q.execute().data or []
+                break
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                log.warning(f"_deeds_since page after {last_pin} failed "
+                            f"(attempt {attempt + 1}/3): {e} — retrying")
+                time.sleep(1.5 * (attempt + 1))
+        for r in batch:
+            by_pin.setdefault(r["pin"], []).append(r)
+        if len(batch) < 1000:
+            break
+        last_pin, last_rec = batch[-1]["pin"], batch[-1]["recording_number"]
+    c.update(loaded_at=now, since=since, by_pin=by_pin)
+    log.info(f"owner-at-filing: {sum(len(v) for v in by_pin.values())} deeds "
+             f"on {len(by_pin)} pins since {since}")
+    return by_pin
+
+
+def _deeds_for_rows(supa, rows: list) -> dict:
+    """Deeds needed to match these signals on the filing date; {} when no
+    signal uses the rule or the load fails (falls back to today's owner)."""
+    if not _owner_at_filing_enabled():
+        return {}
+    dates = [(r.get('event_date') or '')[:10] for r in rows
+             if r.get('source_type') in _OWNER_AT_FILING_SOURCES
+             and r.get('signal_type') == 'probate'
+             and r.get('event_date')]
+    if not dates:
+        return {}
+    try:
+        return _deeds_since(supa, min(dates))
+    except Exception as e:
+        log.warning(f"owner-at-filing: deed load failed, matching today's "
+                    f"owners this tick: {e}")
+        return {}
+
+
+def _attach_deeds(owners_db: dict, deeds: dict) -> None:
+    """Hang each pin's deed rows on its owners_db entry ('deeds')."""
+    if not deeds:
+        return
+    for pin, d in deeds.items():
+        info = owners_db.get(pin)
+        if info is not None:
+            info['deeds'] = d
 
 
 def _dispatch_probate(row, owners_db, use_codes):
@@ -883,6 +1012,15 @@ def _dispatch_probate(row, owners_db, use_codes):
         return []
 
     # Layer 1: decedent match
+    # Owner on the filing date (Signal lab H1, 2026-10-30): for sources in
+    # _OWNER_AT_FILING_SOURCES, a pin whose deeds (sales_history_v3,
+    # attached by _attach_deeds) show a recording after the filing is
+    # matched against that first deed's GRANTOR(S), not today's owner —
+    # KC puts the buyer on title within weeks. If a market sale followed
+    # the filing, the match is written retired (a catch, never a lead).
+    filing_date = (row.get('event_date') or '')[:10]
+    use_oaf = (row.get('source_type') in _OWNER_AT_FILING_SOURCES
+               and bool(filing_date) and _owner_at_filing_enabled())
     for pin, info in owners_db.items():
         # Admit residential (R) + condominium (K). Reject anything
         # else (commercial, exempt, etc.).
@@ -893,32 +1031,52 @@ def _dispatch_probate(row, owners_db, use_codes):
         if _is_hoa_parcel(info):
             continue
         owner_name = info.get('owner_name', '')
-        if not owner_name:
+        oaf = (owner_at_filing(info.get('deeds'), filing_date)
+               if use_oaf and info.get('deeds') else None)
+        if oaf is None:
+            if not owner_name:
+                continue
+            names = [owner_name]
+        else:
+            names = list(oaf.names)
+        matched = [n for n in names if n and name_match(decedent_raw, n)]
+        if not matched:
             continue
+        # Prefer a name that passes the second key (a co-grantor may).
+        if row.get('source_type') in _SECOND_KEY_SOURCES:
+            passing = [n for n in matched if _second_key_ok(decedent_raw, n)]
+            matched_name = passing[0] if passing else matched[0]
+        else:
+            matched_name = matched[0]
 
-        if name_match(decedent_raw, owner_name):
-            # Second key (Signal lab H2, 2026-10-29): a shared surname plus
-            # one other token is not enough when the first names disagree
-            # or both middle initials are present and differ. Those pairs
-            # stay as matches but are stamped weak (build_now, not
-            # call_now). Scoped to sources whose names were backtested.
-            strength = "strict"
-            hint_extra = {}
-            if (row.get('source_type') in _SECOND_KEY_SOURCES
-                    and not _second_key_ok(decedent_raw, owner_name)):
-                strength = "weak"
-                hint_extra = {"second_key": "failed"}
-            candidates.append({
-                "parcel_id":     pin,
-                "signal_family": "probate_pending",
-                "trigger_hint": {
-                    "case_number":    row.get('document_ref'),
-                    "filing_date":    (row.get('event_date') or ''),
-                    "decedent":       decedent_raw,
-                    "match_strength": strength,
-                    **hint_extra,
-                },
-            })
+        # Second key (Signal lab H2, 2026-10-29): a shared surname plus
+        # one other token is not enough when the first names disagree
+        # or both middle initials are present and differ. Those pairs
+        # stay as matches but are stamped weak (build_now, not
+        # call_now). Scoped to sources whose names were backtested.
+        strength = "strict"
+        hint_extra = {}
+        if (row.get('source_type') in _SECOND_KEY_SOURCES
+                and not _second_key_ok(decedent_raw, matched_name)):
+            strength = "weak"
+            hint_extra = {"second_key": "failed"}
+        if oaf is not None:
+            hint_extra["owner_at_filing"] = matched_name
+            hint_extra["deed_after_filing"] = oaf.deed_recording
+            if oaf.retire_reason:
+                hint_extra["retire_status"] = OAF_RETIRED_STATUS
+                hint_extra["retire_reason"] = oaf.retire_reason
+        candidates.append({
+            "parcel_id":     pin,
+            "signal_family": "probate_pending",
+            "trigger_hint": {
+                "case_number":    row.get('document_ref'),
+                "filing_date":    (row.get('event_date') or ''),
+                "decedent":       decedent_raw,
+                "match_strength": strength,
+                **hint_extra,
+            },
+        })
 
     # Layer 2: survivor matches
     # Only applies when survivors were extracted (obituary signals — probate
