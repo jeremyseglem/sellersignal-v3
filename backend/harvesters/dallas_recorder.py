@@ -59,6 +59,9 @@ RESULTS_URL = "https://dallas.tx.publicsearch.us/results"
 # fill Starting/Ending Recorded Date, click Search -> grid renders with the
 # same column structure the Dallas parser reads. Dallas keeps URL mode.
 UI_DRIVE = False
+# URL mode only: when a /results URL load renders no grid, drive the search
+# form for the same window before concluding the window is empty (2026-10-29).
+URL_FALLBACK_UI = True
 HOME_URL = "https://dallas.tx.publicsearch.us/"
 # Travis-only: which react-downshift date preset to select when the tenant
 # has no fillable date inputs. Option ids (captured 2026-07-19):
@@ -303,6 +306,23 @@ def _ui_drive_search(page, begin: date, end: date):
         pass
 
 
+def _grid_has_rows(page, retry_wait: float = 3.0) -> bool:
+    """True when the results grid on the page parses at least one row
+    (results table first, then the body text, once more after a short wait
+    for a slow render) — the same reads iter_window_rows makes."""
+    for attempt in range(2):
+        try:
+            if parse_rows_from_text(extract_grid_text(page)):
+                return True
+            if parse_rows_from_text(page.inner_text("body")):
+                return True
+        except Exception:
+            pass
+        if attempt == 0:
+            time.sleep(retry_wait)
+    return False
+
+
 def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
                      polite_delay: float = 1.2):
     """Yield parsed rows across all pages of a recorded-date window by clicking
@@ -313,6 +333,23 @@ def iter_window_rows(page, begin: date, end: date, max_pages: int = 60,
     else:
         page.goto(_results_url(begin, end), wait_until="domcontentloaded", timeout=60000)
         time.sleep(8)
+        try:
+            page.wait_for_load_state("networkidle", timeout=12000)
+        except Exception:
+            pass
+        # Dallas 2026-10-25 → 10-29 (GH run logs + dry runs 40896546776 /
+        # 40896563893): a direct /results URL load executes the search only
+        # for the FIRST window of a browser session; every later window in
+        # the same run renders the shell with no grid (0 rows, no error),
+        # on weekdays the county had certified ("Certified through
+        # 10/26/2026"). Same tenant, one 6-day window: 2,384 rows; six 1-day
+        # windows: 964 rows from the first, 0 from the rest. Keep the URL
+        # path first and, when it yields no rows, drive the search form —
+        # the path Collin/Greenwich use on this platform every day.
+        if URL_FALLBACK_UI and not _grid_has_rows(page):
+            print(f"    [url_search] {begin}..{end}: no grid after URL load — "
+                  "falling back to the search form")
+            _ui_drive_search(page, begin, end)
     try:
         page.wait_for_load_state("networkidle", timeout=12000)
     except Exception:
