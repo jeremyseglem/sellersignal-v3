@@ -237,6 +237,7 @@ def cmd_classify(zip_code: str) -> int:
                 .select('pin, owner_name, owner_type, tenure_years, '
                         'total_value, is_absentee, is_out_of_state')
                 .eq('zip_code', zip_code)
+                .order('pin')   # deterministic pages (see banding_v3 note)
                 .range(offset, offset + page_size - 1)
                 .execute())
         rows = page.data or []

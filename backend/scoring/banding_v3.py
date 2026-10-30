@@ -230,6 +230,11 @@ def apply_banding_to_zip(zip_code: str) -> dict:
                         'tenure_years, prop_type, signal_family, address, '
                         'is_vacant_land')
                 .eq('zip_code', zip_code)
+                # Deterministic page order. Without ORDER BY, Postgres may
+                # hand back the same rows on two pages and skip others: TX
+                # 75219 was left with exactly 1,000 parcels never banded
+                # (Controller audit 2026-10-29).
+                .order('pin')
                 .range(offset, offset + page_size - 1)
                 .execute())
         rows = page.data or []
