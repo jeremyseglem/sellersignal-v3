@@ -1936,6 +1936,8 @@ KC_ZIP_TO_CITY = {
     "98133": "Shoreline",
     # 2026-10-29 ZIP builder (claude/ZIP_BUILD_QUEUE.md Approved #3)
     "98042": "Covington",
+    # 2026-10-30 ZIP builder (claude/ZIP_BUILD_QUEUE.md Approved #4)
+    "98092": "Auburn",
 }
 
 # Snohomish County ZIPs. Phase 1 — only 98290 (Snohomish/Lake Stevens area).
